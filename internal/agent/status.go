@@ -1,0 +1,51 @@
+package agent
+
+import "time"
+
+// Status represents the current state of an agent.
+type Status int
+
+const (
+	StatusStarting Status = iota
+	StatusActive
+	StatusIdle
+	StatusDone
+	StatusError
+)
+
+func (s Status) String() string {
+	switch s {
+	case StatusStarting:
+		return "Starting"
+	case StatusActive:
+		return "Active"
+	case StatusIdle:
+		return "Idle"
+	case StatusDone:
+		return "Done"
+	case StatusError:
+		return "Error"
+	default:
+		return "Unknown"
+	}
+}
+
+// Symbol returns a single-character symbol for the status.
+func (s Status) Symbol() string {
+	switch s {
+	case StatusStarting:
+		return "◎"
+	case StatusActive:
+		return "●"
+	case StatusIdle:
+		return "○"
+	case StatusDone:
+		return "✓"
+	case StatusError:
+		return "✗"
+	default:
+		return "?"
+	}
+}
+
+const idleTimeout = 3 * time.Second
