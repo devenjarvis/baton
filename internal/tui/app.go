@@ -28,9 +28,10 @@ type App struct {
 	prompt    promptModel
 	merge     mergeModel
 
-	width  int
-	height int
-	err    string
+	width       int
+	height      int
+	err         string
+	confirmQuit bool
 }
 
 func NewApp() App {
@@ -137,10 +138,20 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "q", "ctrl+c":
+			if a.manager != nil && a.manager.AgentCount() > 0 && !a.confirmQuit {
+				a.confirmQuit = true
+				return a, nil
+			}
 			if a.manager != nil {
 				a.manager.Shutdown()
 			}
 			return a, tea.Quit
+		default:
+			// Any other key cancels quit confirmation.
+			a.confirmQuit = false
+		}
+
+		switch msg.String() {
 		case "n":
 			a.view = ViewPrompt
 			a.prompt = newPromptModel()
@@ -323,6 +334,12 @@ func (a App) View() tea.View {
 		content = a.prompt.View()
 	case ViewMerge:
 		content = a.merge.View()
+	}
+
+	// Show quit confirmation.
+	if a.confirmQuit {
+		confirmLine := StyleWarning.Render("Agents are running. Press q again to quit, or any key to cancel.")
+		content = lipgloss.JoinVertical(lipgloss.Left, confirmLine, content)
 	}
 
 	// Show error overlay briefly.
