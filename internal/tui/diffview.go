@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strconv"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -102,8 +103,8 @@ func (d diffModel) View() string {
 	title := StyleTitle.Render("Diff View")
 	scrollInfo := StyleSubtle.Render(
 		strings.Repeat(" ", 2) + "Lines " +
-			itoa(d.offset+1) + "-" + itoa(end) +
-			" of " + itoa(len(d.lines)))
+			strconv.Itoa(d.offset+1) + "-" + strconv.Itoa(end) +
+			" of " + strconv.Itoa(len(d.lines)))
 
 	header := title + "  " + scrollInfo
 	body := strings.Join(rendered, "\n")
@@ -111,22 +112,4 @@ func (d diffModel) View() string {
 	return header + "\n" + body
 }
 
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	result := ""
-	neg := false
-	if n < 0 {
-		neg = true
-		n = -n
-	}
-	for n > 0 {
-		result = string(rune('0'+n%10)) + result
-		n /= 10
-	}
-	if neg {
-		result = "-" + result
-	}
-	return result
-}
+

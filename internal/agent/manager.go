@@ -3,8 +3,11 @@ package agent
 import (
 	"fmt"
 	"os/exec"
+	"regexp"
 	"sync"
 )
+
+var validName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 
 // EventType represents the kind of agent event.
 type EventType int
@@ -32,8 +35,9 @@ type Manager struct {
 	agents map[string]*Agent
 	nextID int
 
-	events chan Event
-	done   chan struct{}
+	events   chan Event
+	done     chan struct{}
+	watchers sync.WaitGroup
 }
 
 // NewManager creates a new agent manager for the given repo.
@@ -48,6 +52,20 @@ func NewManager(repoPath string) *Manager {
 
 // Create starts a new agent with the given config.
 func (m *Manager) Create(cfg Config) (*Agent, error) {
+	if !validName.MatchString(cfg.Name) {
+		return nil, fmt.Errorf("invalid agent name %q: must match [a-zA-Z0-9][a-zA-Z0-9_-]*", cfg.Name)
+	}
+
+	// Check name uniqueness.
+	m.mu.RLock()
+	for _, a := range m.agents {
+		if a.Name == cfg.Name {
+			m.mu.RUnlock()
+			return nil, fmt.Errorf("agent %q already exists", cfg.Name)
+		}
+	}
+	m.mu.RUnlock()
+
 	cfg.RepoPath = m.repoPath
 
 	m.mu.Lock()
@@ -67,7 +85,11 @@ func (m *Manager) Create(cfg Config) (*Agent, error) {
 	m.emit(Event{Type: EventCreated, AgentID: id, Status: StatusStarting})
 
 	// Watch for status changes and completion.
-	go m.watchAgent(a)
+	m.watchers.Add(1)
+	go func() {
+		defer m.watchers.Done()
+		m.watchAgent(a)
+	}()
 
 	return a, nil
 }
@@ -92,7 +114,11 @@ func (m *Manager) CreateWithCommand(cfg Config, cmd func(name string) *exec.Cmd)
 
 	m.emit(Event{Type: EventCreated, AgentID: id, Status: StatusStarting})
 
-	go m.watchAgent(a)
+	m.watchers.Add(1)
+	go func() {
+		defer m.watchers.Done()
+		m.watchAgent(a)
+	}()
 
 	return a, nil
 }
@@ -146,6 +172,9 @@ func (m *Manager) Events() <-chan Event {
 
 // Shutdown kills all agents and cleans up.
 func (m *Manager) Shutdown() {
+	// Signal all watcher goroutines to stop first.
+	close(m.done)
+
 	m.mu.RLock()
 	agents := make([]*Agent, 0, len(m.agents))
 	for _, a := range m.agents {
@@ -159,11 +188,14 @@ func (m *Manager) Shutdown() {
 		a.Cleanup(m.repoPath)
 	}
 
+	// Wait for all watcher goroutines to finish before closing the channel.
+	m.watchers.Wait()
+
 	m.mu.Lock()
 	m.agents = make(map[string]*Agent)
 	m.mu.Unlock()
 
-	close(m.done)
+	close(m.events)
 }
 
 // AgentCount returns the number of active agents.
@@ -179,18 +211,12 @@ func (m *Manager) RepoPath() string {
 }
 
 func (m *Manager) watchAgent(a *Agent) {
-	lastStatus := StatusStarting
-	for {
-		select {
-		case <-a.Done():
-			status := a.Status()
-			m.emit(Event{Type: EventDone, AgentID: a.ID, Status: status})
-			return
-		case <-m.done:
-			return
-		}
+	select {
+	case <-a.Done():
+		status := a.Status()
+		m.emit(Event{Type: EventDone, AgentID: a.ID, Status: status})
+	case <-m.done:
 	}
-	_ = lastStatus // used in future status-change tracking
 }
 
 func (m *Manager) emit(e Event) {

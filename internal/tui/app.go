@@ -71,7 +71,10 @@ func tickCmd() tea.Cmd {
 
 func listenEvents(mgr *agent.Manager) tea.Cmd {
 	return func() tea.Msg {
-		e := <-mgr.Events()
+		e, ok := <-mgr.Events()
+		if !ok {
+			return nil // channel closed (shutdown)
+		}
 		return agentEventMsg(e)
 	}
 }
@@ -106,6 +109,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		a.refreshAgentList()
+		a.err = "" // clear error on next tick
 		return a, tickCmd()
 
 	case agentEventMsg:
@@ -342,11 +346,9 @@ func (a App) View() tea.View {
 		content = lipgloss.JoinVertical(lipgloss.Left, confirmLine, content)
 	}
 
-	// Show error overlay briefly.
+	// Show error (cleared on next tick in Update).
 	if a.err != "" {
 		errLine := StyleError.Render("Error: " + a.err)
-		// Clear error on next render.
-		a.err = ""
 		content = lipgloss.JoinVertical(lipgloss.Left, errLine, content)
 	}
 

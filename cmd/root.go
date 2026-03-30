@@ -36,7 +36,8 @@ func ensureGitignore() {
 	path := ".gitignore"
 
 	// Check if .gitignore exists and already contains .baton/.
-	if data, err := os.ReadFile(path); err == nil {
+	data, _ := os.ReadFile(path)
+	if len(data) > 0 {
 		scanner := bufio.NewScanner(strings.NewReader(string(data)))
 		for scanner.Scan() {
 			if strings.TrimSpace(scanner.Text()) == entry {
@@ -53,11 +54,8 @@ func ensureGitignore() {
 	defer f.Close()
 
 	// Add newline before entry if file doesn't end with one.
-	if info, err := f.Stat(); err == nil && info.Size() > 0 {
-		buf := make([]byte, 1)
-		if _, err := f.ReadAt(buf, info.Size()-1); err == nil && buf[0] != '\n' {
-			f.WriteString("\n")
-		}
+	if len(data) > 0 && data[len(data)-1] != '\n' {
+		f.WriteString("\n")
 	}
 	f.WriteString(entry + "\n")
 }

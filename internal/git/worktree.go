@@ -83,6 +83,8 @@ func ListWorktrees(repoPath string) ([]*WorktreeInfo, error) {
 		return nil, err
 	}
 
+	base, _ := BaseBranch(repoPath)
+
 	var worktrees []*WorktreeInfo
 	var current *WorktreeInfo
 
@@ -97,6 +99,7 @@ func ListWorktrees(repoPath string) ([]*WorktreeInfo, error) {
 				name := strings.TrimPrefix(branch, "baton/")
 				current.Branch = branch
 				current.Name = name
+				current.BaseBranch = base
 				worktrees = append(worktrees, current)
 			}
 		case line == "":

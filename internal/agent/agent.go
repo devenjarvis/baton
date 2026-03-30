@@ -2,7 +2,6 @@ package agent
 
 import (
 	"fmt"
-	"io"
 	"os/exec"
 	"sync"
 	"time"
@@ -30,8 +29,9 @@ type Agent struct {
 	lastOutput time.Time
 	exitErr    error
 
-	done chan struct{}
-	stop chan struct{}
+	done         chan struct{}
+	stop         chan struct{}
+	writeLoopDone chan struct{}
 }
 
 // Config holds parameters for creating a new agent.
@@ -72,8 +72,9 @@ func newAgent(id string, cfg Config) (*Agent, error) {
 		pty:       p,
 		terminal:  term,
 		status:    StatusStarting,
-		done:      make(chan struct{}),
-		stop:      make(chan struct{}),
+		done:          make(chan struct{}),
+		stop:          make(chan struct{}),
+		writeLoopDone: make(chan struct{}),
 	}
 
 	go a.readLoop()
@@ -111,8 +112,9 @@ func newAgentWithCommand(id string, cfg Config, cmd *exec.Cmd) (*Agent, error) {
 		pty:       p,
 		terminal:  term,
 		status:    StatusStarting,
-		done:      make(chan struct{}),
-		stop:      make(chan struct{}),
+		done:          make(chan struct{}),
+		stop:          make(chan struct{}),
+		writeLoopDone: make(chan struct{}),
 	}
 
 	go a.readLoop()
@@ -158,6 +160,7 @@ func (a *Agent) readLoop() {
 
 // writeLoop reads escape sequences from the VT terminal and writes them to the PTY.
 func (a *Agent) writeLoop() {
+	defer close(a.writeLoopDone)
 	buf := make([]byte, 256)
 	for {
 		n, err := a.terminal.Read(buf)
@@ -165,9 +168,6 @@ func (a *Agent) writeLoop() {
 			a.pty.Write(buf[:n])
 		}
 		if err != nil {
-			if err != io.EOF {
-				// Log or ignore — write loop ending is expected on close.
-			}
 			return
 		}
 	}
@@ -246,14 +246,17 @@ func (a *Agent) ExitErr() error {
 	return a.exitErr
 }
 
-// Kill terminates the agent's process.
+// Kill terminates the agent's process and waits for goroutines to exit.
 func (a *Agent) Kill() {
 	close(a.stop)
 	a.pty.Close()
+	// Close terminal to unblock writeLoop's Read call.
+	a.terminal.Close()
+	// Wait for writeLoop to finish before returning.
+	<-a.writeLoopDone
 }
 
 // Cleanup removes the agent's worktree and branch.
 func (a *Agent) Cleanup(repoPath string) error {
-	a.terminal.Close()
 	return git.RemoveWorktree(repoPath, a.Worktree, true)
 }
