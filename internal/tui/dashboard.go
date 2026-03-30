@@ -45,7 +45,7 @@ func (d dashboardModel) View() string {
 	}
 
 	listWidth := 30
-	previewWidth := d.width - listWidth - 3 // border + padding
+	previewWidth := d.previewTermWidth()
 
 	// Agent list panel.
 	list := d.renderAgentList(listWidth)
@@ -71,6 +71,18 @@ func (d dashboardModel) View() string {
 
 func (d dashboardModel) contentHeight() int {
 	return d.height - 2 // statusbar + title
+}
+
+// previewTermWidth returns the terminal column count for the preview panel.
+func (d dashboardModel) previewTermWidth() int {
+	listWidth := 30
+	return d.width - listWidth - 1 // 1 for the list panel's right border
+}
+
+// previewTermHeight returns the terminal row count for the preview panel,
+// accounting for the title, task info, and blank line rendered above the terminal.
+func (d dashboardModel) previewTermHeight() int {
+	return d.contentHeight() - 3 // title + task info + blank line
 }
 
 func (d dashboardModel) emptyView() string {

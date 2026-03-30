@@ -99,9 +99,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.diff.width = msg.Width
 		a.diff.height = msg.Height - 1
 
-		// Resize focused agent terminal.
+		// Resize agent terminals to match their current display container.
 		if a.view == ViewFocus && a.focus.agent != nil {
 			a.focus.agent.Resize(msg.Height, msg.Width)
+		} else if a.view == ViewDashboard {
+			a.resizeAllForDashboard()
 		}
 
 	case initManagerMsg:
@@ -135,6 +137,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.setError(msg.err.Error())
 		}
 		a.refreshAgentList()
+		// Resize the new agent to force a clean redraw — Claude Code's
+		// initial splash output gets baked into the VT before its TUI
+		// fully initializes, and a SIGWINCH clears it.
+		a.resizeSelectedForDashboard()
 		return a, nil
 	}
 
@@ -230,8 +236,12 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	prevSelected := a.dashboard.selected
 	var cmd tea.Cmd
 	a.dashboard, cmd = a.dashboard.Update(msg)
+	if a.dashboard.selected != prevSelected {
+		a.resizeSelectedForDashboard()
+	}
 	return a, cmd
 }
 
@@ -239,6 +249,8 @@ func (a App) updateFocus(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg.(type) {
 	case focusExitMsg:
 		a.view = ViewDashboard
+		// Resize the agent back to preview dimensions.
+		a.resizeSelectedForDashboard()
 		return a, nil
 	}
 
@@ -268,11 +280,19 @@ func (a App) updatePrompt(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.view = ViewDashboard
 		if a.manager != nil {
 			mgr := a.manager
+			// Size the agent to the dashboard preview panel so it renders
+			// correctly before the user enters focus view.
+			previewW := a.dashboard.previewTermWidth()
+			previewH := a.dashboard.previewTermHeight()
+			if previewW <= 0 || previewH <= 0 {
+				a.setError("Terminal size not yet known; try again")
+				return a, nil
+			}
 			cfg := agent.Config{
 				Name: msg.name,
 				Task: msg.task,
-				Rows: a.height,
-				Cols: a.width,
+				Rows: previewH,
+				Cols: previewW,
 			}
 			return a, func() tea.Msg {
 				_, err := mgr.Create(cfg)
@@ -323,6 +343,34 @@ func (a App) updateMerge(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	a.merge, cmd = a.merge.Update(msg)
 	return a, cmd
+}
+
+// resizeSelectedForDashboard resizes the currently selected agent's VT and PTY
+// to match the dashboard preview panel dimensions, so rendered output fits
+// without wrapping or overflow.
+func (a *App) resizeSelectedForDashboard() {
+	ag := a.dashboard.selectedAgent()
+	if ag == nil {
+		return
+	}
+	w := a.dashboard.previewTermWidth()
+	h := a.dashboard.previewTermHeight()
+	if w > 0 && h > 0 {
+		ag.Resize(h, w)
+	}
+}
+
+// resizeAllForDashboard resizes every agent to the dashboard preview dimensions.
+// Called on WindowSizeMsg so all agents match the new terminal size.
+func (a *App) resizeAllForDashboard() {
+	w := a.dashboard.previewTermWidth()
+	h := a.dashboard.previewTermHeight()
+	if w <= 0 || h <= 0 {
+		return
+	}
+	for _, ag := range a.dashboard.agents {
+		ag.Resize(h, w)
+	}
 }
 
 // setError sets an error message that displays for ~3 seconds (30 ticks at 100ms).
