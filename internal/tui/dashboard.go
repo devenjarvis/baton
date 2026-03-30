@@ -12,10 +12,11 @@ import (
 
 // dashboardModel shows the agent list and terminal preview.
 type dashboardModel struct {
-	agents   []*agent.Agent
-	selected int
-	width    int
-	height   int
+	agents     []*agent.Agent
+	selected   int
+	width      int
+	height     int
+	panelFocus panelFocus
 }
 
 func newDashboardModel() dashboardModel {
