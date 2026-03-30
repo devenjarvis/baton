@@ -7,7 +7,6 @@ type ViewMode int
 
 const (
 	ViewDashboard ViewMode = iota
-	ViewFocus
 	ViewDiff
 	ViewPrompt  // overlay
 	ViewMerge   // overlay

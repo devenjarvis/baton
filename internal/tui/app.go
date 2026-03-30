@@ -28,7 +28,6 @@ type App struct {
 
 	view      ViewMode
 	dashboard dashboardModel
-	focus     focusModel
 	diff      diffModel
 	prompt    promptModel
 	merge     mergeModel
@@ -100,9 +99,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.diff.height = msg.Height - 1
 
 		// Resize agent terminals to match their current display container.
-		if a.view == ViewFocus && a.focus.agent != nil {
-			a.focus.agent.Resize(msg.Height, msg.Width)
-		} else if a.view == ViewDashboard {
+		if a.view == ViewDashboard {
 			a.resizeAllForDashboard()
 		}
 
@@ -148,8 +145,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch a.view {
 	case ViewDashboard:
 		return a.updateDashboard(msg)
-	case ViewFocus:
-		return a.updateFocus(msg)
 	case ViewDiff:
 		return a.updateDiff(msg)
 	case ViewPrompt:
@@ -186,15 +181,6 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.prompt.width = a.width
 			a.prompt.height = a.height
 			return a, nil
-		case "enter":
-			if ag := a.dashboard.selectedAgent(); ag != nil {
-				a.view = ViewFocus
-				a.focus = newFocusModel(ag)
-				a.focus.width = a.width
-				a.focus.height = a.height
-				ag.Resize(a.height, a.width)
-				return a, nil
-			}
 		case "d":
 			if ag := a.dashboard.selectedAgent(); ag != nil {
 				rawDiff, err := git.Diff(a.repoPath, ag.Worktree)
@@ -242,20 +228,6 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if a.dashboard.selected != prevSelected {
 		a.resizeSelectedForDashboard()
 	}
-	return a, cmd
-}
-
-func (a App) updateFocus(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg.(type) {
-	case focusExitMsg:
-		a.view = ViewDashboard
-		// Resize the agent back to preview dimensions.
-		a.resizeSelectedForDashboard()
-		return a, nil
-	}
-
-	var cmd tea.Cmd
-	a.focus, cmd = a.focus.Update(msg)
 	return a, cmd
 }
 
@@ -398,10 +370,6 @@ func (a App) View() tea.View {
 	case ViewDashboard:
 		body := a.dashboard.View()
 		statusbar := renderStatusBar(dashboardHints, a.width)
-		content = lipgloss.JoinVertical(lipgloss.Left, body, statusbar)
-	case ViewFocus:
-		body := a.focus.View()
-		statusbar := renderStatusBar(focusHints, a.width)
 		content = lipgloss.JoinVertical(lipgloss.Left, body, statusbar)
 	case ViewDiff:
 		body := a.diff.View()
