@@ -16,6 +16,11 @@ type tickMsg time.Time
 // agentEventMsg wraps an agent manager event for the TUI.
 type agentEventMsg agent.Event
 
+// createResultMsg carries the result of async agent creation.
+type createResultMsg struct {
+	err error
+}
+
 // App is the root Bubble Tea model.
 type App struct {
 	manager   *agent.Manager
@@ -31,6 +36,7 @@ type App struct {
 	width       int
 	height      int
 	err         string
+	errTicks    int // ticks remaining to show error
 	confirmQuit bool
 }
 
@@ -100,7 +106,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case initManagerMsg:
 		if msg.err != nil {
-			a.err = msg.err.Error()
+			a.setError(msg.err.Error())
 			return a, nil
 		}
 		a.manager = msg.manager
@@ -109,7 +115,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		a.refreshAgentList()
-		a.err = "" // clear error on next tick
+		if a.errTicks > 0 {
+			a.errTicks--
+			if a.errTicks == 0 {
+				a.err = ""
+			}
+		}
 		return a, tickCmd()
 
 	case agentEventMsg:
@@ -117,6 +128,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.manager != nil {
 			return a, listenEvents(a.manager)
 		}
+		return a, nil
+
+	case createResultMsg:
+		if msg.err != nil {
+			a.setError(msg.err.Error())
+		}
+		a.refreshAgentList()
 		return a, nil
 	}
 
@@ -175,11 +193,11 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if ag := a.dashboard.selectedAgent(); ag != nil {
 				rawDiff, err := git.Diff(a.repoPath, ag.Worktree)
 				if err != nil {
-					a.err = err.Error()
+					a.setError(err.Error())
 					return a, nil
 				}
 				if rawDiff == "" {
-					a.err = "No changes yet"
+					a.setError("No changes yet")
 					return a, nil
 				}
 				a.view = ViewDiff
@@ -189,7 +207,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "x":
 			if ag := a.dashboard.selectedAgent(); ag != nil {
 				if err := a.manager.Kill(ag.ID); err != nil {
-					a.err = err.Error()
+					a.setError(err.Error())
 				}
 				a.refreshAgentList()
 				if a.dashboard.selected >= len(a.dashboard.agents) && a.dashboard.selected > 0 {
@@ -200,7 +218,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "m":
 			if ag := a.dashboard.selectedAgent(); ag != nil {
 				if ag.Status() != agent.StatusDone && ag.Status() != agent.StatusIdle {
-					a.err = "Agent must be done or idle to merge"
+					a.setError("Agent must be done or idle to merge")
 					return a, nil
 				}
 				a.view = ViewMerge
@@ -249,16 +267,17 @@ func (a App) updatePrompt(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case promptResult:
 		a.view = ViewDashboard
 		if a.manager != nil {
+			mgr := a.manager
 			cfg := agent.Config{
 				Name: msg.name,
 				Task: msg.task,
 				Rows: a.height,
 				Cols: a.width,
 			}
-			if _, err := a.manager.Create(cfg); err != nil {
-				a.err = err.Error()
+			return a, func() tea.Msg {
+				_, err := mgr.Create(cfg)
+				return createResultMsg{err: err}
 			}
-			a.refreshAgentList()
 		}
 		return a, nil
 	}
@@ -306,6 +325,12 @@ func (a App) updateMerge(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return a, cmd
 }
 
+// setError sets an error message that displays for ~3 seconds (30 ticks at 100ms).
+func (a *App) setError(msg string) {
+	a.err = msg
+	a.errTicks = 30
+}
+
 func (a *App) refreshAgentList() {
 	if a.manager == nil {
 		return
@@ -346,7 +371,7 @@ func (a App) View() tea.View {
 		content = lipgloss.JoinVertical(lipgloss.Left, confirmLine, content)
 	}
 
-	// Show error (cleared on next tick in Update).
+	// Show error (auto-cleared after ~3 seconds).
 	if a.err != "" {
 		errLine := StyleError.Render("Error: " + a.err)
 		content = lipgloss.JoinVertical(lipgloss.Left, errLine, content)
