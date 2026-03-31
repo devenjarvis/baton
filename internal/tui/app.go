@@ -159,6 +159,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
+		// When the terminal panel has focus, skip all app-level bindings.
+		// dashboard.Update handles key forwarding to the agent.
+		if a.dashboard.panelFocus == focusTerminal {
+			break
+		}
+
 		switch msg.String() {
 		case "q", "ctrl+c":
 			if a.manager != nil && a.manager.AgentCount() > 0 && !a.confirmQuit {
@@ -170,7 +176,6 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return a, tea.Quit
 		default:
-			// Any other key cancels quit confirmation.
 			a.confirmQuit = false
 		}
 
