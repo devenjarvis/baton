@@ -1,12 +1,17 @@
 package tui
 
 import (
+	"bufio"
+	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/devenjarvis/baton/internal/agent"
+	"github.com/devenjarvis/baton/internal/config"
 	"github.com/devenjarvis/baton/internal/git"
 )
 
@@ -14,17 +19,29 @@ import (
 type tickMsg time.Time
 
 // agentEventMsg wraps an agent manager event for the TUI.
-type agentEventMsg agent.Event
+type agentEventMsg struct {
+	event    agent.Event
+	repoPath string
+}
 
 // createResultMsg carries the result of async agent creation.
 type createResultMsg struct {
 	err error
 }
 
+// initAppMsg carries the result of app initialization.
+type initAppMsg struct {
+	cfg      *config.Config
+	autoRepo string // set if we auto-registered cwd (single-repo fast path)
+	err      error
+}
+
 // App is the root Bubble Tea model.
 type App struct {
-	manager  *agent.Manager
-	repoPath string
+	managers   map[string]*agent.Manager
+	activeRepo string
+	cfg        *config.Config
+	repos      reposModel
 
 	view      ViewMode
 	dashboard dashboardModel
@@ -43,28 +60,37 @@ func NewApp() App {
 	return App{
 		view:      ViewDashboard,
 		dashboard: newDashboardModel(),
+		managers:  make(map[string]*agent.Manager),
 	}
 }
 
 func (a App) Init() tea.Cmd {
-	return tea.Batch(tickCmd(), initManagerCmd())
+	return tea.Batch(tickCmd(), initAppCmd())
 }
 
-// initManagerMsg carries the initialized manager.
-type initManagerMsg struct {
-	manager  *agent.Manager
-	repoPath string
-	err      error
-}
-
-func initManagerCmd() tea.Cmd {
+func initAppCmd() tea.Cmd {
 	return func() tea.Msg {
-		// Detect repo path from current directory.
-		repoPath := "."
-		return initManagerMsg{
-			manager:  agent.NewManager(repoPath),
-			repoPath: repoPath,
+		cfg, err := config.Load()
+		if err != nil {
+			return initAppMsg{err: err}
 		}
+
+		if len(cfg.Repos) == 0 {
+			// Auto-register the current working directory (single-repo fast path).
+			if err := config.AddRepo(cfg, "."); err != nil {
+				return initAppMsg{err: err}
+			}
+			if err := config.Save(cfg); err != nil {
+				return initAppMsg{err: err}
+			}
+			absPath, err := filepath.Abs(".")
+			if err != nil {
+				return initAppMsg{err: err}
+			}
+			return initAppMsg{cfg: cfg, autoRepo: absPath}
+		}
+
+		return initAppMsg{cfg: cfg}
 	}
 }
 
@@ -80,7 +106,7 @@ func listenEvents(mgr *agent.Manager) tea.Cmd {
 		if !ok {
 			return nil // channel closed (shutdown)
 		}
-		return agentEventMsg(e)
+		return agentEventMsg{event: e, repoPath: mgr.RepoPath()}
 	}
 }
 
@@ -97,20 +123,33 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.merge.height = msg.Height
 		a.diff.width = msg.Width
 		a.diff.height = msg.Height - 1
+		a.repos.width = msg.Width
+		a.repos.height = msg.Height - 1
 
 		// Resize agent terminals to match their current display container.
 		if a.view == ViewDashboard {
 			a.resizeAllForDashboard()
 		}
 
-	case initManagerMsg:
+	case initAppMsg:
 		if msg.err != nil {
 			a.setError(msg.err.Error())
 			return a, nil
 		}
-		a.manager = msg.manager
-		a.repoPath = msg.repoPath
-		return a, listenEvents(a.manager)
+		a.cfg = msg.cfg
+		if msg.autoRepo != "" {
+			// Single-repo fast path: go straight to dashboard.
+			return a, a.activateRepo(msg.autoRepo)
+		}
+		// Multi-repo: show repos list.
+		a.repos = newReposModel(msg.cfg.Repos, a.managers)
+		a.view = ViewRepos
+		// Start listeners for any existing managers (none on first run).
+		var cmds []tea.Cmd
+		for _, mgr := range a.managers {
+			cmds = append(cmds, listenEvents(mgr))
+		}
+		return a, tea.Batch(cmds...)
 
 	case tickMsg:
 		a.refreshAgentList()
@@ -123,9 +162,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, tickCmd()
 
 	case agentEventMsg:
-		a.refreshAgentList()
-		if a.manager != nil {
-			return a, listenEvents(a.manager)
+		if msg.repoPath == a.activeRepo {
+			a.refreshAgentList()
+		}
+		if mgr := a.managers[msg.repoPath]; mgr != nil {
+			return a, listenEvents(mgr)
 		}
 		return a, nil
 
@@ -151,9 +192,28 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a.updatePrompt(msg)
 	case ViewMerge:
 		return a.updateMerge(msg)
+	case ViewRepos:
+		return a.updateRepos(msg)
 	}
 
 	return a, nil
+}
+
+// activateRepo sets the active repo and initializes its manager if needed.
+// Returns a tea.Cmd to start listening to the manager's events.
+func (a *App) activateRepo(path string) tea.Cmd {
+	a.activeRepo = path
+	if a.managers[path] == nil {
+		mgr := agent.NewManager(path)
+		a.managers[path] = mgr
+		ensureGitignore(path)
+		a.view = ViewDashboard
+		a.refreshAgentList()
+		return listenEvents(mgr)
+	}
+	a.view = ViewDashboard
+	a.refreshAgentList()
+	return nil
 }
 
 func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -168,12 +228,19 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch msg.String() {
 		case "q", "ctrl+c":
-			if a.manager != nil && a.manager.AgentCount() > 0 && !a.confirmQuit {
+			hasRunning := false
+			for _, mgr := range a.managers {
+				if mgr.AgentCount() > 0 {
+					hasRunning = true
+					break
+				}
+			}
+			if hasRunning && !a.confirmQuit {
 				a.confirmQuit = true
 				return a, nil
 			}
-			if a.manager != nil {
-				a.manager.Shutdown()
+			for _, mgr := range a.managers {
+				mgr.Shutdown()
 			}
 			return a, tea.Quit
 		default:
@@ -189,7 +256,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		case "d":
 			if ag := a.dashboard.selectedAgent(); ag != nil {
-				rawDiff, err := git.Diff(a.repoPath, ag.Worktree)
+				rawDiff, err := git.Diff(a.activeRepo, ag.Worktree)
 				if err != nil {
 					a.setError(err.Error())
 					return a, nil
@@ -204,8 +271,11 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "x":
 			if ag := a.dashboard.selectedAgent(); ag != nil {
-				if err := a.manager.Kill(ag.ID); err != nil {
-					a.setError(err.Error())
+				mgr := a.managers[a.activeRepo]
+				if mgr != nil {
+					if err := mgr.Kill(ag.ID); err != nil {
+						a.setError(err.Error())
+					}
 				}
 				a.refreshAgentList()
 				if a.dashboard.selected >= len(a.dashboard.agents) && a.dashboard.selected > 0 {
@@ -225,6 +295,12 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.merge.height = a.height
 				return a, nil
 			}
+		case "r":
+			a.view = ViewRepos
+			if a.cfg != nil {
+				a.repos = newReposModel(a.cfg.Repos, a.managers)
+			}
+			return a, nil
 		}
 	}
 
@@ -257,8 +333,8 @@ func (a App) updatePrompt(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 	case promptResult:
 		a.view = ViewDashboard
-		if a.manager != nil {
-			mgr := a.manager
+		mgr := a.managers[a.activeRepo]
+		if mgr != nil {
 			// Size the agent to the dashboard preview panel so it renders
 			// correctly before the user enters focus view.
 			previewW := a.dashboard.previewTermWidth()
@@ -297,9 +373,10 @@ func (a App) updateMerge(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.view = ViewDashboard
 			return a, nil
 		}
+		activeRepo := a.activeRepo
 		return a, func() tea.Msg {
 			message := "Merge baton/" + ag.Name + " into " + ag.Worktree.BaseBranch
-			err := git.MergeWorktree(a.repoPath, ag.Worktree, message)
+			err := git.MergeWorktree(activeRepo, ag.Worktree, message)
 			return mergeCompleteMsg{err: err}
 		}
 	case mergeCompleteMsg:
@@ -309,7 +386,10 @@ func (a App) updateMerge(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Merge succeeded — clean up the agent.
 		if ag := a.dashboard.selectedAgent(); ag != nil {
-			_ = a.manager.Kill(ag.ID)
+			mgr := a.managers[a.activeRepo]
+			if mgr != nil {
+				_ = mgr.Kill(ag.ID)
+			}
 			a.refreshAgentList()
 			if a.dashboard.selected >= len(a.dashboard.agents) && a.dashboard.selected > 0 {
 				a.dashboard.selected--
@@ -321,6 +401,35 @@ func (a App) updateMerge(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	a.merge, cmd = a.merge.Update(msg)
+	return a, cmd
+}
+
+func (a App) updateRepos(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case reposSelectMsg:
+		cmd := a.activateRepo(msg.path)
+		return a, cmd
+	case reposAddMsg:
+		if err := config.AddRepo(a.cfg, msg.path); err != nil {
+			a.setError(err.Error())
+		} else {
+			config.Save(a.cfg)
+			a.repos = newReposModel(a.cfg.Repos, a.managers)
+		}
+		return a, nil
+	case reposRemoveMsg:
+		config.RemoveRepo(a.cfg, msg.path)
+		config.Save(a.cfg)
+		a.repos = newReposModel(a.cfg.Repos, a.managers)
+		return a, nil
+	case reposCancelMsg:
+		if a.activeRepo != "" {
+			a.view = ViewDashboard
+		}
+		return a, nil
+	}
+	var cmd tea.Cmd
+	a.repos, cmd = a.repos.Update(msg)
 	return a, cmd
 }
 
@@ -359,10 +468,11 @@ func (a *App) setError(msg string) {
 }
 
 func (a *App) refreshAgentList() {
-	if a.manager == nil {
+	mgr := a.managers[a.activeRepo]
+	if mgr == nil {
 		return
 	}
-	agents := a.manager.List()
+	agents := mgr.List()
 	// Sort by creation time.
 	sort.Slice(agents, func(i, j int) bool {
 		return agents[i].CreatedAt.Before(agents[j].CreatedAt)
@@ -390,6 +500,16 @@ func (a App) View() tea.View {
 		content = a.prompt.View()
 	case ViewMerge:
 		content = a.merge.View()
+	case ViewRepos:
+		body := a.repos.View()
+		var hints []keyHint
+		if a.repos.browsing {
+			hints = repoBrowsingHints
+		} else {
+			hints = reposHints
+		}
+		statusbar := renderStatusBar(hints, a.width)
+		content = lipgloss.JoinVertical(lipgloss.Left, body, statusbar)
 	}
 
 	// Show quit confirmation.
@@ -407,4 +527,34 @@ func (a App) View() tea.View {
 	v := tea.NewView(content)
 	v.AltScreen = true
 	return v
+}
+
+// ensureGitignore adds .baton/ to .gitignore in the given path if not already present.
+func ensureGitignore(path string) {
+	const entry = ".baton/"
+	gitignorePath := filepath.Join(path, ".gitignore")
+
+	// Check if .gitignore exists and already contains .baton/.
+	data, _ := os.ReadFile(gitignorePath)
+	if len(data) > 0 {
+		scanner := bufio.NewScanner(strings.NewReader(string(data)))
+		for scanner.Scan() {
+			if strings.TrimSpace(scanner.Text()) == entry {
+				return // already present
+			}
+		}
+	}
+
+	// Append .baton/ to .gitignore.
+	f, err := os.OpenFile(gitignorePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return // best-effort
+	}
+	defer f.Close()
+
+	// Add newline before entry if file doesn't end with one.
+	if len(data) > 0 && data[len(data)-1] != '\n' {
+		f.WriteString("\n")
+	}
+	f.WriteString(entry + "\n")
 }

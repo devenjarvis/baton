@@ -85,10 +85,10 @@ func TestPromptCreatesAgent(t *testing.T) {
 	app.height = 40
 	app.dashboard.width = 120
 	app.dashboard.height = 39
-	app.manager = mgr
-	app.repoPath = dir
+	app.managers[dir] = mgr
+	app.activeRepo = dir
 
-	t.Logf("Initial view: %v, manager: %v", app.view, app.manager != nil)
+	t.Logf("Initial view: %v, manager: %v", app.view, app.managers[dir] != nil)
 
 	// Create agent via prompt
 	app = createAgentViaPrompt(t, app, "test1", "do stuff")
@@ -136,8 +136,8 @@ func TestCreateMultipleAgentsViaTUI(t *testing.T) {
 	app.height = 40
 	app.dashboard.width = 120
 	app.dashboard.height = 39
-	app.manager = mgr
-	app.repoPath = dir
+	app.managers[dir] = mgr
+	app.activeRepo = dir
 
 	// Create first agent
 	t.Log("=== Creating agent 1 ===")
@@ -187,6 +187,119 @@ func TestCreateMultipleAgentsViaTUI(t *testing.T) {
 	t.Logf("SUCCESS: Created %d agents", len(app.dashboard.agents))
 	for _, a := range app.dashboard.agents {
 		t.Logf("  %s: status=%v", a.Name, a.Status())
+	}
+}
+
+func TestPanelFocusSwitching(t *testing.T) {
+	dir, err := os.MkdirTemp("", "baton-focus-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+
+	run := func(args ...string) {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("cmd %v: %v\n%s", args, err, out)
+		}
+	}
+	run("git", "init")
+	run("git", "commit", "--allow-empty", "-m", "init")
+
+	mgr := agent.NewManager(dir)
+	defer mgr.Shutdown()
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.managers[dir] = mgr
+	app.activeRepo = dir
+
+	app = createAgentViaPrompt(t, app, "focus-test", "do stuff")
+	if len(app.dashboard.agents) == 0 {
+		t.Fatal("Expected at least one agent")
+	}
+
+	// Initially in focusList
+	if app.dashboard.panelFocus != focusList {
+		t.Fatalf("Expected focusList initially, got %v", app.dashboard.panelFocus)
+	}
+
+	// Right arrow enters focusTerminal
+	model, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	app = model.(App)
+	if app.dashboard.panelFocus != focusTerminal {
+		t.Fatalf("Expected focusTerminal after →, got %v", app.dashboard.panelFocus)
+	}
+
+	// Esc returns to focusList
+	model, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	app = model.(App)
+	if app.dashboard.panelFocus != focusList {
+		t.Fatalf("Expected focusList after esc, got %v", app.dashboard.panelFocus)
+	}
+
+	// Right arrow again, then enter returns to focusList
+	model, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	app = model.(App)
+	model, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	app = model.(App)
+	if app.dashboard.panelFocus != focusList {
+		t.Fatalf("Expected focusList after enter, got %v", app.dashboard.panelFocus)
+	}
+}
+
+func TestActionKeysBlockedInFocusTerminal(t *testing.T) {
+	dir, err := os.MkdirTemp("", "baton-block-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+
+	run := func(args ...string) {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("cmd %v: %v\n%s", args, err, out)
+		}
+	}
+	run("git", "init")
+	run("git", "commit", "--allow-empty", "-m", "init")
+
+	mgr := agent.NewManager(dir)
+	defer mgr.Shutdown()
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.managers[dir] = mgr
+	app.activeRepo = dir
+
+	app = createAgentViaPrompt(t, app, "block-test", "do stuff")
+
+	// Enter focusTerminal
+	model, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	app = model.(App)
+	if app.dashboard.panelFocus != focusTerminal {
+		t.Fatalf("Expected focusTerminal after →")
+	}
+
+	// Press "n" — should be forwarded to agent, NOT open prompt overlay
+	// panelFocus must stay focusTerminal (n is not enter/esc)
+	model, _ = app.Update(tea.KeyPressMsg{Code: 'n', Text: "n"})
+	app = model.(App)
+	if app.view != ViewDashboard {
+		t.Fatalf("Expected ViewDashboard (n forwarded to agent, not prompt), got %v", app.view)
+	}
+	if app.dashboard.panelFocus != focusTerminal {
+		t.Fatalf("Expected focusTerminal to persist after 'n', got %v", app.dashboard.panelFocus)
 	}
 }
 
