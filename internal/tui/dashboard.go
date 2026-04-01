@@ -88,10 +88,10 @@ func (d dashboardModel) View() string {
 		Width(previewWidth).
 		Height(d.contentHeight())
 	if d.panelFocus == focusTerminal {
-		// Subtract 2 from width and height to account for the 1-char border on each side,
-		// keeping the terminal content the same rendered size (no reflow).
+		// previewTermWidth() already subtracts 2 for the border, so use previewWidth directly.
+		// Height still needs to subtract 2 to account for the 1-char border on top and bottom.
 		previewStyle = lipgloss.NewStyle().
-			Width(previewWidth - 2).
+			Width(previewWidth).
 			Height(d.contentHeight() - 2).
 			Border(lipgloss.NormalBorder()).
 			BorderForeground(ColorSecondary)
