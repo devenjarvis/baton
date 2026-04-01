@@ -23,8 +23,8 @@ type createResultMsg struct {
 
 // App is the root Bubble Tea model.
 type App struct {
-	manager   *agent.Manager
-	repoPath  string
+	manager  *agent.Manager
+	repoPath string
 
 	view      ViewMode
 	dashboard dashboardModel
@@ -228,9 +228,10 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	prevSelected := a.dashboard.selected
+	prevPanelFocus := a.dashboard.panelFocus
 	var cmd tea.Cmd
 	a.dashboard, cmd = a.dashboard.Update(msg)
-	if a.dashboard.selected != prevSelected {
+	if a.dashboard.selected != prevSelected || a.dashboard.panelFocus != prevPanelFocus {
 		a.resizeSelectedForDashboard()
 	}
 	return a, cmd

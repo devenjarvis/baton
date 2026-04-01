@@ -6,8 +6,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	xvt "github.com/charmbracelet/x/vt"
 	"github.com/charmbracelet/lipgloss"
+	xvt "github.com/charmbracelet/x/vt"
 	"github.com/devenjarvis/baton/internal/agent"
 )
 
@@ -110,13 +110,21 @@ func (d dashboardModel) contentHeight() int {
 // previewTermWidth returns the terminal column count for the preview panel.
 func (d dashboardModel) previewTermWidth() int {
 	listWidth := 30
-	return d.width - listWidth - 1 // 1 for the list panel's right border
+	w := d.width - listWidth - 1 // 1 for the list panel's right border
+	if d.panelFocus == focusTerminal {
+		w -= 2 // NormalBorder consumes 1 col each side
+	}
+	return w
 }
 
 // previewTermHeight returns the terminal row count for the preview panel,
 // accounting for the title, task info, and blank line rendered above the terminal.
 func (d dashboardModel) previewTermHeight() int {
-	return d.contentHeight() - 3 // title + task info + blank line
+	h := d.contentHeight() - 3 // title + task info + blank line
+	if d.panelFocus == focusTerminal {
+		h -= 2 // NormalBorder consumes 1 row top and bottom
+	}
+	return h
 }
 
 func (d dashboardModel) emptyView() string {
