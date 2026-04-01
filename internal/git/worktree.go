@@ -27,6 +27,13 @@ func runGit(dir string, args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+// IsRepo reports whether path is inside a git repository.
+// It runs `git rev-parse --git-dir` in path and returns true on success.
+func IsRepo(path string) bool {
+	_, err := runGit(path, "rev-parse", "--git-dir")
+	return err == nil
+}
+
 // BaseBranch returns the current branch name for the given repo.
 func BaseBranch(repoPath string) (string, error) {
 	return runGit(repoPath, "rev-parse", "--abbrev-ref", "HEAD")

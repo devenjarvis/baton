@@ -47,6 +47,21 @@ func initTestRepo(t *testing.T) string {
 	return dir
 }
 
+func TestIsRepo(t *testing.T) {
+	repo := initTestRepo(t)
+
+	// A real git repo should return true.
+	if !git.IsRepo(repo) {
+		t.Errorf("IsRepo(%q) = false, want true", repo)
+	}
+
+	// A plain temp dir (not a git repo) should return false.
+	plain := t.TempDir()
+	if git.IsRepo(plain) {
+		t.Errorf("IsRepo(%q) = true, want false", plain)
+	}
+}
+
 func TestBaseBranch(t *testing.T) {
 	repo := initTestRepo(t)
 
