@@ -11,9 +11,25 @@ import (
 	"github.com/devenjarvis/baton/internal/agent"
 )
 
-// dashboardModel shows the agent list and terminal preview.
+// listItemKind distinguishes repo headers from agent rows in the dashboard list.
+type listItemKind int
+
+const (
+	listItemRepo  listItemKind = iota
+	listItemAgent listItemKind = iota
+)
+
+// listItem represents one row in the hierarchical dashboard list.
+type listItem struct {
+	kind     listItemKind
+	repoPath string
+	repoName string       // set for repo header items
+	agent    *agent.Agent // set for agent items
+}
+
+// dashboardModel shows the hierarchical repo/agent list and terminal preview.
 type dashboardModel struct {
-	agents     []*agent.Agent
+	items      []listItem
 	selected   int
 	width      int
 	height     int
@@ -48,7 +64,7 @@ func (d dashboardModel) Update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 		// focusList mode
 		switch msg.String() {
 		case "j", "down":
-			if d.selected < len(d.agents)-1 {
+			if d.selected < len(d.items)-1 {
 				d.selected++
 			}
 		case "k", "up":
@@ -65,17 +81,14 @@ func (d dashboardModel) Update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 }
 
 func (d dashboardModel) View() string {
-	if len(d.agents) == 0 {
+	if len(d.items) == 0 {
 		return d.emptyView()
 	}
 
 	listWidth := 30
 	previewWidth := d.previewTermWidth()
 
-	// Agent list panel.
-	list := d.renderAgentList(listWidth)
-
-	// Preview panel.
+	list := d.renderList(listWidth)
 	preview := d.renderPreview(previewWidth)
 
 	listStyle := lipgloss.NewStyle().
@@ -88,8 +101,6 @@ func (d dashboardModel) View() string {
 		Width(previewWidth).
 		Height(d.contentHeight())
 	if d.panelFocus == focusTerminal {
-		// previewTermWidth() already subtracts 2 for the border, so use previewWidth directly.
-		// Height still needs to subtract 2 to account for the 1-char border on top and bottom.
 		previewStyle = lipgloss.NewStyle().
 			Width(previewWidth).
 			Height(d.contentHeight() - 2).
@@ -117,8 +128,7 @@ func (d dashboardModel) previewTermWidth() int {
 	return w
 }
 
-// previewTermHeight returns the terminal row count for the preview panel,
-// accounting for the title, task info, and blank line rendered above the terminal.
+// previewTermHeight returns the terminal row count for the preview panel.
 func (d dashboardModel) previewTermHeight() int {
 	h := d.contentHeight() - 3 // title + task info + blank line
 	if d.panelFocus == focusTerminal {
@@ -136,68 +146,106 @@ func (d dashboardModel) emptyView() string {
 	return lipgloss.Place(d.width, d.contentHeight(), lipgloss.Center, lipgloss.Center, content)
 }
 
-func (d dashboardModel) renderAgentList(width int) string {
-	title := StyleTitle.Render("AGENTS")
-	separator := StyleSubtle.Render(strings.Repeat("─", width-2))
+func (d dashboardModel) renderList(width int) string {
+	title := StyleTitle.Render("SESSIONS")
+	sepWidth := width - 2
+	if sepWidth < 0 {
+		sepWidth = 0
+	}
+	separator := StyleSubtle.Render(strings.Repeat("─", sepWidth))
 
-	var items []string
-	items = append(items, title, separator)
+	var lines []string
+	lines = append(lines, title, separator)
 
-	for i, a := range d.agents {
-		status := a.Status()
-		symbol := status.Symbol()
-		elapsed := humanizeElapsed(a.Elapsed())
-
-		var style lipgloss.Style
-		switch status {
-		case agent.StatusActive:
-			style = lipgloss.NewStyle().Foreground(ColorSecondary)
-		case agent.StatusDone:
-			style = lipgloss.NewStyle().Foreground(ColorSuccess)
-		case agent.StatusError:
-			style = lipgloss.NewStyle().Foreground(ColorError)
-		case agent.StatusIdle:
-			style = lipgloss.NewStyle().Foreground(ColorMuted)
-		default:
-			style = lipgloss.NewStyle().Foreground(ColorWarning)
-		}
-
+	for i, item := range d.items {
+		isSelected := i == d.selected
 		prefix := "  "
-		if i == d.selected {
+		if isSelected {
 			prefix = StyleActive.Render("▸ ")
 		}
 
-		nameWidth := width - 14 // space for symbol, elapsed, padding
-		name := a.Name
-		if len(name) > nameWidth {
-			name = name[:nameWidth-1] + "…"
-		}
+		switch item.kind {
+		case listItemRepo:
+			// Repo header row.
+			name := item.repoName
+			maxLen := width - 4
+			if len(name) > maxLen {
+				name = name[:maxLen-1] + "…"
+			}
+			var repoStyle lipgloss.Style
+			if isSelected {
+				repoStyle = lipgloss.NewStyle().Foreground(ColorText).Bold(true)
+			} else {
+				repoStyle = lipgloss.NewStyle().Foreground(ColorMuted)
+			}
+			lines = append(lines, prefix+repoStyle.Render(name))
 
-		line := fmt.Sprintf("%s%s %-*s %5s",
-			prefix,
-			style.Render(symbol),
-			nameWidth,
-			name,
-			elapsed,
-		)
-		items = append(items, line)
+		case listItemAgent:
+			// Agent row — indented under its repo.
+			ag := item.agent
+			status := ag.Status()
+			symbol := status.Symbol()
+			elapsed := humanizeElapsed(ag.Elapsed())
+
+			var style lipgloss.Style
+			switch status {
+			case agent.StatusActive:
+				style = lipgloss.NewStyle().Foreground(ColorSecondary)
+			case agent.StatusDone:
+				style = lipgloss.NewStyle().Foreground(ColorSuccess)
+			case agent.StatusError:
+				style = lipgloss.NewStyle().Foreground(ColorError)
+			case agent.StatusIdle:
+				style = lipgloss.NewStyle().Foreground(ColorMuted)
+			default:
+				style = lipgloss.NewStyle().Foreground(ColorWarning)
+			}
+
+			nameWidth := width - 16 // space for indent, symbol, elapsed, padding
+			name := ag.Name
+			if len(name) > nameWidth {
+				name = name[:nameWidth-1] + "…"
+			}
+
+			agentPrefix := "    "
+			if isSelected {
+				agentPrefix = "  " + StyleActive.Render("▸ ")
+			}
+
+			line := fmt.Sprintf("%s%s %-*s %5s",
+				agentPrefix,
+				style.Render(symbol),
+				nameWidth,
+				name,
+				elapsed,
+			)
+			lines = append(lines, line)
+		}
 	}
 
-	return strings.Join(items, "\n")
+	return strings.Join(lines, "\n")
 }
 
 func (d dashboardModel) renderPreview(width int) string {
-	if d.selected >= len(d.agents) || len(d.agents) == 0 {
+	item := d.selectedItem()
+	if item == nil {
 		return lipgloss.Place(width, d.contentHeight(), lipgloss.Center, lipgloss.Center,
 			StyleSubtle.Render("No agent selected"))
 	}
 
-	a := d.agents[d.selected]
-	title := StyleTitle.Render(" " + a.Name + " ")
-	taskInfo := StyleSubtle.Render(" Task: " + a.Task)
+	if item.kind == listItemRepo {
+		// Show repo info in the preview panel when a repo header is selected.
+		title := StyleTitle.Render(" " + item.repoName + " ")
+		pathLine := StyleSubtle.Render(" " + item.repoPath)
+		hint := StyleSubtle.Render(" Press n to create an agent in this repo")
+		return lipgloss.JoinVertical(lipgloss.Left, title, pathLine, "", hint)
+	}
 
-	// Render the agent's terminal output.
-	render := a.Render()
+	// Agent selected — show terminal preview.
+	ag := item.agent
+	title := StyleTitle.Render(" " + ag.Name + " ")
+	taskInfo := StyleSubtle.Render(" Task: " + ag.Task)
+	render := ag.Render()
 
 	return lipgloss.JoinVertical(lipgloss.Left,
 		title,
@@ -207,11 +255,41 @@ func (d dashboardModel) renderPreview(width int) string {
 	)
 }
 
-func (d dashboardModel) selectedAgent() *agent.Agent {
-	if d.selected >= 0 && d.selected < len(d.agents) {
-		return d.agents[d.selected]
+// selectedItem returns the currently selected list item, or nil if the list is empty.
+func (d dashboardModel) selectedItem() *listItem {
+	if d.selected < 0 || d.selected >= len(d.items) {
+		return nil
 	}
-	return nil
+	return &d.items[d.selected]
+}
+
+// selectedAgent returns the currently selected agent, or nil if a repo header is selected.
+func (d dashboardModel) selectedAgent() *agent.Agent {
+	item := d.selectedItem()
+	if item == nil || item.kind != listItemAgent {
+		return nil
+	}
+	return item.agent
+}
+
+// selectedRepoPath returns the repo path of the currently selected item.
+func (d dashboardModel) selectedRepoPath() string {
+	item := d.selectedItem()
+	if item == nil {
+		return ""
+	}
+	return item.repoPath
+}
+
+// agentItems returns all agent items from the list (for resize operations).
+func (d dashboardModel) agentItems() []*agent.Agent {
+	var result []*agent.Agent
+	for _, item := range d.items {
+		if item.kind == listItemAgent {
+			result = append(result, item.agent)
+		}
+	}
+	return result
 }
 
 // humanizeElapsed formats a duration for display.

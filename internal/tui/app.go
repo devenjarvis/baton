@@ -31,9 +31,8 @@ type createResultMsg struct {
 
 // initAppMsg carries the result of app initialization.
 type initAppMsg struct {
-	cfg      *config.Config
-	autoRepo string // set if we auto-registered cwd (single-repo fast path)
-	err      error
+	cfg *config.Config
+	err error
 }
 
 // App is the root Bubble Tea model.
@@ -41,7 +40,7 @@ type App struct {
 	managers   map[string]*agent.Manager
 	activeRepo string
 	cfg        *config.Config
-	repos      reposModel
+	repoBrowser fileBrowserModel
 
 	view      ViewMode
 	dashboard dashboardModel
@@ -76,14 +75,13 @@ func initAppCmd() tea.Cmd {
 		}
 
 		if len(cfg.Repos) == 0 {
-			// Auto-register the current working directory (single-repo fast path).
+			// Auto-register the current working directory on first run.
 			if err := config.AddRepo(cfg, "."); err != nil {
 				return initAppMsg{err: err}
 			}
 			if err := config.Save(cfg); err != nil {
 				return initAppMsg{err: err}
 			}
-			return initAppMsg{cfg: cfg, autoRepo: cfg.Repos[0].Path}
 		}
 
 		return initAppMsg{cfg: cfg}
@@ -119,8 +117,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.merge.height = msg.Height
 		a.diff.width = msg.Width
 		a.diff.height = msg.Height - 1
-		a.repos.width = msg.Width
-		a.repos.height = msg.Height - 1
+		a.repoBrowser.width = msg.Width
+		a.repoBrowser.height = msg.Height - 1
 
 		// Resize agent terminals to match their current display container.
 		if a.view == ViewDashboard {
@@ -133,18 +131,19 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		a.cfg = msg.cfg
-		if msg.autoRepo != "" {
-			// Single-repo fast path: go straight to dashboard.
-			return a, a.activateRepo(msg.autoRepo)
-		}
-		// Multi-repo: show repos list.
-		a.repos = newReposModel(msg.cfg.Repos, a.managers)
-		a.view = ViewRepos
-		// Start listeners for any existing managers (none on first run).
+		// Create a manager for every registered repo and start event listeners.
 		var cmds []tea.Cmd
-		for _, mgr := range a.managers {
-			cmds = append(cmds, listenEvents(mgr))
+		for _, repo := range msg.cfg.Repos {
+			if a.managers[repo.Path] == nil {
+				mgr := agent.NewManager(repo.Path)
+				a.managers[repo.Path] = mgr
+				ensureGitignore(repo.Path)
+				cmds = append(cmds, listenEvents(mgr))
+			}
 		}
+		// Always start on the dashboard — single repo or many.
+		a.view = ViewDashboard
+		a.refreshAgentList()
 		return a, tea.Batch(cmds...)
 
 	case tickMsg:
@@ -158,9 +157,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, tickCmd()
 
 	case agentEventMsg:
-		if msg.repoPath == a.activeRepo {
-			a.refreshAgentList()
-		}
+		// Refresh list on any agent event — all repos are visible in the dashboard.
+		a.refreshAgentList()
 		if mgr := a.managers[msg.repoPath]; mgr != nil {
 			return a, listenEvents(mgr)
 		}
@@ -188,26 +186,35 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a.updatePrompt(msg)
 	case ViewMerge:
 		return a.updateMerge(msg)
-	case ViewRepos:
-		return a.updateRepos(msg)
+	case ViewFileBrowser:
+		return a.updateFileBrowser(msg)
 	}
 
 	return a, nil
 }
 
-// activateRepo sets the active repo and initializes its manager if needed.
-// Returns a tea.Cmd to start listening to the manager's events.
-func (a *App) activateRepo(path string) tea.Cmd {
-	a.activeRepo = path
-	if a.managers[path] == nil {
-		mgr := agent.NewManager(path)
-		a.managers[path] = mgr
-		ensureGitignore(path)
-		a.view = ViewDashboard
+// addRepo adds a new repo to config, creates its manager, and starts listening.
+// Returns a cmd if a new manager was created.
+func (a *App) addRepo(path string) tea.Cmd {
+	if a.cfg == nil {
+		return nil
+	}
+	if err := config.AddRepo(a.cfg, path); err != nil {
+		a.setError(err.Error())
+		return nil
+	}
+	if err := config.Save(a.cfg); err != nil {
+		a.setError(err.Error())
+	}
+	// Resolve to the absolute path that AddRepo stored.
+	absPath := a.cfg.Repos[len(a.cfg.Repos)-1].Path
+	if a.managers[absPath] == nil {
+		mgr := agent.NewManager(absPath)
+		a.managers[absPath] = mgr
+		ensureGitignore(absPath)
 		a.refreshAgentList()
 		return listenEvents(mgr)
 	}
-	a.view = ViewDashboard
 	a.refreshAgentList()
 	return nil
 }
@@ -216,7 +223,6 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
 		// When the terminal panel has focus, skip all app-level bindings.
-		// dashboard.Update handles key forwarding to the agent.
 		if a.dashboard.panelFocus == focusTerminal {
 			a.confirmQuit = false
 			break
@@ -245,14 +251,38 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch msg.String() {
 		case "n":
+			// Create an agent in the repo of the currently selected item.
+			// Fall back to activeRepo for tests and pre-init states.
+			repoPath := a.dashboard.selectedRepoPath()
+			if repoPath == "" {
+				repoPath = a.activeRepo
+			}
+			if repoPath == "" {
+				return a, nil
+			}
+			a.activeRepo = repoPath
 			a.view = ViewPrompt
 			a.prompt = newPromptModel()
 			a.prompt.width = a.width
 			a.prompt.height = a.height
 			return a, nil
+
+		case "a":
+			// Open file browser to add a new repo.
+			a.repoBrowser = newFileBrowserModel()
+			a.repoBrowser.width = a.width
+			a.repoBrowser.height = a.height - 1
+			a.view = ViewFileBrowser
+			return a, nil
+
 		case "d":
-			if ag := a.dashboard.selectedAgent(); ag != nil {
-				rawDiff, err := git.Diff(a.activeRepo, ag.Worktree)
+			item := a.dashboard.selectedItem()
+			if item == nil {
+				return a, nil
+			}
+			if item.kind == listItemAgent {
+				// Diff the selected agent's worktree.
+				rawDiff, err := git.Diff(item.repoPath, item.agent.Worktree)
 				if err != nil {
 					a.setError(err.Error())
 					return a, nil
@@ -265,37 +295,45 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.diff = newDiffModel(rawDiff, a.width, a.height-1)
 				return a, nil
 			}
-		case "x":
-			if ag := a.dashboard.selectedAgent(); ag != nil {
-				mgr := a.managers[a.activeRepo]
-				if mgr != nil {
-					if err := mgr.Kill(ag.ID); err != nil {
-						a.setError(err.Error())
-					}
+			// Repo header selected — remove the repo.
+			if a.cfg != nil {
+				config.RemoveRepo(a.cfg, item.repoPath)
+				if err := config.Save(a.cfg); err != nil {
+					a.setError(err.Error())
 				}
 				a.refreshAgentList()
-				if a.dashboard.selected >= len(a.dashboard.agents) && a.dashboard.selected > 0 {
-					a.dashboard.selected--
-				}
+			}
+			return a, nil
+
+		case "x":
+			item := a.dashboard.selectedItem()
+			if item == nil || item.kind != listItemAgent {
 				return a, nil
 			}
+			mgr := a.managers[item.repoPath]
+			if mgr != nil {
+				if err := mgr.Kill(item.agent.ID); err != nil {
+					a.setError(err.Error())
+				}
+			}
+			a.refreshAgentList()
+			return a, nil
+
 		case "m":
-			if ag := a.dashboard.selectedAgent(); ag != nil {
-				if ag.Status() != agent.StatusDone && ag.Status() != agent.StatusIdle {
-					a.setError("Agent must be done or idle to merge")
-					return a, nil
-				}
-				a.view = ViewMerge
-				a.merge = newMergeModel(ag.Name, ag.Worktree.Branch, ag.Worktree.BaseBranch)
-				a.merge.width = a.width
-				a.merge.height = a.height
+			item := a.dashboard.selectedItem()
+			if item == nil || item.kind != listItemAgent {
 				return a, nil
 			}
-		case "r":
-			a.view = ViewRepos
-			if a.cfg != nil {
-				a.repos = newReposModel(a.cfg.Repos, a.managers)
+			ag := item.agent
+			if ag.Status() != agent.StatusDone && ag.Status() != agent.StatusIdle {
+				a.setError("Agent must be done or idle to merge")
+				return a, nil
 			}
+			a.activeRepo = item.repoPath
+			a.view = ViewMerge
+			a.merge = newMergeModel(ag.Name, ag.Worktree.Branch, ag.Worktree.BaseBranch)
+			a.merge.width = a.width
+			a.merge.height = a.height
 			return a, nil
 		}
 	}
@@ -307,6 +345,21 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if a.dashboard.selected != prevSelected || a.dashboard.panelFocus != prevPanelFocus {
 		a.resizeSelectedForDashboard()
 	}
+	return a, cmd
+}
+
+func (a App) updateFileBrowser(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case fileBrowserSelectMsg:
+		a.view = ViewDashboard
+		cmd := a.addRepo(msg.path)
+		return a, cmd
+	case fileBrowserCancelMsg:
+		a.view = ViewDashboard
+		return a, nil
+	}
+	var cmd tea.Cmd
+	a.repoBrowser, cmd = a.repoBrowser.Update(msg)
 	return a, cmd
 }
 
@@ -381,15 +434,13 @@ func (a App) updateMerge(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		// Merge succeeded — clean up the agent.
-		if ag := a.dashboard.selectedAgent(); ag != nil {
-			mgr := a.managers[a.activeRepo]
+		item := a.dashboard.selectedItem()
+		if item != nil && item.kind == listItemAgent {
+			mgr := a.managers[item.repoPath]
 			if mgr != nil {
-				_ = mgr.Kill(ag.ID)
+				_ = mgr.Kill(item.agent.ID)
 			}
 			a.refreshAgentList()
-			if a.dashboard.selected >= len(a.dashboard.agents) && a.dashboard.selected > 0 {
-				a.dashboard.selected--
-			}
 		}
 		a.view = ViewDashboard
 		return a, nil
@@ -400,48 +451,8 @@ func (a App) updateMerge(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return a, cmd
 }
 
-func (a App) updateRepos(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case reposSelectMsg:
-		cmd := a.activateRepo(msg.path)
-		return a, cmd
-	case reposAddMsg:
-		if a.cfg == nil {
-			return a, nil
-		}
-		if err := config.AddRepo(a.cfg, msg.path); err != nil {
-			a.setError(err.Error())
-		} else {
-			if err := config.Save(a.cfg); err != nil {
-				a.setError(err.Error())
-			}
-			a.repos = newReposModel(a.cfg.Repos, a.managers)
-		}
-		return a, nil
-	case reposRemoveMsg:
-		if a.cfg == nil {
-			return a, nil
-		}
-		config.RemoveRepo(a.cfg, msg.path)
-		if err := config.Save(a.cfg); err != nil {
-			a.setError(err.Error())
-		}
-		a.repos = newReposModel(a.cfg.Repos, a.managers)
-		return a, nil
-	case reposCancelMsg:
-		if a.activeRepo != "" {
-			a.view = ViewDashboard
-		}
-		return a, nil
-	}
-	var cmd tea.Cmd
-	a.repos, cmd = a.repos.Update(msg)
-	return a, cmd
-}
-
 // resizeSelectedForDashboard resizes the currently selected agent's VT and PTY
-// to match the dashboard preview panel dimensions, so rendered output fits
-// without wrapping or overflow.
+// to match the dashboard preview panel dimensions.
 func (a *App) resizeSelectedForDashboard() {
 	ag := a.dashboard.selectedAgent()
 	if ag == nil {
@@ -462,7 +473,7 @@ func (a *App) resizeAllForDashboard() {
 	if w <= 0 || h <= 0 {
 		return
 	}
-	for _, ag := range a.dashboard.agents {
+	for _, ag := range a.dashboard.agentItems() {
 		ag.Resize(h, w)
 	}
 }
@@ -474,16 +485,55 @@ func (a *App) setError(msg string) {
 }
 
 func (a *App) refreshAgentList() {
-	mgr := a.managers[a.activeRepo]
-	if mgr == nil {
+	if a.cfg == nil {
+		// Fallback used in tests that set up managers directly without cfg.
+		if mgr := a.managers[a.activeRepo]; mgr != nil {
+			agents := mgr.List()
+			sort.Slice(agents, func(i, j int) bool {
+				return agents[i].CreatedAt.Before(agents[j].CreatedAt)
+			})
+			var items []listItem
+			for _, ag := range agents {
+				items = append(items, listItem{
+					kind:     listItemAgent,
+					repoPath: a.activeRepo,
+					agent:    ag,
+				})
+			}
+			a.dashboard.items = items
+		}
 		return
 	}
-	agents := mgr.List()
-	// Sort by creation time.
-	sort.Slice(agents, func(i, j int) bool {
-		return agents[i].CreatedAt.Before(agents[j].CreatedAt)
-	})
-	a.dashboard.agents = agents
+
+	// Build hierarchical list: one repo header per registered repo, agents below.
+	var items []listItem
+	for _, repo := range a.cfg.Repos {
+		items = append(items, listItem{
+			kind:     listItemRepo,
+			repoPath: repo.Path,
+			repoName: repo.Name,
+		})
+		mgr := a.managers[repo.Path]
+		if mgr != nil {
+			agents := mgr.List()
+			sort.Slice(agents, func(i, j int) bool {
+				return agents[i].CreatedAt.Before(agents[j].CreatedAt)
+			})
+			for _, ag := range agents {
+				items = append(items, listItem{
+					kind:     listItemAgent,
+					repoPath: repo.Path,
+					agent:    ag,
+				})
+			}
+		}
+	}
+
+	// Clamp selection to valid range.
+	if len(items) > 0 && a.dashboard.selected >= len(items) {
+		a.dashboard.selected = len(items) - 1
+	}
+	a.dashboard.items = items
 }
 
 func (a App) View() tea.View {
@@ -506,15 +556,9 @@ func (a App) View() tea.View {
 		content = a.prompt.View()
 	case ViewMerge:
 		content = a.merge.View()
-	case ViewRepos:
-		body := a.repos.View()
-		var hints []keyHint
-		if a.repos.browsing {
-			hints = repoBrowsingHints
-		} else {
-			hints = reposHints
-		}
-		statusbar := renderStatusBar(hints, a.width)
+	case ViewFileBrowser:
+		body := a.repoBrowser.View()
+		statusbar := renderStatusBar(repoBrowsingHints, a.width)
 		content = lipgloss.JoinVertical(lipgloss.Left, body, statusbar)
 	}
 

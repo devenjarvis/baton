@@ -94,7 +94,7 @@ func TestPromptCreatesAgent(t *testing.T) {
 	app = createAgentViaPrompt(t, app, "test1", "do stuff")
 
 	t.Logf("After creation: view=%v, err=%q, agents=%d, dashboard=%d",
-		app.view, app.err, mgr.AgentCount(), len(app.dashboard.agents))
+		app.view, app.err, mgr.AgentCount(), len(app.dashboard.agentItems()))
 
 	if app.view != ViewDashboard {
 		t.Errorf("Expected ViewDashboard, got %v", app.view)
@@ -105,8 +105,8 @@ func TestPromptCreatesAgent(t *testing.T) {
 	if mgr.AgentCount() != 1 {
 		t.Errorf("Expected 1 agent, got %d", mgr.AgentCount())
 	}
-	if len(app.dashboard.agents) != 1 {
-		t.Errorf("Expected 1 dashboard agent, got %d", len(app.dashboard.agents))
+	if len(app.dashboard.agentItems()) != 1 {
+		t.Errorf("Expected 1 dashboard agent, got %d", len(app.dashboard.agentItems()))
 	}
 }
 
@@ -143,7 +143,7 @@ func TestCreateMultipleAgentsViaTUI(t *testing.T) {
 	t.Log("=== Creating agent 1 ===")
 	app = createAgentViaPrompt(t, app, "agent1", "task one")
 	t.Logf("After agent1: view=%v, err=%q, agents=%d, dashboard=%d",
-		app.view, app.err, mgr.AgentCount(), len(app.dashboard.agents))
+		app.view, app.err, mgr.AgentCount(), len(app.dashboard.agentItems()))
 
 	if app.err != "" {
 		t.Fatalf("Agent 1 error: %s", app.err)
@@ -156,7 +156,7 @@ func TestCreateMultipleAgentsViaTUI(t *testing.T) {
 	t.Log("=== Creating agent 2 ===")
 	app = createAgentViaPrompt(t, app, "agent2", "task two")
 	t.Logf("After agent2: view=%v, err=%q, agents=%d, dashboard=%d",
-		app.view, app.err, mgr.AgentCount(), len(app.dashboard.agents))
+		app.view, app.err, mgr.AgentCount(), len(app.dashboard.agentItems()))
 
 	if app.err != "" {
 		t.Fatalf("Agent 2 error: %s", app.err)
@@ -164,15 +164,15 @@ func TestCreateMultipleAgentsViaTUI(t *testing.T) {
 	if mgr.AgentCount() != 2 {
 		t.Fatalf("Expected 2 agents, got %d", mgr.AgentCount())
 	}
-	if len(app.dashboard.agents) != 2 {
-		t.Fatalf("Expected 2 dashboard agents, got %d", len(app.dashboard.agents))
+	if len(app.dashboard.agentItems()) != 2 {
+		t.Fatalf("Expected 2 dashboard agents, got %d", len(app.dashboard.agentItems()))
 	}
 
 	// Create third agent
 	t.Log("=== Creating agent 3 ===")
 	app = createAgentViaPrompt(t, app, "agent3", "task three")
 	t.Logf("After agent3: view=%v, err=%q, agents=%d, dashboard=%d",
-		app.view, app.err, mgr.AgentCount(), len(app.dashboard.agents))
+		app.view, app.err, mgr.AgentCount(), len(app.dashboard.agentItems()))
 
 	if app.err != "" {
 		t.Fatalf("Agent 3 error: %s", app.err)
@@ -180,12 +180,12 @@ func TestCreateMultipleAgentsViaTUI(t *testing.T) {
 	if mgr.AgentCount() != 3 {
 		t.Fatalf("Expected 3 agents, got %d", mgr.AgentCount())
 	}
-	if len(app.dashboard.agents) != 3 {
-		t.Fatalf("Expected 3 dashboard agents, got %d", len(app.dashboard.agents))
+	if len(app.dashboard.agentItems()) != 3 {
+		t.Fatalf("Expected 3 dashboard agents, got %d", len(app.dashboard.agentItems()))
 	}
 
-	t.Logf("SUCCESS: Created %d agents", len(app.dashboard.agents))
-	for _, a := range app.dashboard.agents {
+	t.Logf("SUCCESS: Created %d agents", len(app.dashboard.agentItems()))
+	for _, a := range app.dashboard.agentItems() {
 		t.Logf("  %s: status=%v", a.Name, a.Status())
 	}
 }
@@ -220,7 +220,7 @@ func TestPanelFocusSwitching(t *testing.T) {
 	app.activeRepo = dir
 
 	app = createAgentViaPrompt(t, app, "focus-test", "do stuff")
-	if len(app.dashboard.agents) == 0 {
+	if len(app.dashboard.agentItems()) == 0 {
 		t.Fatal("Expected at least one agent")
 	}
 

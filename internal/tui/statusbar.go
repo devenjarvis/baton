@@ -15,11 +15,11 @@ var (
 	dashboardHints = []keyHint{
 		{"j/k", "navigate"},
 		{"→", "interact"},
-		{"n", "new"},
-		{"d", "diff"},
+		{"n", "new agent"},
+		{"a", "add repo"},
+		{"d", "diff/remove"},
 		{"x", "kill"},
 		{"m", "merge"},
-		{"r", "repos"},
 		{"q", "quit"},
 	}
 
