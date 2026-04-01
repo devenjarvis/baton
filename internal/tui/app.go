@@ -162,6 +162,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// When the terminal panel has focus, skip all app-level bindings.
 		// dashboard.Update handles key forwarding to the agent.
 		if a.dashboard.panelFocus == focusTerminal {
+			a.confirmQuit = false
 			break
 		}
 
