@@ -83,11 +83,7 @@ func initAppCmd() tea.Cmd {
 			if err := config.Save(cfg); err != nil {
 				return initAppMsg{err: err}
 			}
-			absPath, err := filepath.Abs(".")
-			if err != nil {
-				return initAppMsg{err: err}
-			}
-			return initAppMsg{cfg: cfg, autoRepo: absPath}
+			return initAppMsg{cfg: cfg, autoRepo: cfg.Repos[0].Path}
 		}
 
 		return initAppMsg{cfg: cfg}
@@ -410,16 +406,26 @@ func (a App) updateRepos(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd := a.activateRepo(msg.path)
 		return a, cmd
 	case reposAddMsg:
+		if a.cfg == nil {
+			return a, nil
+		}
 		if err := config.AddRepo(a.cfg, msg.path); err != nil {
 			a.setError(err.Error())
 		} else {
-			config.Save(a.cfg)
+			if err := config.Save(a.cfg); err != nil {
+				a.setError(err.Error())
+			}
 			a.repos = newReposModel(a.cfg.Repos, a.managers)
 		}
 		return a, nil
 	case reposRemoveMsg:
+		if a.cfg == nil {
+			return a, nil
+		}
 		config.RemoveRepo(a.cfg, msg.path)
-		config.Save(a.cfg)
+		if err := config.Save(a.cfg); err != nil {
+			a.setError(err.Error())
+		}
 		a.repos = newReposModel(a.cfg.Repos, a.managers)
 		return a, nil
 	case reposCancelMsg:

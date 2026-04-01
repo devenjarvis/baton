@@ -19,6 +19,7 @@ var (
 		{"d", "diff"},
 		{"x", "kill"},
 		{"m", "merge"},
+		{"r", "repos"},
 		{"q", "quit"},
 	}
 

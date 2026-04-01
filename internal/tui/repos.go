@@ -54,10 +54,8 @@ func (m reposModel) Update(msg tea.Msg) (reposModel, tea.Cmd) {
 				result := cmd()
 				switch result := result.(type) {
 				case fileBrowserSelectMsg:
-					m.browsing = false
 					return reposAddMsg{path: result.path}
 				case fileBrowserCancelMsg:
-					m.browsing = false
 					return result
 				}
 				return result

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -17,11 +18,13 @@ type fileBrowserCancelMsg struct{}
 
 // fileBrowserModel is a sub-component for browsing and selecting git repo directories.
 type fileBrowserModel struct {
-	currentDir string
-	entries    []os.DirEntry // only dirs, no hidden
-	selected   int
-	width      int
-	height     int
+	currentDir  string
+	entries     []os.DirEntry // only dirs, no hidden
+	selected    int
+	isGitRepo   bool   // cached git.IsRepo for selected entry
+	gitBranch   string // cached branch name for selected entry
+	width       int
+	height      int
 }
 
 // newFileBrowserModel creates a fileBrowserModel starting at the user's home directory.
@@ -34,6 +37,7 @@ func newFileBrowserModel() fileBrowserModel {
 		currentDir: home,
 	}
 	m.entries = loadEntries(home)
+	m.refreshGitStatus()
 	return m
 }
 
@@ -64,30 +68,33 @@ func (m fileBrowserModel) Update(msg tea.Msg) (fileBrowserModel, tea.Cmd) {
 		case "j", "down":
 			if m.selected < len(m.entries)-1 {
 				m.selected++
+				m.refreshGitStatus()
 			}
 		case "k", "up":
 			if m.selected > 0 {
 				m.selected--
+				m.refreshGitStatus()
 			}
 		case "enter":
 			if len(m.entries) == 0 {
 				break
 			}
-			entry := m.entries[m.selected]
-			path := m.currentDir + string(os.PathSeparator) + entry.Name()
-			if git.IsRepo(path) {
+			path := filepath.Join(m.currentDir, m.entries[m.selected].Name())
+			if m.isGitRepo {
 				return m, func() tea.Msg { return fileBrowserSelectMsg{path: path} }
 			}
 			// Descend into the directory.
 			m.currentDir = path
 			m.entries = loadEntries(path)
 			m.selected = 0
+			m.refreshGitStatus()
 		case "backspace":
-			parent := parentDir(m.currentDir)
+			parent := filepath.Dir(m.currentDir)
 			if parent != m.currentDir {
 				m.currentDir = parent
 				m.entries = loadEntries(parent)
 				m.selected = 0
+				m.refreshGitStatus()
 			}
 		case "esc":
 			return m, func() tea.Msg { return fileBrowserCancelMsg{} }
@@ -169,20 +176,16 @@ func (m fileBrowserModel) renderDetails(width int) string {
 	}
 
 	entry := m.entries[m.selected]
-	path := m.currentDir + string(os.PathSeparator) + entry.Name()
+	path := filepath.Join(m.currentDir, entry.Name())
 
 	lines = append(lines, "")
 	lines = append(lines, StyleTitle.Render(entry.Name()))
 	lines = append(lines, StyleSubtle.Render(path))
 	lines = append(lines, "")
 
-	if git.IsRepo(path) {
-		branch, err := git.BaseBranch(path)
-		if err != nil {
-			branch = "(unknown)"
-		}
+	if m.isGitRepo {
 		lines = append(lines, StyleSuccess.Render("git repo"))
-		lines = append(lines, StyleSubtle.Render("branch: ")+branch)
+		lines = append(lines, StyleSubtle.Render("branch: ")+m.gitBranch)
 		lines = append(lines, "")
 		lines = append(lines, StyleSubtle.Render("Press enter to select"))
 	} else {
@@ -194,16 +197,22 @@ func (m fileBrowserModel) renderDetails(width int) string {
 	return strings.Join(lines, "\n")
 }
 
-// parentDir returns the parent directory of dir, or dir if already at root.
-func parentDir(dir string) string {
-	if dir == "" || dir == "/" || dir == "." {
-		return dir
+// refreshGitStatus updates the cached isGitRepo and gitBranch for the selected entry.
+func (m *fileBrowserModel) refreshGitStatus() {
+	if len(m.entries) == 0 {
+		m.isGitRepo = false
+		m.gitBranch = ""
+		return
 	}
-	// Walk back to the last separator.
-	for i := len(dir) - 1; i > 0; i-- {
-		if dir[i] == os.PathSeparator {
-			return dir[:i]
+	path := filepath.Join(m.currentDir, m.entries[m.selected].Name())
+	m.isGitRepo = git.IsRepo(path)
+	if m.isGitRepo {
+		branch, err := git.BaseBranch(path)
+		if err != nil {
+			branch = "(unknown)"
 		}
+		m.gitBranch = branch
+	} else {
+		m.gitBranch = ""
 	}
-	return dir
 }
