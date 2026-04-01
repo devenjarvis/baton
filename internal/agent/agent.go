@@ -216,6 +216,11 @@ func (a *Agent) SendText(text string) {
 	a.terminal.SendText(text)
 }
 
+// ScrollbackLines returns the scrollback buffer as ANSI-encoded strings, oldest first.
+func (a *Agent) ScrollbackLines() []string {
+	return a.terminal.ScrollbackLines()
+}
+
 // Resize updates both the VT terminal and PTY dimensions.
 func (a *Agent) Resize(rows, cols int) {
 	a.terminal.Resize(cols, rows)

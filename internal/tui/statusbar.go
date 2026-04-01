@@ -25,6 +25,8 @@ var (
 
 	focusTerminalHints = []keyHint{
 		{"enter", "send"},
+		{"pgup/pgdn", "scroll"},
+		{"home", "live"},
 		{"esc", "back"},
 	}
 

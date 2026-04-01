@@ -117,6 +117,35 @@ func TestRenderRegion(t *testing.T) {
 	}
 }
 
+func TestScrollbackLines(t *testing.T) {
+	// 2-row terminal: writing 3 lines forces the first line into scrollback.
+	term := New(80, 2)
+	defer term.Close()
+
+	// Write 3 lines — the first will scroll off into the scrollback buffer.
+	term.Write([]byte("First\r\nSecond\r\nThird"))
+
+	lines := term.ScrollbackLines()
+	if len(lines) == 0 {
+		t.Fatal("expected scrollback to be non-empty after scrolling past terminal height")
+	}
+	// The first line should contain "First".
+	if !strings.Contains(lines[0], "First") {
+		t.Errorf("expected scrollback line 0 to contain 'First', got %q", lines[0])
+	}
+}
+
+func TestScrollbackLinesEmpty(t *testing.T) {
+	term := New(80, 24)
+	defer term.Close()
+
+	// No content written — scrollback should be empty.
+	lines := term.ScrollbackLines()
+	if len(lines) != 0 {
+		t.Errorf("expected empty scrollback, got %d lines", len(lines))
+	}
+}
+
 func TestCursorPosition(t *testing.T) {
 	term := New(80, 24)
 	defer term.Close()

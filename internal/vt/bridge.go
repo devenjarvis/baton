@@ -122,6 +122,17 @@ func (t *Terminal) Height() int {
 	return t.emu.Height()
 }
 
+// ScrollbackLines returns the scrollback buffer contents as a slice of
+// ANSI-encoded strings, one per line, oldest first.
+func (t *Terminal) ScrollbackLines() []string {
+	lines := t.emu.Scrollback().Lines()
+	result := make([]string, len(lines))
+	for i, l := range lines {
+		result[i] = l.Render()
+	}
+	return result
+}
+
 // Close releases resources and unblocks any pending Read calls.
 // Safe to call concurrently and multiple times.
 func (t *Terminal) Close() {

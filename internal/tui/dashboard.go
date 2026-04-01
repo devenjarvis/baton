@@ -29,11 +29,12 @@ type listItem struct {
 
 // dashboardModel shows the hierarchical repo/agent list and terminal preview.
 type dashboardModel struct {
-	items      []listItem
-	selected   int
-	width      int
-	height     int
-	panelFocus panelFocus
+	items        []listItem
+	selected     int
+	width        int
+	height       int
+	panelFocus   panelFocus
+	scrollOffset int
 }
 
 func newDashboardModel() dashboardModel {
@@ -48,11 +49,40 @@ func (d dashboardModel) Update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 			switch msg.String() {
 			case "esc":
 				d.panelFocus = focusList
+				d.scrollOffset = 0
 			case "enter":
 				if ag != nil {
 					ag.SendKey(xvt.KeyPressEvent(msg))
 				}
 				d.panelFocus = focusList
+			case "pgup":
+				if ag != nil {
+					sbLen := len(ag.ScrollbackLines())
+					vpHeight := d.previewTermHeight()
+					step := vpHeight / 2
+					if step < 1 {
+						step = 1
+					}
+					d.scrollOffset += step
+					maxOffset := sbLen + vpHeight - vpHeight
+					if maxOffset < 0 {
+						maxOffset = 0
+					}
+					if d.scrollOffset > maxOffset {
+						d.scrollOffset = maxOffset
+					}
+				}
+			case "pgdown":
+				step := d.previewTermHeight() / 2
+				if step < 1 {
+					step = 1
+				}
+				d.scrollOffset -= step
+				if d.scrollOffset < 0 {
+					d.scrollOffset = 0
+				}
+			case "home":
+				d.scrollOffset = 0
 			default:
 				if ag != nil {
 					ag.SendKey(xvt.KeyPressEvent(msg))
@@ -66,10 +96,12 @@ func (d dashboardModel) Update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 		case "j", "down":
 			if d.selected < len(d.items)-1 {
 				d.selected++
+				d.scrollOffset = 0
 			}
 		case "k", "up":
 			if d.selected > 0 {
 				d.selected--
+				d.scrollOffset = 0
 			}
 		case "right":
 			if d.selectedAgent() != nil {
@@ -243,9 +275,32 @@ func (d dashboardModel) renderPreview(width int) string {
 
 	// Agent selected — show terminal preview.
 	ag := item.agent
-	title := StyleTitle.Render(" " + ag.Name + " ")
+	titleText := " " + ag.Name + " "
+	if d.scrollOffset > 0 {
+		titleText = fmt.Sprintf(" %s [↑%d] ", ag.Name, d.scrollOffset)
+	}
+	title := StyleTitle.Render(titleText)
 	taskInfo := StyleSubtle.Render(" Task: " + ag.Task)
-	render := ag.Render()
+
+	var render string
+	if d.scrollOffset > 0 {
+		sbLines := ag.ScrollbackLines()
+		vpLines := strings.Split(ag.Render(), "\n")
+		allLines := append(sbLines, vpLines...)
+
+		vpHeight := d.previewTermHeight()
+		end := len(allLines) - d.scrollOffset
+		if end < 0 {
+			end = 0
+		}
+		start := end - vpHeight
+		if start < 0 {
+			start = 0
+		}
+		render = strings.Join(allLines[start:end], "\n")
+	} else {
+		render = ag.Render()
+	}
 
 	return lipgloss.JoinVertical(lipgloss.Left,
 		title,
