@@ -121,6 +121,9 @@ func (m reposModel) View() string {
 
 	listWidth := 40
 	detailWidth := m.width - listWidth - 1 // 1 for the border
+	if detailWidth < 0 {
+		detailWidth = 0
+	}
 
 	list := m.renderRepoList(listWidth)
 	detail := m.renderRepoDetail(detailWidth)
@@ -215,7 +218,11 @@ func (m reposModel) renderRepoDetail(width int) string {
 	repo := m.repos[m.selected]
 
 	title := StyleTitle.Render("DETAILS")
-	separator := StyleSubtle.Render(strings.Repeat("─", width-1))
+	sepWidth := width - 1
+	if sepWidth < 0 {
+		sepWidth = 0
+	}
+	separator := StyleSubtle.Render(strings.Repeat("─", sepWidth))
 
 	var lines []string
 	lines = append(lines, title, separator)

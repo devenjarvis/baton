@@ -110,6 +110,9 @@ func (m fileBrowserModel) View() string {
 		leftWidth = 20
 	}
 	rightWidth := m.width - leftWidth - 1 // 1 for border
+	if rightWidth < 0 {
+		rightWidth = 0
+	}
 
 	left := m.renderDirList(leftWidth)
 	right := m.renderDetails(rightWidth)
@@ -133,7 +136,11 @@ func (m fileBrowserModel) View() string {
 // renderDirList renders the left panel with the directory listing.
 func (m fileBrowserModel) renderDirList(width int) string {
 	title := StyleTitle.Render("DIRECTORIES")
-	separator := StyleSubtle.Render(strings.Repeat("─", width-2))
+	sepWidth := width - 2
+	if sepWidth < 0 {
+		sepWidth = 0
+	}
+	separator := StyleSubtle.Render(strings.Repeat("─", sepWidth))
 
 	var lines []string
 	lines = append(lines, title, separator)
@@ -165,7 +172,11 @@ func (m fileBrowserModel) renderDirList(width int) string {
 // renderDetails renders the right panel with info about the selected directory.
 func (m fileBrowserModel) renderDetails(width int) string {
 	title := StyleTitle.Render("DETAILS")
-	separator := StyleSubtle.Render(strings.Repeat("─", width-1))
+	sepWidth := width - 1
+	if sepWidth < 0 {
+		sepWidth = 0
+	}
+	separator := StyleSubtle.Render(strings.Repeat("─", sepWidth))
 
 	var lines []string
 	lines = append(lines, title, separator)
