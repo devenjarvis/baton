@@ -8,6 +8,7 @@ const (
 	ViewDiff
 	ViewPrompt  // overlay
 	ViewMerge   // overlay
+	ViewRepos
 )
 
 // panelFocus tracks which dashboard panel has keyboard focus.
