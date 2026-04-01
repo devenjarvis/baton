@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	xvt "github.com/charmbracelet/x/vt"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/devenjarvis/baton/internal/agent"
 )
@@ -26,6 +27,25 @@ func newDashboardModel() dashboardModel {
 func (d dashboardModel) Update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
+		if d.panelFocus == focusTerminal {
+			ag := d.selectedAgent()
+			switch msg.String() {
+			case "esc":
+				d.panelFocus = focusList
+			case "enter":
+				if ag != nil {
+					ag.SendKey(xvt.KeyPressEvent(msg))
+				}
+				d.panelFocus = focusList
+			default:
+				if ag != nil {
+					ag.SendKey(xvt.KeyPressEvent(msg))
+				}
+			}
+			return d, nil
+		}
+
+		// focusList mode
 		switch msg.String() {
 		case "j", "down":
 			if d.selected < len(d.agents)-1 {
@@ -34,6 +54,10 @@ func (d dashboardModel) Update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 		case "k", "up":
 			if d.selected > 0 {
 				d.selected--
+			}
+		case "right":
+			if d.selectedAgent() != nil {
+				d.panelFocus = focusTerminal
 			}
 		}
 	}
@@ -63,6 +87,15 @@ func (d dashboardModel) View() string {
 	previewStyle := lipgloss.NewStyle().
 		Width(previewWidth).
 		Height(d.contentHeight())
+	if d.panelFocus == focusTerminal {
+		// Subtract 2 from width and height to account for the 1-char border on each side,
+		// keeping the terminal content the same rendered size (no reflow).
+		previewStyle = lipgloss.NewStyle().
+			Width(previewWidth - 2).
+			Height(d.contentHeight() - 2).
+			Border(lipgloss.NormalBorder()).
+			BorderForeground(ColorSecondary)
+	}
 
 	return lipgloss.JoinHorizontal(lipgloss.Top,
 		listStyle.Render(list),

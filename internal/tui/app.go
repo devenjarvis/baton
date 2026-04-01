@@ -374,7 +374,11 @@ func (a App) View() tea.View {
 	switch a.view {
 	case ViewDashboard:
 		body := a.dashboard.View()
-		statusbar := renderStatusBar(dashboardHints, a.width)
+		hints := dashboardHints
+		if a.dashboard.panelFocus == focusTerminal {
+			hints = focusTerminalHints
+		}
+		statusbar := renderStatusBar(hints, a.width)
 		content = lipgloss.JoinVertical(lipgloss.Left, body, statusbar)
 	case ViewDiff:
 		body := a.diff.View()

@@ -14,11 +14,17 @@ type keyHint struct {
 var (
 	dashboardHints = []keyHint{
 		{"j/k", "navigate"},
+		{"→", "interact"},
 		{"n", "new"},
 		{"d", "diff"},
 		{"x", "kill"},
 		{"m", "merge"},
 		{"q", "quit"},
+	}
+
+	focusTerminalHints = []keyHint{
+		{"enter", "send"},
+		{"esc", "back"},
 	}
 
 	diffHints = []keyHint{
