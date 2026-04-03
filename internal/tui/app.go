@@ -368,6 +368,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// X==31 is the list panel's right border and is intentionally ignored.
 				if a.dashboard.panelFocus == focusList && a.dashboard.selectedAgent() != nil {
 					a.dashboard.panelFocus = focusTerminal
+					a.resizeSelectedForDashboard()
 				}
 			}
 		}
