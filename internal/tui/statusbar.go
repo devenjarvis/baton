@@ -31,7 +31,8 @@ var (
 	}
 
 	diffHints = []keyHint{
-		{"j/k", "scroll"},
+		{"j/k", "files"},
+		{"d/u", "scroll diff"},
 		{"q/esc", "back"},
 	}
 

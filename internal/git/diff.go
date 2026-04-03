@@ -55,6 +55,66 @@ func GetDiffStats(repoPath string, wt *WorktreeInfo) (*DiffStats, error) {
 	return stats, nil
 }
 
+// DiffFile holds the parsed diff for a single file.
+type DiffFile struct {
+	Status string   // "M", "A", or "D"
+	Path   string   // file path from b/... header
+	Lines  []string // all diff lines for this file including headers
+}
+
+// ParseDiffFiles splits a raw unified diff into per-file chunks.
+func ParseDiffFiles(rawDiff string) []DiffFile {
+	if rawDiff == "" {
+		return []DiffFile{}
+	}
+
+	var files []DiffFile
+	var current *DiffFile
+
+	for _, line := range strings.Split(rawDiff, "\n") {
+		if strings.HasPrefix(line, "diff --git ") {
+			// Flush the previous file.
+			if current != nil {
+				files = append(files, *current)
+			}
+			// Extract path from b/... part.
+			path := ""
+			fields := strings.Fields(line)
+			// fields: ["diff", "--git", "a/foo", "b/foo"]
+			if len(fields) >= 4 {
+				bPart := fields[3]
+				if strings.HasPrefix(bPart, "b/") {
+					path = bPart[2:]
+				} else {
+					path = bPart
+				}
+			}
+			current = &DiffFile{
+				Status: "M",
+				Path:   path,
+				Lines:  []string{line},
+			}
+			continue
+		}
+		if current == nil {
+			continue
+		}
+		if line == "new file mode" || strings.HasPrefix(line, "new file mode ") {
+			current.Status = "A"
+		} else if line == "deleted file mode" || strings.HasPrefix(line, "deleted file mode ") {
+			current.Status = "D"
+		}
+		current.Lines = append(current.Lines, line)
+	}
+
+	// Flush the last file.
+	if current != nil {
+		files = append(files, *current)
+	}
+
+	return files
+}
+
 // MergeWorktree merges the worktree branch into the base branch using --no-ff.
 // Returns an error if there are merge conflicts.
 func MergeWorktree(repoPath string, wt *WorktreeInfo, message string) error {

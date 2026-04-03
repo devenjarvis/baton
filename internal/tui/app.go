@@ -295,8 +295,9 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.setError("No changes yet")
 					return a, nil
 				}
+				files := git.ParseDiffFiles(rawDiff)
 				a.view = ViewDiff
-				a.diff = newDiffModel(rawDiff, a.width, a.height-1)
+				a.diff = newDiffModel(item.agent.ID, files, a.width, a.height-1)
 				return a, nil
 			}
 			// Repo header selected — remove the repo.
