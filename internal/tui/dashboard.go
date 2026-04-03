@@ -237,7 +237,7 @@ func (d dashboardModel) renderList(width int) string {
 			}
 
 			nameWidth := width - 16 // space for indent, symbol, elapsed, padding
-			name := ag.Name
+			name := ag.GetDisplayName()
 			if len(name) > nameWidth {
 				name = name[:nameWidth-1] + "…"
 			}
@@ -278,9 +278,9 @@ func (d dashboardModel) renderPreview(width int) string {
 
 	// Agent selected — show terminal preview.
 	ag := item.agent
-	titleText := " " + ag.Name + " "
+	titleText := " " + ag.GetDisplayName() + " "
 	if d.scrollOffset > 0 {
-		titleText = fmt.Sprintf(" %s [↑%d] ", ag.Name, d.scrollOffset)
+		titleText = fmt.Sprintf(" %s [↑%d] ", ag.GetDisplayName(), d.scrollOffset)
 	}
 	title := StyleTitle.Render(titleText)
 	taskInfo := StyleSubtle.Render(" Task: " + ag.Task)

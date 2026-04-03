@@ -24,10 +24,11 @@ type Agent struct {
 	pty      *bpty.PTY
 	terminal *vt.Terminal
 
-	mu         sync.RWMutex
-	status     Status
-	lastOutput time.Time
-	exitErr    error
+	mu          sync.RWMutex
+	displayName string
+	status      Status
+	lastOutput  time.Time
+	exitErr     error
 
 	done         chan struct{}
 	stop         chan struct{}
@@ -55,9 +56,17 @@ func newAgent(id string, cfg Config) (*Agent, error) {
 
 	var cmd *exec.Cmd
 	if cfg.BypassPermissions {
-		cmd = exec.Command("claude", "--dangerously-skip-permissions", cfg.Task)
+		if cfg.Task != "" {
+			cmd = exec.Command("claude", "--dangerously-skip-permissions", cfg.Task)
+		} else {
+			cmd = exec.Command("claude", "--dangerously-skip-permissions")
+		}
 	} else {
-		cmd = exec.Command("claude", cfg.Task)
+		if cfg.Task != "" {
+			cmd = exec.Command("claude", cfg.Task)
+		} else {
+			cmd = exec.Command("claude")
+		}
 	}
 	cmd.Dir = wt.Path
 	cmd.Env = append(cmd.Environ(), "TERM=xterm-256color")
@@ -238,6 +247,30 @@ func (a *Agent) Status() Status {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.status
+}
+
+// SetDisplayName sets the human-readable display name for this agent.
+func (a *Agent) SetDisplayName(name string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.displayName = name
+}
+
+// GetDisplayName returns the display name if set, otherwise Name.
+func (a *Agent) GetDisplayName() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.displayName != "" {
+		return a.displayName
+	}
+	return a.Name
+}
+
+// HasDisplayName reports whether a display name has been explicitly set.
+func (a *Agent) HasDisplayName() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.displayName != ""
 }
 
 // Elapsed returns how long the agent has been running.
