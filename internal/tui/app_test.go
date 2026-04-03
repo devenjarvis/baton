@@ -358,6 +358,31 @@ func TestMouseClickSelectsListItem(t *testing.T) {
 	if app.dashboard.selected != 2 {
 		t.Fatalf("Expected selected unchanged (=2) after right-click, got %d", app.dashboard.selected)
 	}
+
+	// With an active error banner (dashboardTopY=1), item 0 is now at Y=2+1=3.
+	// Click Y=3 should still select item 0, not item 1.
+	app.dashboard.selected = 2
+	app.setError("test error")
+	model, _ = app.Update(tea.MouseClickMsg{Button: tea.MouseLeft, X: 5, Y: 3})
+	app = model.(App)
+	if app.dashboard.selected != 0 {
+		t.Fatalf("Expected selected=0 with error banner offset (Y=3 → item 0), got %d", app.dashboard.selected)
+	}
+
+	// With confirmQuit=true (dashboardTopY=1 when no error), item 1 is at Y=3+1=4.
+	app.err = ""
+	app.errTicks = 0
+	app.dashboard.selected = 0
+	app.confirmQuit = true
+	model, _ = app.Update(tea.MouseClickMsg{Button: tea.MouseLeft, X: 5, Y: 4})
+	app = model.(App)
+	if app.dashboard.selected != 1 {
+		t.Fatalf("Expected selected=1 with confirmQuit offset (Y=4 → item 1), got %d", app.dashboard.selected)
+	}
+	// Mouse click should also clear confirmQuit.
+	if app.confirmQuit {
+		t.Fatalf("Expected confirmQuit=false after mouse click, got true")
+	}
 }
 
 func TestMouseClickPreviewEntersFocus(t *testing.T) {

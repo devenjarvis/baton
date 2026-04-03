@@ -343,14 +343,16 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	if msg, ok := msg.(tea.MouseClickMsg); ok {
+		// Compute offset before clearing confirmQuit — reflects what was on screen.
+		dashboardTopY := 0
+		if a.err != "" {
+			dashboardTopY++
+		}
+		if a.confirmQuit {
+			dashboardTopY++
+		}
+		a.confirmQuit = false
 		if msg.Button == tea.MouseLeft {
-			dashboardTopY := 0
-			if a.err != "" {
-				dashboardTopY++
-			}
-			if a.confirmQuit {
-				dashboardTopY++
-			}
 			if msg.X < 31 {
 				// List panel click — map Y to item index.
 				// Subtract 2 for the SESSIONS title row and separator row.
