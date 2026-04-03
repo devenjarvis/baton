@@ -74,6 +74,11 @@ func (t *Terminal) bridgeRead() {
 // the scroll region. If so, the write will cause the top line to scroll off,
 // and we capture it before it's lost. This works for both main-screen and
 // alternate-screen terminals.
+//
+// Write must not be called concurrently. The three SafeEmulator reads
+// (CursorPosition, Height, Render) and the subsequent Write each acquire the
+// emulator lock independently, which is safe because agent.readLoop is the
+// only caller and never calls Write from more than one goroutine.
 func (t *Terminal) Write(p []byte) (int, error) {
 	written := 0
 	remaining := p
@@ -179,26 +184,17 @@ func (t *Terminal) Height() int {
 }
 
 // ScrollbackLines returns scrolled-off lines as ANSI-encoded strings, oldest
-// first. Our history buffer (populated by scroll detection in Write) takes
-// priority over the VT emulator's main-screen scrollback, since apps using
-// alternate screen mode (like Claude Code) never populate the latter.
+// first. The history buffer is populated by Write's scroll detection and
+// captures scrollback for both main-screen and alternate-screen terminals.
+// Returns nil if no lines have scrolled off yet.
 func (t *Terminal) ScrollbackLines() []string {
 	t.historyMu.RLock()
-	if len(t.history) > 0 {
-		result := make([]string, len(t.history))
-		copy(result, t.history)
-		t.historyMu.RUnlock()
-		return result
+	defer t.historyMu.RUnlock()
+	if len(t.history) == 0 {
+		return nil
 	}
-	t.historyMu.RUnlock()
-
-	// Fallback: VT emulator's main-screen scrollback (for non-alt-screen terminals
-	// where our cursor detection may have missed lines written before baton started).
-	lines := t.emu.Scrollback().Lines()
-	result := make([]string, len(lines))
-	for i, l := range lines {
-		result[i] = l.Render()
-	}
+	result := make([]string, len(t.history))
+	copy(result, t.history)
 	return result
 }
 
