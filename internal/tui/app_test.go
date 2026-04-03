@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/devenjarvis/baton/internal/agent"
@@ -411,6 +412,105 @@ func TestMouseClickPreviewEntersFocus(t *testing.T) {
 	app = model.(App)
 	if app.dashboard.panelFocus != focusList {
 		t.Fatalf("Expected focusList after esc, got %v", app.dashboard.panelFocus)
+	}
+}
+
+func TestMouseWheelScrollInFocusTerminal(t *testing.T) {
+	dir, err := os.MkdirTemp("", "baton-wheel-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+
+	run := func(args ...string) {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("cmd %v: %v\n%s", args, err, out)
+		}
+	}
+	run("git", "init")
+	run("git", "commit", "--allow-empty", "-m", "init")
+
+	mgr := agent.NewManager(dir)
+	defer mgr.Shutdown()
+
+	// Create an agent with bash that writes 40 lines (more than the 24-row terminal height)
+	// so scrollback is populated before we test wheel scrolling.
+	ag, err := mgr.CreateWithCommand(agent.Config{
+		Name:     "wheel-test",
+		Task:     "test",
+		RepoPath: dir,
+		Rows:     24,
+		Cols:     80,
+	}, func(_ string) *exec.Cmd {
+		return exec.Command("bash", "-c", "for i in $(seq 1 40); do echo Line $i; done; sleep 10")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for bash output to be processed into scrollback.
+	time.Sleep(300 * time.Millisecond)
+
+	if len(ag.ScrollbackLines()) == 0 {
+		t.Fatal("Expected scrollback lines after bash output")
+	}
+
+	// Build an app with this agent directly in dashboard items — no TUI prompt needed.
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.managers[dir] = mgr
+	app.activeRepo = dir
+	app.dashboard.items = []listItem{
+		{kind: listItemAgent, repoPath: dir, agent: ag},
+	}
+	app.dashboard.panelFocus = focusTerminal
+
+	// a. WheelUp in focusTerminal increases scrollOffset by 3.
+	app.dashboard.scrollOffset = 0
+	model, _ := app.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
+	app = model.(App)
+	if app.dashboard.scrollOffset != 3 {
+		t.Fatalf("Expected scrollOffset=3 after WheelUp, got %d", app.dashboard.scrollOffset)
+	}
+
+	// b. WheelDown in focusTerminal decreases scrollOffset (clamped to 0).
+	app.dashboard.scrollOffset = 3
+	model, _ = app.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown})
+	app = model.(App)
+	if app.dashboard.scrollOffset != 0 {
+		t.Fatalf("Expected scrollOffset=0 after WheelDown from 3, got %d", app.dashboard.scrollOffset)
+	}
+
+	// Another WheelDown should not go negative.
+	model, _ = app.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown})
+	app = model.(App)
+	if app.dashboard.scrollOffset != 0 {
+		t.Fatalf("Expected scrollOffset=0 after WheelDown from 0 (no negative), got %d", app.dashboard.scrollOffset)
+	}
+
+	// a2. WheelUp ceiling clamp: offset above sbLen is clamped to sbLen.
+	app.dashboard.panelFocus = focusTerminal
+	sbLen := len(ag.ScrollbackLines())
+	app.dashboard.scrollOffset = sbLen + 100
+	model, _ = app.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
+	app = model.(App)
+	if app.dashboard.scrollOffset != sbLen {
+		t.Fatalf("Expected scrollOffset clamped to %d, got %d", sbLen, app.dashboard.scrollOffset)
+	}
+
+	// c. WheelUp in focusList is a no-op.
+	app.dashboard.panelFocus = focusList
+	app.dashboard.scrollOffset = 0
+	model, _ = app.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
+	app = model.(App)
+	if app.dashboard.scrollOffset != 0 {
+		t.Fatalf("Expected scrollOffset=0 (no-op in focusList), got %d", app.dashboard.scrollOffset)
 	}
 }
 
