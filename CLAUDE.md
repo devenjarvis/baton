@@ -44,7 +44,7 @@ Always run `go test -race ./...` before committing — concurrency bugs have bee
 
 ## Conventions
 
-- No mouse support, no config files, no scrollback in preview
+- Mouse support: click-to-select (left panel) and click-to-focus (right panel) on dashboard only. No config files, no scrollback in preview
 - Agent program is hardcoded to `claude` (no program selector)
 - `.baton/` is gitignored (auto-added on first run)
 - Errors display briefly in the TUI and clear on next tick

@@ -342,6 +342,36 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	if msg, ok := msg.(tea.MouseClickMsg); ok {
+		if msg.Button == tea.MouseLeft {
+			dashboardTopY := 0
+			if a.err != "" {
+				dashboardTopY++
+			}
+			if a.confirmQuit {
+				dashboardTopY++
+			}
+			if msg.X < 31 {
+				// List panel click — map Y to item index.
+				// Subtract 2 for the SESSIONS title row and separator row.
+				itemIndex := msg.Y - dashboardTopY - 2
+				if itemIndex >= 0 && itemIndex < len(a.dashboard.items) {
+					a.dashboard.selected = itemIndex
+					a.dashboard.panelFocus = focusList
+					a.dashboard.scrollOffset = 0
+					a.resizeSelectedForDashboard()
+				}
+			} else if msg.X >= 32 {
+				// Preview panel click — enter focusTerminal if an agent is selected.
+				// X==31 is the list panel's right border and is intentionally ignored.
+				if a.dashboard.panelFocus == focusList && a.dashboard.selectedAgent() != nil {
+					a.dashboard.panelFocus = focusTerminal
+				}
+			}
+		}
+		return a, nil
+	}
+
 	prevSelected := a.dashboard.selected
 	prevPanelFocus := a.dashboard.panelFocus
 	var cmd tea.Cmd
@@ -589,6 +619,9 @@ func (a App) View() tea.View {
 
 	v := tea.NewView(content)
 	v.AltScreen = true
+	if a.view == ViewDashboard {
+		v.MouseMode = tea.MouseModeCellMotion
+	}
 	return v
 }
 

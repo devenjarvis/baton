@@ -303,6 +303,116 @@ func TestActionKeysBlockedInFocusTerminal(t *testing.T) {
 	}
 }
 
+func TestMouseClickSelectsListItem(t *testing.T) {
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+
+	// Directly populate the list with fake agent items (no real processes needed).
+	app.dashboard.items = []listItem{
+		{kind: listItemAgent, repoPath: "/fake/repo"},
+		{kind: listItemAgent, repoPath: "/fake/repo"},
+		{kind: listItemAgent, repoPath: "/fake/repo"},
+	}
+
+	if app.dashboard.selected != 0 {
+		t.Fatalf("Expected selected=0 initially, got %d", app.dashboard.selected)
+	}
+
+	// Click item 1: Y = dashboardTopY(0) + 2 header rows + 1 = 3
+	model, _ := app.Update(tea.MouseClickMsg{Button: tea.MouseLeft, X: 5, Y: 3})
+	app = model.(App)
+	if app.dashboard.selected != 1 {
+		t.Fatalf("Expected selected=1 after click, got %d", app.dashboard.selected)
+	}
+	if app.dashboard.panelFocus != focusList {
+		t.Fatalf("Expected focusList after list click, got %v", app.dashboard.panelFocus)
+	}
+
+	// Click item 2: Y=4
+	model, _ = app.Update(tea.MouseClickMsg{Button: tea.MouseLeft, X: 5, Y: 4})
+	app = model.(App)
+	if app.dashboard.selected != 2 {
+		t.Fatalf("Expected selected=2 after click, got %d", app.dashboard.selected)
+	}
+
+	// Click on title row (Y=0) — ignored (itemIndex = -2), selection unchanged.
+	model, _ = app.Update(tea.MouseClickMsg{Button: tea.MouseLeft, X: 5, Y: 0})
+	app = model.(App)
+	if app.dashboard.selected != 2 {
+		t.Fatalf("Expected selected unchanged (=2) after title click, got %d", app.dashboard.selected)
+	}
+
+	// Click on separator row (Y=1) — ignored (itemIndex = -1), selection unchanged.
+	model, _ = app.Update(tea.MouseClickMsg{Button: tea.MouseLeft, X: 5, Y: 1})
+	app = model.(App)
+	if app.dashboard.selected != 2 {
+		t.Fatalf("Expected selected unchanged (=2) after separator click, got %d", app.dashboard.selected)
+	}
+
+	// Right-click on item 0 — ignored (not MouseLeft), selection unchanged.
+	model, _ = app.Update(tea.MouseClickMsg{Button: tea.MouseRight, X: 5, Y: 2})
+	app = model.(App)
+	if app.dashboard.selected != 2 {
+		t.Fatalf("Expected selected unchanged (=2) after right-click, got %d", app.dashboard.selected)
+	}
+}
+
+func TestMouseClickPreviewEntersFocus(t *testing.T) {
+	dir, err := os.MkdirTemp("", "baton-mouse-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+
+	run := func(args ...string) {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("cmd %v: %v\n%s", args, err, out)
+		}
+	}
+	run("git", "init")
+	run("git", "commit", "--allow-empty", "-m", "init")
+
+	mgr := agent.NewManager(dir)
+	defer mgr.Shutdown()
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.managers[dir] = mgr
+	app.activeRepo = dir
+
+	app = createAgentViaPrompt(t, app, "click-test", "do stuff")
+	if len(app.dashboard.agentItems()) == 0 {
+		t.Fatal("Expected at least one agent")
+	}
+
+	if app.dashboard.panelFocus != focusList {
+		t.Fatalf("Expected focusList initially, got %v", app.dashboard.panelFocus)
+	}
+
+	// Click the preview panel (X >= 32) — should enter focusTerminal.
+	model, _ := app.Update(tea.MouseClickMsg{Button: tea.MouseLeft, X: 60, Y: 10})
+	app = model.(App)
+	if app.dashboard.panelFocus != focusTerminal {
+		t.Fatalf("Expected focusTerminal after preview click, got %v", app.dashboard.panelFocus)
+	}
+
+	// Esc returns to focusList.
+	model, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	app = model.(App)
+	if app.dashboard.panelFocus != focusList {
+		t.Fatalf("Expected focusList after esc, got %v", app.dashboard.panelFocus)
+	}
+}
+
 func TestErrorPersistsAcrossTicks(t *testing.T) {
 	app := NewApp()
 	app.width = 120
