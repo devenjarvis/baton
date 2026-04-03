@@ -6,7 +6,6 @@ type ViewMode int
 const (
 	ViewDashboard ViewMode = iota
 	ViewDiff
-	ViewPrompt      // overlay
 	ViewMerge       // overlay
 	ViewFileBrowser // overlay: browse filesystem to add a repo
 )

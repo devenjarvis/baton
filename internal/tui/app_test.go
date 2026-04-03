@@ -9,57 +9,33 @@ import (
 	"github.com/devenjarvis/baton/internal/agent"
 )
 
-func createAgentViaPrompt(t *testing.T, app App, name, task string) App {
+// createAgent presses 'n' and executes the async create cmd, returning the updated app.
+// If the terminal panel is already focused it presses Esc first so the 'n' key isn't
+// forwarded to the agent.
+func createAgent(t *testing.T, app App) App {
 	t.Helper()
 
-	// Press "n" to open prompt
-	model, _ := app.Update(tea.KeyPressMsg{Code: 'n', Text: "n"})
-	app = model.(App)
-
-	if app.view != ViewPrompt {
-		t.Fatalf("Expected ViewPrompt after 'n', got %v", app.view)
-	}
-
-	// Type name
-	for _, ch := range name {
-		model, _ = app.Update(tea.KeyPressMsg{Code: ch, Text: string(ch)})
+	// Return to list focus if terminal has focus so 'n' is handled by the app.
+	if app.dashboard.panelFocus == focusTerminal {
+		model, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 		app = model.(App)
 	}
 
-	// Tab to task
-	model, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyTab})
-	app = model.(App)
-
-	// Type task
-	for _, ch := range task {
-		model, _ = app.Update(tea.KeyPressMsg{Code: ch, Text: string(ch)})
-		app = model.(App)
-	}
-
-	// Enter — produces promptResult cmd
-	model, cmd := app.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	model, cmd := app.Update(tea.KeyPressMsg{Code: 'n', Text: "n"})
 	app = model.(App)
 
 	if cmd == nil {
-		t.Fatal("Expected cmd from Enter, got nil")
+		t.Fatal("Expected cmd from 'n', got nil")
 	}
 
-	// Execute promptResult cmd
 	msg := cmd()
-	model, cmd = app.Update(msg)
+	model, _ = app.Update(msg)
 	app = model.(App)
-
-	// If there's a follow-up cmd (createResultMsg from async creation), execute it
-	if cmd != nil {
-		msg = cmd()
-		model, _ = app.Update(msg)
-		app = model.(App)
-	}
 
 	return app
 }
 
-func TestPromptCreatesAgent(t *testing.T) {
+func TestCreateAgentViaN(t *testing.T) {
 	dir, err := os.MkdirTemp("", "baton-tui-*")
 	if err != nil {
 		t.Fatal(err)
@@ -88,13 +64,10 @@ func TestPromptCreatesAgent(t *testing.T) {
 	app.managers[dir] = mgr
 	app.activeRepo = dir
 
-	t.Logf("Initial view: %v, manager: %v", app.view, app.managers[dir] != nil)
+	app = createAgent(t, app)
 
-	// Create agent via prompt
-	app = createAgentViaPrompt(t, app, "test1", "do stuff")
-
-	t.Logf("After creation: view=%v, err=%q, agents=%d, dashboard=%d",
-		app.view, app.err, mgr.AgentCount(), len(app.dashboard.agentItems()))
+	t.Logf("After creation: view=%v, err=%q, agents=%d, dashboard=%d, focus=%v",
+		app.view, app.err, mgr.AgentCount(), len(app.dashboard.agentItems()), app.dashboard.panelFocus)
 
 	if app.view != ViewDashboard {
 		t.Errorf("Expected ViewDashboard, got %v", app.view)
@@ -107,6 +80,10 @@ func TestPromptCreatesAgent(t *testing.T) {
 	}
 	if len(app.dashboard.agentItems()) != 1 {
 		t.Errorf("Expected 1 dashboard agent, got %d", len(app.dashboard.agentItems()))
+	}
+	// After creation the terminal panel is auto-focused.
+	if app.dashboard.panelFocus != focusTerminal {
+		t.Errorf("Expected focusTerminal after creation, got %v", app.dashboard.panelFocus)
 	}
 }
 
@@ -141,7 +118,7 @@ func TestCreateMultipleAgentsViaTUI(t *testing.T) {
 
 	// Create first agent
 	t.Log("=== Creating agent 1 ===")
-	app = createAgentViaPrompt(t, app, "agent1", "task one")
+	app = createAgent(t, app)
 	t.Logf("After agent1: view=%v, err=%q, agents=%d, dashboard=%d",
 		app.view, app.err, mgr.AgentCount(), len(app.dashboard.agentItems()))
 
@@ -152,9 +129,9 @@ func TestCreateMultipleAgentsViaTUI(t *testing.T) {
 		t.Fatalf("Expected 1 agent, got %d", mgr.AgentCount())
 	}
 
-	// Create second agent
+	// Create second agent (createAgent presses Esc first to exit focusTerminal)
 	t.Log("=== Creating agent 2 ===")
-	app = createAgentViaPrompt(t, app, "agent2", "task two")
+	app = createAgent(t, app)
 	t.Logf("After agent2: view=%v, err=%q, agents=%d, dashboard=%d",
 		app.view, app.err, mgr.AgentCount(), len(app.dashboard.agentItems()))
 
@@ -170,7 +147,7 @@ func TestCreateMultipleAgentsViaTUI(t *testing.T) {
 
 	// Create third agent
 	t.Log("=== Creating agent 3 ===")
-	app = createAgentViaPrompt(t, app, "agent3", "task three")
+	app = createAgent(t, app)
 	t.Logf("After agent3: view=%v, err=%q, agents=%d, dashboard=%d",
 		app.view, app.err, mgr.AgentCount(), len(app.dashboard.agentItems()))
 
@@ -219,33 +196,31 @@ func TestPanelFocusSwitching(t *testing.T) {
 	app.managers[dir] = mgr
 	app.activeRepo = dir
 
-	app = createAgentViaPrompt(t, app, "focus-test", "do stuff")
+	app = createAgent(t, app)
 	if len(app.dashboard.agentItems()) == 0 {
 		t.Fatal("Expected at least one agent")
 	}
 
-	// Initially in focusList
-	if app.dashboard.panelFocus != focusList {
-		t.Fatalf("Expected focusList initially, got %v", app.dashboard.panelFocus)
-	}
-
-	// Right arrow enters focusTerminal
-	model, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyRight})
-	app = model.(App)
+	// After creation the terminal is auto-focused.
 	if app.dashboard.panelFocus != focusTerminal {
-		t.Fatalf("Expected focusTerminal after →, got %v", app.dashboard.panelFocus)
+		t.Fatalf("Expected focusTerminal after creation, got %v", app.dashboard.panelFocus)
 	}
 
-	// Esc returns to focusList
-	model, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	// Esc returns to focusList.
+	model, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 	app = model.(App)
 	if app.dashboard.panelFocus != focusList {
 		t.Fatalf("Expected focusList after esc, got %v", app.dashboard.panelFocus)
 	}
 
-	// Right arrow again, then enter stays in focusTerminal (enter forwards to agent, esc exits)
+	// Right arrow enters focusTerminal.
 	model, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyRight})
 	app = model.(App)
+	if app.dashboard.panelFocus != focusTerminal {
+		t.Fatalf("Expected focusTerminal after →, got %v", app.dashboard.panelFocus)
+	}
+
+	// Enter stays in focusTerminal (it forwards the key to the agent).
 	model, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	app = model.(App)
 	if app.dashboard.panelFocus != focusTerminal {
@@ -282,21 +257,19 @@ func TestActionKeysBlockedInFocusTerminal(t *testing.T) {
 	app.managers[dir] = mgr
 	app.activeRepo = dir
 
-	app = createAgentViaPrompt(t, app, "block-test", "do stuff")
+	app = createAgent(t, app)
 
-	// Enter focusTerminal
-	model, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyRight})
-	app = model.(App)
+	// After creation the terminal is already focused.
 	if app.dashboard.panelFocus != focusTerminal {
-		t.Fatalf("Expected focusTerminal after →")
+		t.Fatalf("Expected focusTerminal after creation, got %v", app.dashboard.panelFocus)
 	}
 
-	// Press "n" — should be forwarded to agent, NOT open prompt overlay
-	// panelFocus must stay focusTerminal (n is not enter/esc)
-	model, _ = app.Update(tea.KeyPressMsg{Code: 'n', Text: "n"})
+	// Press "n" — should be forwarded to agent, NOT create a new agent.
+	// panelFocus must stay focusTerminal and view must stay ViewDashboard.
+	model, _ := app.Update(tea.KeyPressMsg{Code: 'n', Text: "n"})
 	app = model.(App)
 	if app.view != ViewDashboard {
-		t.Fatalf("Expected ViewDashboard (n forwarded to agent, not prompt), got %v", app.view)
+		t.Fatalf("Expected ViewDashboard (n forwarded to agent, not new-agent), got %v", app.view)
 	}
 	if app.dashboard.panelFocus != focusTerminal {
 		t.Fatalf("Expected focusTerminal to persist after 'n', got %v", app.dashboard.panelFocus)
@@ -414,17 +387,20 @@ func TestMouseClickPreviewEntersFocus(t *testing.T) {
 	app.managers[dir] = mgr
 	app.activeRepo = dir
 
-	app = createAgentViaPrompt(t, app, "click-test", "do stuff")
+	app = createAgent(t, app)
 	if len(app.dashboard.agentItems()) == 0 {
 		t.Fatal("Expected at least one agent")
 	}
 
+	// After creation the terminal is auto-focused; press Esc to return to list.
+	model, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	app = model.(App)
 	if app.dashboard.panelFocus != focusList {
-		t.Fatalf("Expected focusList initially, got %v", app.dashboard.panelFocus)
+		t.Fatalf("Expected focusList after esc, got %v", app.dashboard.panelFocus)
 	}
 
 	// Click the preview panel (X >= 32) — should enter focusTerminal.
-	model, _ := app.Update(tea.MouseClickMsg{Button: tea.MouseLeft, X: 60, Y: 10})
+	model, _ = app.Update(tea.MouseClickMsg{Button: tea.MouseLeft, X: 60, Y: 10})
 	app = model.(App)
 	if app.dashboard.panelFocus != focusTerminal {
 		t.Fatalf("Expected focusTerminal after preview click, got %v", app.dashboard.panelFocus)

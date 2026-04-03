@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -26,7 +27,8 @@ type agentEventMsg struct {
 
 // createResultMsg carries the result of async agent creation.
 type createResultMsg struct {
-	err error
+	agentID string
+	err     error
 }
 
 // initAppMsg carries the result of app initialization.
@@ -45,7 +47,6 @@ type App struct {
 	view      ViewMode
 	dashboard dashboardModel
 	diff      diffModel
-	prompt    promptModel
 	merge     mergeModel
 
 	width       int
@@ -111,8 +112,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.height = msg.Height
 		a.dashboard.width = msg.Width
 		a.dashboard.height = msg.Height - 1 // room for statusbar
-		a.prompt.width = msg.Width
-		a.prompt.height = msg.Height
 		a.merge.width = msg.Width
 		a.merge.height = msg.Height
 		a.diff.width = msg.Width
@@ -148,6 +147,21 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		a.refreshAgentList()
+		// Auto-rename agents that just went idle for the first time.
+		for _, item := range a.dashboard.items {
+			if item.kind != listItemAgent || item.agent == nil {
+				continue
+			}
+			ag := item.agent
+			if ag.Status() != agent.StatusIdle || ag.HasDisplayName() {
+				continue
+			}
+			name := extractAgentName(ag.Render())
+			if name == "" {
+				name = ag.Name // fallback: use random name to prevent retrying
+			}
+			ag.SetDisplayName(name)
+		}
 		if a.errTicks > 0 {
 			a.errTicks--
 			if a.errTicks == 0 {
@@ -167,11 +181,21 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case createResultMsg:
 		if msg.err != nil {
 			a.setError(msg.err.Error())
+			return a, nil
 		}
 		a.refreshAgentList()
-		// Resize the new agent to force a clean redraw — Claude Code's
-		// initial splash output gets baked into the VT before its TUI
-		// fully initializes, and a SIGWINCH clears it.
+		// Find the new agent by ID, select it, and auto-focus its terminal.
+		if msg.agentID != "" {
+			for i, item := range a.dashboard.items {
+				if item.kind == listItemAgent && item.agent != nil && item.agent.ID == msg.agentID {
+					a.dashboard.selected = i
+					a.dashboard.panelFocus = focusTerminal
+					break
+				}
+			}
+		}
+		// Resize to force a clean redraw — Claude Code's initial splash output
+		// gets baked into the VT before its TUI fully initializes, and a SIGWINCH clears it.
 		a.resizeSelectedForDashboard()
 		return a, nil
 	}
@@ -182,8 +206,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a.updateDashboard(msg)
 	case ViewDiff:
 		return a.updateDiff(msg)
-	case ViewPrompt:
-		return a.updatePrompt(msg)
 	case ViewMerge:
 		return a.updateMerge(msg)
 	case ViewFileBrowser:
@@ -261,15 +283,32 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, nil
 			}
 			a.activeRepo = repoPath
-			a.view = ViewPrompt
-			bypassDefault := true
-			if a.cfg != nil {
-				bypassDefault = a.cfg.GetBypassPermissions()
+			previewW := a.dashboard.previewTermWidth()
+			previewH := a.dashboard.previewTermHeight()
+			if previewW <= 0 || previewH <= 0 {
+				a.setError("Terminal size not yet known; try again")
+				return a, nil
 			}
-			a.prompt = newPromptModel(bypassDefault)
-			a.prompt.width = a.width
-			a.prompt.height = a.height
-			return a, nil
+			bypassPerms := true
+			if a.cfg != nil {
+				bypassPerms = a.cfg.GetBypassPermissions()
+			}
+			mgr := a.managers[repoPath]
+			if mgr == nil {
+				return a, nil
+			}
+			cfg := agent.Config{
+				Rows:              previewH,
+				Cols:              previewW,
+				BypassPermissions: bypassPerms,
+			}
+			return a, func() tea.Msg {
+				ag, err := mgr.Create(cfg)
+				if err != nil {
+					return createResultMsg{err: err}
+				}
+				return createResultMsg{agentID: ag.ID}
+			}
 
 		case "a":
 			// Open file browser to add a new repo.
@@ -412,50 +451,6 @@ func (a App) updateDiff(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return a, cmd
 }
 
-func (a App) updatePrompt(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case promptCancelMsg:
-		a.view = ViewDashboard
-		return a, nil
-	case promptResult:
-		a.view = ViewDashboard
-		mgr := a.managers[a.activeRepo]
-		if mgr != nil {
-			// Size the agent to the dashboard preview panel so it renders
-			// correctly before the user enters focus view.
-			previewW := a.dashboard.previewTermWidth()
-			previewH := a.dashboard.previewTermHeight()
-			if previewW <= 0 || previewH <= 0 {
-				a.setError("Terminal size not yet known; try again")
-				return a, nil
-			}
-			cfg := agent.Config{
-				Name:              msg.name,
-				Task:              msg.task,
-				Rows:              previewH,
-				Cols:              previewW,
-				BypassPermissions: msg.bypassPerms,
-			}
-			// Persist bypass preference if it changed.
-			if a.cfg != nil && msg.bypassPerms != a.cfg.GetBypassPermissions() {
-				v := msg.bypassPerms
-				a.cfg.BypassPermissions = &v
-				if err := config.Save(a.cfg); err != nil {
-					a.setError(err.Error())
-				}
-			}
-			return a, func() tea.Msg {
-				_, err := mgr.Create(cfg)
-				return createResultMsg{err: err}
-			}
-		}
-		return a, nil
-	}
-
-	var cmd tea.Cmd
-	a.prompt, cmd = a.prompt.Update(msg)
-	return a, cmd
-}
 
 func (a App) updateMerge(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -598,8 +593,6 @@ func (a App) View() tea.View {
 		body := a.diff.View()
 		statusbar := renderStatusBar(diffHints, a.width)
 		content = lipgloss.JoinVertical(lipgloss.Left, body, statusbar)
-	case ViewPrompt:
-		content = a.prompt.View()
 	case ViewMerge:
 		content = a.merge.View()
 	case ViewFileBrowser:
@@ -626,6 +619,59 @@ func (a App) View() tea.View {
 		v.MouseMode = tea.MouseModeCellMotion
 	}
 	return v
+}
+
+var (
+	ansiEscapeRe = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
+	nonAlnumRe   = regexp.MustCompile(`[^a-zA-Z0-9]+`)
+)
+
+// extractAgentName scans ANSI-rendered terminal output for the first Claude REPL
+// user-input line ("> " prefix after stripping escape codes) and returns a slug.
+// Returns "" if no suitable line is found.
+func extractAgentName(rendered string) string {
+	// Strip ANSI escape codes.
+	plain := ansiEscapeRe.ReplaceAllString(rendered, "")
+
+	// Find the first line starting with "> " (Claude REPL user input).
+	for _, line := range strings.Split(plain, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "> ") {
+			continue
+		}
+		input := strings.TrimPrefix(line, "> ")
+		input = strings.TrimSpace(input)
+		if input == "" {
+			continue
+		}
+		slug := slugify(input)
+		if slug != "" {
+			return slug
+		}
+	}
+	return ""
+}
+
+// slugify lowercases s, collapses runs of non-alphanumeric characters to "-",
+// trims leading/trailing "-", and truncates to 40 characters.
+// Returns "" if the result is empty or doesn't start with [a-zA-Z0-9].
+func slugify(s string) string {
+	slug := nonAlnumRe.ReplaceAllString(strings.ToLower(s), "-")
+	slug = strings.Trim(slug, "-")
+	if len(slug) > 40 {
+		slug = slug[:40]
+		slug = strings.TrimRight(slug, "-")
+	}
+	if slug == "" {
+		return ""
+	}
+	// Must start with alphanumeric (validName constraint).
+	if slug[0] < 'a' || slug[0] > 'z' {
+		if slug[0] < '0' || slug[0] > '9' {
+			return ""
+		}
+	}
+	return slug
 }
 
 // ensureGitignore adds .baton/ to .gitignore in the given path if not already present.

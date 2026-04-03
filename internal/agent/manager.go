@@ -52,6 +52,17 @@ func NewManager(repoPath string) *Manager {
 
 // Create starts a new agent with the given config.
 func (m *Manager) Create(cfg Config) (*Agent, error) {
+	// Auto-generate a name if none provided.
+	if cfg.Name == "" {
+		m.mu.Lock()
+		existing := make([]string, 0, len(m.agents))
+		for _, a := range m.agents {
+			existing = append(existing, a.Name)
+		}
+		cfg.Name = RandomName(existing)
+		m.mu.Unlock()
+	}
+
 	if !validName.MatchString(cfg.Name) {
 		return nil, fmt.Errorf("invalid agent name %q: must match [a-zA-Z0-9][a-zA-Z0-9_-]*", cfg.Name)
 	}
