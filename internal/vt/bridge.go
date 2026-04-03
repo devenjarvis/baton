@@ -4,12 +4,15 @@
 package vt
 
 import (
+	"bytes"
 	"io"
 	"strings"
 	"sync"
 
 	xvt "github.com/charmbracelet/x/vt"
 )
+
+const maxHistoryLines = 5000
 
 // Terminal wraps a virtual terminal emulator, providing a simplified interface
 // for feeding PTY output and reading screen state.
@@ -23,6 +26,14 @@ type Terminal struct {
 	pw *io.PipeWriter
 
 	closeOnce sync.Once
+
+	// history captures lines that scrolled off the top of the screen.
+	// The x/vt emulator only exposes main-screen scrollback, so apps using
+	// alternate screen mode (like Claude Code) would otherwise lose history.
+	// We detect scroll events by checking if the cursor is at the bottom row
+	// before writing a newline, then capturing the top line before it's lost.
+	history   []string
+	historyMu sync.RWMutex
 }
 
 // New creates a new Terminal with the given dimensions.
@@ -55,9 +66,54 @@ func (t *Terminal) bridgeRead() {
 	}
 }
 
-// Write feeds raw PTY output into the emulator.
+// Write feeds raw PTY output into the emulator and captures any lines that
+// scroll off the top into the history buffer.
+//
+// The input is processed line-by-line (splitting on LF). Before writing each
+// LF-terminated chunk, we check whether the cursor is at the bottom row of
+// the scroll region. If so, the write will cause the top line to scroll off,
+// and we capture it before it's lost. This works for both main-screen and
+// alternate-screen terminals.
 func (t *Terminal) Write(p []byte) (int, error) {
-	return t.emu.Write(p)
+	written := 0
+	remaining := p
+	for len(remaining) > 0 {
+		// Split on the first LF to process one line boundary at a time.
+		idx := bytes.IndexByte(remaining, '\n')
+		var chunk []byte
+		if idx < 0 {
+			chunk = remaining
+			remaining = nil
+		} else {
+			chunk = remaining[:idx+1]
+			remaining = remaining[idx+1:]
+		}
+
+		// If the cursor is at the bottom row and this chunk includes a LF,
+		// the current top line is about to scroll off — capture it first.
+		// Note: this assumes a full-height scroll region (the default). Apps
+		// that set a DECSTBM sub-region would need the scroll region bottom
+		// instead of Height()-1, but SafeEmulator does not expose that.
+		if idx >= 0 {
+			pos := t.emu.CursorPosition()
+			if pos.Y >= t.emu.Height()-1 {
+				topLine := strings.SplitN(t.emu.Render(), "\n", 2)[0]
+				t.historyMu.Lock()
+				t.history = append(t.history, topLine)
+				if len(t.history) > maxHistoryLines {
+					t.history = t.history[len(t.history)-maxHistoryLines:]
+				}
+				t.historyMu.Unlock()
+			}
+		}
+
+		n, err := t.emu.Write(chunk)
+		written += n
+		if err != nil {
+			return written, err
+		}
+	}
+	return written, nil
 }
 
 // Render returns the full screen as an ANSI-encoded string.
@@ -122,9 +178,22 @@ func (t *Terminal) Height() int {
 	return t.emu.Height()
 }
 
-// ScrollbackLines returns the scrollback buffer contents as a slice of
-// ANSI-encoded strings, one per line, oldest first.
+// ScrollbackLines returns scrolled-off lines as ANSI-encoded strings, oldest
+// first. Our history buffer (populated by scroll detection in Write) takes
+// priority over the VT emulator's main-screen scrollback, since apps using
+// alternate screen mode (like Claude Code) never populate the latter.
 func (t *Terminal) ScrollbackLines() []string {
+	t.historyMu.RLock()
+	if len(t.history) > 0 {
+		result := make([]string, len(t.history))
+		copy(result, t.history)
+		t.historyMu.RUnlock()
+		return result
+	}
+	t.historyMu.RUnlock()
+
+	// Fallback: VT emulator's main-screen scrollback (for non-alt-screen terminals
+	// where our cursor detection may have missed lines written before baton started).
 	lines := t.emu.Scrollback().Lines()
 	result := make([]string, len(lines))
 	for i, l := range lines {
