@@ -36,11 +36,12 @@ type Agent struct {
 
 // Config holds parameters for creating a new agent.
 type Config struct {
-	Name     string
-	Task     string
-	Rows     int
-	Cols     int
-	RepoPath string
+	Name              string
+	Task              string
+	Rows              int
+	Cols              int
+	RepoPath          string
+	BypassPermissions bool
 }
 
 // newAgent creates and starts an agent. Called by Manager.
@@ -52,7 +53,12 @@ func newAgent(id string, cfg Config) (*Agent, error) {
 
 	term := vt.New(cfg.Cols, cfg.Rows)
 
-	cmd := exec.Command("claude", cfg.Task)
+	var cmd *exec.Cmd
+	if cfg.BypassPermissions {
+		cmd = exec.Command("claude", "--dangerously-skip-permissions", cfg.Task)
+	} else {
+		cmd = exec.Command("claude", cfg.Task)
+	}
 	cmd.Dir = wt.Path
 	cmd.Env = append(cmd.Environ(), "TERM=xterm-256color")
 

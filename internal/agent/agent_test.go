@@ -165,6 +165,25 @@ func TestKillAndCleanup(t *testing.T) {
 	}
 }
 
+func TestConfig_BypassPermissionsField(t *testing.T) {
+	// Verify the BypassPermissions field exists and can be set
+	cfg := Config{
+		Name:              "test",
+		Task:              "do something",
+		Rows:              24,
+		Cols:              80,
+		BypassPermissions: true,
+	}
+	if !cfg.BypassPermissions {
+		t.Error("BypassPermissions field should be settable to true")
+	}
+
+	cfg2 := Config{Name: "test2", Task: "task"}
+	if cfg2.BypassPermissions {
+		t.Error("BypassPermissions should default to false")
+	}
+}
+
 func TestShutdownCleansAll(t *testing.T) {
 	repo := setupTestRepo(t)
 	mgr := NewManager(repo)
