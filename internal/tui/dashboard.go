@@ -85,7 +85,11 @@ func (d dashboardModel) Update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 				d.scrollOffset = 0
 			default:
 				if ag != nil {
-					ag.SendKey(xvt.KeyPressEvent(msg))
+					if msg.Text != "" {
+						ag.SendText(msg.Text)
+					} else {
+						ag.SendKey(xvt.KeyPressEvent(msg))
+					}
 				}
 			}
 			return d, nil
