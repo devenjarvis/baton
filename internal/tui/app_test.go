@@ -494,6 +494,16 @@ func TestMouseWheelScrollInFocusTerminal(t *testing.T) {
 		t.Fatalf("Expected scrollOffset=0 after WheelDown from 0 (no negative), got %d", app.dashboard.scrollOffset)
 	}
 
+	// a2. WheelUp ceiling clamp: offset above sbLen is clamped to sbLen.
+	app.dashboard.panelFocus = focusTerminal
+	sbLen := len(ag.ScrollbackLines())
+	app.dashboard.scrollOffset = sbLen + 100
+	model, _ = app.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
+	app = model.(App)
+	if app.dashboard.scrollOffset != sbLen {
+		t.Fatalf("Expected scrollOffset clamped to %d, got %d", sbLen, app.dashboard.scrollOffset)
+	}
+
 	// c. WheelUp in focusList is a no-op.
 	app.dashboard.panelFocus = focusList
 	app.dashboard.scrollOffset = 0

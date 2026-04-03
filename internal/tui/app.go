@@ -423,9 +423,6 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case tea.MouseWheelUp:
 					a.dashboard.scrollOffset += 3
 					maxOffset := len(ag.ScrollbackLines())
-					if maxOffset < 0 {
-						maxOffset = 0
-					}
 					if a.dashboard.scrollOffset > maxOffset {
 						a.dashboard.scrollOffset = maxOffset
 					}
