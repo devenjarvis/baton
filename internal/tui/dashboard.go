@@ -54,7 +54,6 @@ func (d dashboardModel) Update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 				if ag != nil {
 					ag.SendKey(xvt.KeyPressEvent(msg))
 				}
-				d.panelFocus = focusList
 			case "pgup":
 				if ag != nil {
 					sbLen := len(ag.ScrollbackLines())
