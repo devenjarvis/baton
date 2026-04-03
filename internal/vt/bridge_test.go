@@ -146,6 +146,64 @@ func TestScrollbackLinesEmpty(t *testing.T) {
 	}
 }
 
+func TestScrollbackLinesAltScreen(t *testing.T) {
+	// 3-row terminal in alt screen mode: writing 4 lines forces the first line
+	// into our history buffer (alt screen scrollback isn't exposed by x/vt).
+	term := New(80, 3)
+	defer term.Close()
+
+	// Enter alternate screen mode.
+	term.Write([]byte("\x1b[?1049h"))
+
+	// Write 4 lines — the first will scroll off the 3-row alt screen.
+	term.Write([]byte("AltFirst\r\nAltSecond\r\nAltThird\r\nAltFourth"))
+
+	lines := term.ScrollbackLines()
+	if len(lines) == 0 {
+		t.Fatal("expected scrollback to be non-empty after scrolling in alt screen mode")
+	}
+	if !strings.Contains(lines[0], "AltFirst") {
+		t.Errorf("expected scrollback line 0 to contain 'AltFirst', got %q", lines[0])
+	}
+}
+
+func TestScrollbackLinesHistoryPreferred(t *testing.T) {
+	// Verify that our history buffer captures scrollback from both main-screen
+	// and alternate-screen mode. The x/vt emulator's built-in Scrollback() only
+	// covers the main screen, so alt-screen history would otherwise be lost.
+	term := New(80, 2)
+	defer term.Close()
+
+	// Scroll in main screen to populate VT scrollback AND our history buffer.
+	term.Write([]byte("MainFirst\r\nMainSecond\r\nMainThird"))
+
+	// Enter alt screen and scroll to populate history with alt-screen content.
+	term.Write([]byte("\x1b[?1049h"))
+	term.Write([]byte("AltFirst\r\nAltSecond\r\nAltThird"))
+
+	lines := term.ScrollbackLines()
+	if len(lines) == 0 {
+		t.Fatal("expected non-empty scrollback")
+	}
+	// Both main-screen and alt-screen lines should appear in history.
+	hasMain := false
+	hasAlt := false
+	for _, line := range lines {
+		if strings.Contains(line, "MainFirst") {
+			hasMain = true
+		}
+		if strings.Contains(line, "AltFirst") {
+			hasAlt = true
+		}
+	}
+	if !hasMain {
+		t.Errorf("expected 'MainFirst' in scrollback history, got: %v", lines)
+	}
+	if !hasAlt {
+		t.Errorf("expected 'AltFirst' in scrollback history, got: %v", lines)
+	}
+}
+
 func TestCursorPosition(t *testing.T) {
 	term := New(80, 24)
 	defer term.Close()
