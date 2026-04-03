@@ -23,7 +23,8 @@ type Repo struct {
 
 // Config is the top-level config structure persisted to disk.
 type Config struct {
-	Repos []Repo `json:"repos"`
+	Repos              []Repo `json:"repos"`
+	BypassPermissions  *bool  `json:"bypass_permissions,omitempty"`
 }
 
 // configFile returns the absolute path to the repos.json file.
@@ -46,7 +47,10 @@ func Load() (*Config, error) {
 
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return &Config{}, nil
+		cfg := &Config{}
+		t := true
+		cfg.BypassPermissions = &t
+		return cfg, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("config: reading %s: %w", path, err)
@@ -56,7 +60,19 @@ func Load() (*Config, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("config: parsing %s: %w", path, err)
 	}
+	if cfg.BypassPermissions == nil {
+		t := true
+		cfg.BypassPermissions = &t
+	}
 	return &cfg, nil
+}
+
+// GetBypassPermissions returns the BypassPermissions setting, defaulting to true if nil.
+func (c *Config) GetBypassPermissions() bool {
+	if c.BypassPermissions == nil {
+		return true
+	}
+	return *c.BypassPermissions
 }
 
 // Save writes cfg atomically to disk.  It creates the config directory if

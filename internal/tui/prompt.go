@@ -9,21 +9,23 @@ import (
 
 // promptModel handles the new agent creation dialog.
 type promptModel struct {
-	name     string
-	task     string
-	focused  int // 0 = name, 1 = task
-	width    int
-	height   int
+	name        string
+	task        string
+	bypassPerms bool
+	focused     int // 0 = name, 1 = task, 2 = bypass
+	width       int
+	height      int
 }
 
 // promptResult is sent when the user submits the prompt.
 type promptResult struct {
-	name string
-	task string
+	name        string
+	task        string
+	bypassPerms bool
 }
 
-func newPromptModel() promptModel {
-	return promptModel{}
+func newPromptModel(bypassDefault bool) promptModel {
+	return promptModel{bypassPerms: bypassDefault}
 }
 
 func (p promptModel) Update(msg tea.Msg) (promptModel, tea.Cmd) {
@@ -32,14 +34,17 @@ func (p promptModel) Update(msg tea.Msg) (promptModel, tea.Cmd) {
 		switch msg.String() {
 		case "esc":
 			return p, func() tea.Msg { return promptCancelMsg{} }
-		case "tab", "shift+tab":
-			p.focused = (p.focused + 1) % 2
+		case "tab":
+			p.focused = (p.focused + 1) % 3
+		case "shift+tab":
+			p.focused = (p.focused + 2) % 3
 		case "enter":
 			name := strings.TrimSpace(p.name)
 			task := strings.TrimSpace(p.task)
 			if name != "" && task != "" {
+				bypass := p.bypassPerms
 				return p, func() tea.Msg {
-					return promptResult{name: name, task: task}
+					return promptResult{name: name, task: task, bypassPerms: bypass}
 				}
 			}
 		case "backspace":
@@ -52,8 +57,10 @@ func (p promptModel) Update(msg tea.Msg) (promptModel, tea.Cmd) {
 			if msg.Text != "" {
 				if p.focused == 0 {
 					p.name += msg.Text
-				} else {
+				} else if p.focused == 1 {
 					p.task += msg.Text
+				} else if p.focused == 2 && msg.Text == " " {
+					p.bypassPerms = !p.bypassPerms
 				}
 			}
 		}
@@ -77,11 +84,14 @@ func (p promptModel) View() string {
 
 	nameStyle := lipgloss.NewStyle()
 	taskStyle := lipgloss.NewStyle()
+	bypassStyle := lipgloss.NewStyle()
 
 	if p.focused == 0 {
 		nameStyle = nameStyle.Foreground(ColorSecondary)
-	} else {
+	} else if p.focused == 1 {
 		taskStyle = taskStyle.Foreground(ColorSecondary)
+	} else {
+		bypassStyle = bypassStyle.Foreground(ColorSecondary)
 	}
 
 	cursor := "▎"
@@ -89,16 +99,27 @@ func (p promptModel) View() string {
 	taskField := taskStyle.Render(taskLabel + p.task)
 	if p.focused == 0 {
 		nameField = nameStyle.Render(nameLabel + p.name + cursor)
-	} else {
+	} else if p.focused == 1 {
 		taskField = taskStyle.Render(taskLabel + p.task + cursor)
 	}
 
-	hint := StyleSubtle.Render("tab: switch field  enter: create  esc: cancel")
+	checkbox := "[ ]"
+	if p.bypassPerms {
+		checkbox = "[x]"
+	}
+	bypassLabel := checkbox + " Bypass permissions"
+	if p.focused == 2 {
+		bypassLabel += " ▎"
+	}
+	bypassField := bypassStyle.Render(bypassLabel)
+
+	hint := StyleSubtle.Render("tab: switch field  space: toggle bypass  enter: create  esc: cancel")
 
 	content := lipgloss.JoinVertical(lipgloss.Left,
 		title, "",
 		nameField, "",
 		taskField, "",
+		bypassField, "",
 		hint,
 	)
 

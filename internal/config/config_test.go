@@ -276,3 +276,60 @@ func TestRemoveRepo_NotFound(t *testing.T) {
 		t.Error("RemoveRepo() expected error for missing path, got nil")
 	}
 }
+
+// ---- BypassPermissions ----
+
+func TestLoad_MissingFile_DefaultsBypassPermissionsTrue(t *testing.T) {
+	configDirInTmp(t)
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.GetBypassPermissions() {
+		t.Error("Load() BypassPermissions should default to true when file missing")
+	}
+}
+
+func TestLoad_ExistingFileWithoutBypassField_DefaultsTrue(t *testing.T) {
+	dir := configDirInTmp(t)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Write config without bypass_permissions field
+	data := []byte(`{"repos":[]}`)
+	if err := os.WriteFile(filepath.Join(dir, "repos.json"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.GetBypassPermissions() {
+		t.Error("Load() BypassPermissions should default to true when field missing from JSON")
+	}
+}
+
+func TestLoad_ExistingFileWithBypassFalse_ReturnsFalse(t *testing.T) {
+	dir := configDirInTmp(t)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte(`{"repos":[],"bypass_permissions":false}`)
+	if err := os.WriteFile(filepath.Join(dir, "repos.json"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.GetBypassPermissions() {
+		t.Error("Load() BypassPermissions should be false when explicitly set to false")
+	}
+}
+
+func TestGetBypassPermissions_NilPointer_ReturnsTrue(t *testing.T) {
+	cfg := &config.Config{}
+	if !cfg.GetBypassPermissions() {
+		t.Error("GetBypassPermissions() should return true when BypassPermissions is nil")
+	}
+}

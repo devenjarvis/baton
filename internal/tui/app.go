@@ -262,7 +262,11 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			a.activeRepo = repoPath
 			a.view = ViewPrompt
-			a.prompt = newPromptModel()
+			bypassDefault := true
+			if a.cfg != nil {
+				bypassDefault = a.cfg.GetBypassPermissions()
+			}
+			a.prompt = newPromptModel(bypassDefault)
 			a.prompt.width = a.width
 			a.prompt.height = a.height
 			return a, nil
@@ -393,10 +397,19 @@ func (a App) updatePrompt(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, nil
 			}
 			cfg := agent.Config{
-				Name: msg.name,
-				Task: msg.task,
-				Rows: previewH,
-				Cols: previewW,
+				Name:              msg.name,
+				Task:              msg.task,
+				Rows:              previewH,
+				Cols:              previewW,
+				BypassPermissions: msg.bypassPerms,
+			}
+			// Persist bypass preference if it changed.
+			if a.cfg != nil && msg.bypassPerms != a.cfg.GetBypassPermissions() {
+				v := msg.bypassPerms
+				a.cfg.BypassPermissions = &v
+				if err := config.Save(a.cfg); err != nil {
+					a.setError(err.Error())
+				}
 			}
 			return a, func() tea.Msg {
 				_, err := mgr.Create(cfg)

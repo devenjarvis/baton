@@ -243,13 +243,13 @@ func TestPanelFocusSwitching(t *testing.T) {
 		t.Fatalf("Expected focusList after esc, got %v", app.dashboard.panelFocus)
 	}
 
-	// Right arrow again, then enter returns to focusList
+	// Right arrow again, then enter stays in focusTerminal (enter forwards to agent, esc exits)
 	model, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyRight})
 	app = model.(App)
 	model, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	app = model.(App)
-	if app.dashboard.panelFocus != focusList {
-		t.Fatalf("Expected focusList after enter, got %v", app.dashboard.panelFocus)
+	if app.dashboard.panelFocus != focusTerminal {
+		t.Fatalf("Expected focusTerminal to persist after enter, got %v", app.dashboard.panelFocus)
 	}
 }
 
