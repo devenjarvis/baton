@@ -49,9 +49,13 @@ func (d dashboardModel) Update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 		if d.panelFocus == focusTerminal {
 			ag := d.selectedAgent()
 			switch msg.String() {
-			case "ctrl+e":
+			case "ctrl+e", "esc":
 				d.panelFocus = focusList
 				d.scrollOffset = 0
+			case "shift+esc":
+				if ag != nil {
+					ag.SendKey(xvt.KeyPressEvent{Code: tea.KeyEscape})
+				}
 			case "enter":
 				if ag != nil {
 					ag.SendKey(xvt.KeyPressEvent(msg))

@@ -320,6 +320,20 @@ func TestPanelFocusSwitching(t *testing.T) {
 		t.Fatalf("Expected focusTerminal after →, got %v", app.dashboard.panelFocus)
 	}
 
+	// Esc returns to focusList.
+	model, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	app = model.(App)
+	if app.dashboard.panelFocus != focusList {
+		t.Fatalf("Expected focusList after esc, got %v", app.dashboard.panelFocus)
+	}
+
+	// Right arrow enters focusTerminal again.
+	model, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	app = model.(App)
+	if app.dashboard.panelFocus != focusTerminal {
+		t.Fatalf("Expected focusTerminal after →, got %v", app.dashboard.panelFocus)
+	}
+
 	// Enter stays in focusTerminal (it forwards the key to the agent).
 	model, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	app = model.(App)
@@ -373,6 +387,55 @@ func TestActionKeysBlockedInFocusTerminal(t *testing.T) {
 	}
 	if app.dashboard.panelFocus != focusTerminal {
 		t.Fatalf("Expected focusTerminal to persist after 'n', got %v", app.dashboard.panelFocus)
+	}
+}
+
+func TestShiftEscForwardsEscapeToAgent(t *testing.T) {
+	dir, err := os.MkdirTemp("", "baton-shiftesc-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+
+	run := func(args ...string) {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("cmd %v: %v\n%s", args, err, out)
+		}
+	}
+	run("git", "init")
+	run("git", "commit", "--allow-empty", "-m", "init")
+
+	mgr := agent.NewManager(dir)
+	defer mgr.Shutdown()
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.managers[dir] = mgr
+	app.activeRepo = dir
+
+	app = createAgent(t, app)
+	if app.dashboard.panelFocus != focusTerminal {
+		t.Fatalf("Expected focusTerminal after creation, got %v", app.dashboard.panelFocus)
+	}
+
+	// Press shift+esc — should stay in focusTerminal (not exit).
+	model, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyEscape, Mod: tea.ModShift})
+	app = model.(App)
+	if app.dashboard.panelFocus != focusTerminal {
+		t.Fatalf("Expected focusTerminal after shift+esc (should forward, not exit), got %v", app.dashboard.panelFocus)
+	}
+
+	// Press plain esc — should exit to focusList.
+	model, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	app = model.(App)
+	if app.dashboard.panelFocus != focusList {
+		t.Fatalf("Expected focusList after esc, got %v", app.dashboard.panelFocus)
 	}
 }
 
