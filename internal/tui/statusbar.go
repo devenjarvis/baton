@@ -28,7 +28,8 @@ var (
 		{"enter", "send"},
 		{"pgup/pgdn", "scroll"},
 		{"home", "live"},
-		{"ctrl+e", "back"},
+		{"esc", "back"},
+		{"⇧esc", "interrupt"},
 	}
 
 	diffHints = []keyHint{
