@@ -28,8 +28,9 @@ type agentEventMsg struct {
 
 // createResultMsg carries the result of async agent creation.
 type createResultMsg struct {
-	agentID string
-	err     error
+	sessionID string
+	agentID   string
+	err       error
 }
 
 // splashResizeMsg is a delayed resize sent after agent creation to clear
@@ -322,8 +323,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch msg.String() {
 		case "n":
-			// Create an agent in the repo of the currently selected item.
-			// Fall back to activeRepo for tests and pre-init states.
+			// Create a new session in the repo of the currently selected item.
 			repoPath := a.dashboard.selectedRepoPath()
 			if repoPath == "" {
 				repoPath = a.activeRepo
@@ -352,11 +352,50 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				BypassPermissions: bypassPerms,
 			}
 			return a, func() tea.Msg {
-				ag, err := mgr.Create(cfg)
+				sess, ag, err := mgr.CreateSession(cfg)
 				if err != nil {
 					return createResultMsg{err: err}
 				}
-				return createResultMsg{agentID: ag.ID}
+				return createResultMsg{sessionID: sess.ID, agentID: ag.ID}
+			}
+
+		case "c":
+			// Add an agent to the selected session.
+			sess := a.dashboard.selectedSession()
+			if sess == nil {
+				a.setError("No session selected")
+				return a, nil
+			}
+			repoPath := a.dashboard.selectedRepoPath()
+			if repoPath == "" {
+				repoPath = a.activeRepo
+			}
+			mgr := a.managers[repoPath]
+			if mgr == nil {
+				return a, nil
+			}
+			previewW := a.dashboard.previewTermWidth()
+			previewH := a.dashboard.previewTermHeight()
+			if previewW <= 0 || previewH <= 0 {
+				a.setError("Terminal size not yet known; try again")
+				return a, nil
+			}
+			bypassPerms := true
+			if a.cfg != nil {
+				bypassPerms = a.cfg.GetBypassPermissions()
+			}
+			cfg := agent.Config{
+				Rows:              previewH,
+				Cols:              previewW,
+				BypassPermissions: bypassPerms,
+			}
+			sessionID := sess.ID
+			return a, func() tea.Msg {
+				ag, err := mgr.AddAgent(sessionID, cfg)
+				if err != nil {
+					return createResultMsg{err: err}
+				}
+				return createResultMsg{sessionID: sessionID, agentID: ag.ID}
 			}
 
 		case "a":
@@ -372,9 +411,13 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if item == nil {
 				return a, nil
 			}
-			if item.kind == listItemAgent {
-				// Diff the selected agent's worktree.
-				rawDiff, err := git.Diff(item.repoPath, item.agent.Worktree)
+			if item.kind == listItemSession || item.kind == listItemAgent {
+				// Diff the session's worktree.
+				sess := item.session
+				if sess == nil {
+					return a, nil
+				}
+				rawDiff, err := git.Diff(item.repoPath, sess.Worktree)
 				if err != nil {
 					a.setError(err.Error())
 					return a, nil
@@ -385,7 +428,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				files := git.ParseDiffFiles(rawDiff)
 				a.view = ViewDiff
-				a.diff = newDiffModel(item.agent.ID, files, a.width, a.height-1)
+				a.diff = newDiffModel(sess.Name, files, a.width, a.height-1)
 				return a, nil
 			}
 			// Repo header selected — remove the repo.
@@ -400,12 +443,21 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "x":
 			item := a.dashboard.selectedItem()
-			if item == nil || item.kind != listItemAgent {
+			if item == nil {
 				return a, nil
 			}
 			mgr := a.managers[item.repoPath]
-			if mgr != nil {
-				if err := mgr.Kill(item.agent.ID); err != nil {
+			if mgr == nil {
+				return a, nil
+			}
+			if item.kind == listItemAgent && item.session != nil {
+				// Kill just this agent.
+				if err := mgr.KillAgent(item.session.ID, item.agent.ID); err != nil {
+					a.setError(err.Error())
+				}
+			} else if item.kind == listItemSession && item.session != nil {
+				// Kill entire session.
+				if err := mgr.KillSession(item.session.ID); err != nil {
 					a.setError(err.Error())
 				}
 			}
@@ -415,17 +467,24 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "m":
 			item := a.dashboard.selectedItem()
-			if item == nil || item.kind != listItemAgent {
+			if item == nil {
 				return a, nil
 			}
-			ag := item.agent
-			if ag.Status() != agent.StatusDone && ag.Status() != agent.StatusIdle {
-				a.setError("Agent must be done or idle to merge")
+			sess := a.dashboard.selectedSession()
+			if sess == nil {
 				return a, nil
+			}
+			// Check that all agents in the session are done or idle.
+			for _, ag := range sess.Agents() {
+				st := ag.Status()
+				if st != agent.StatusDone && st != agent.StatusIdle {
+					a.setError("All agents in session must be done or idle to merge")
+					return a, nil
+				}
 			}
 			a.activeRepo = item.repoPath
 			a.view = ViewMerge
-			a.merge = newMergeModel(ag.Name, ag.Worktree.Branch, ag.Worktree.BaseBranch)
+			a.merge = newMergeModel(sess.Name, sess.Worktree.Branch, sess.Worktree.BaseBranch)
 			a.merge.width = a.width
 			a.merge.height = a.height
 			return a, nil
@@ -531,15 +590,17 @@ func (a App) updateMerge(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.view = ViewDashboard
 		return a, nil
 	case mergeConfirmMsg:
-		ag := a.dashboard.selectedAgent()
-		if ag == nil {
+		sess := a.dashboard.selectedSession()
+		if sess == nil {
 			a.view = ViewDashboard
 			return a, nil
 		}
 		activeRepo := a.activeRepo
+		wt := sess.Worktree
+		sessName := sess.Name
 		return a, func() tea.Msg {
-			message := "Merge baton/" + ag.Name + " into " + ag.Worktree.BaseBranch
-			err := git.MergeWorktree(activeRepo, ag.Worktree, message)
+			message := "Merge baton/" + sessName + " into " + wt.BaseBranch
+			err := git.MergeWorktree(activeRepo, wt, message)
 			return mergeCompleteMsg{err: err}
 		}
 	case mergeCompleteMsg:
@@ -547,12 +608,15 @@ func (a App) updateMerge(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.merge.errMsg = msg.err.Error()
 			return a, nil
 		}
-		// Merge succeeded — clean up the agent.
-		item := a.dashboard.selectedItem()
-		if item != nil && item.kind == listItemAgent {
-			mgr := a.managers[item.repoPath]
-			if mgr != nil {
-				_ = mgr.Kill(item.agent.ID)
+		// Merge succeeded — clean up the entire session.
+		sess := a.dashboard.selectedSession()
+		if sess != nil {
+			item := a.dashboard.selectedItem()
+			if item != nil {
+				mgr := a.managers[item.repoPath]
+				if mgr != nil {
+					_ = mgr.KillSession(sess.ID)
+				}
 			}
 			delete(a.lastKnownStatus, item.agent.ID)
 			a.refreshAgentList()
@@ -603,24 +667,32 @@ func (a *App) refreshAgentList() {
 	if a.cfg == nil {
 		// Fallback used in tests that set up managers directly without cfg.
 		if mgr := a.managers[a.activeRepo]; mgr != nil {
-			agents := mgr.List()
-			sort.Slice(agents, func(i, j int) bool {
-				return agents[i].CreatedAt.Before(agents[j].CreatedAt)
-			})
 			var items []listItem
-			for _, ag := range agents {
+			sessions := mgr.ListSessions()
+			sort.Slice(sessions, func(i, j int) bool {
+				return sessions[i].CreatedAt.Before(sessions[j].CreatedAt)
+			})
+			for _, sess := range sessions {
 				items = append(items, listItem{
-					kind:     listItemAgent,
+					kind:     listItemSession,
 					repoPath: a.activeRepo,
-					agent:    ag,
+					session:  sess,
 				})
+				for _, ag := range sess.Agents() {
+					items = append(items, listItem{
+						kind:     listItemAgent,
+						repoPath: a.activeRepo,
+						session:  sess,
+						agent:    ag,
+					})
+				}
 			}
 			a.dashboard.items = items
 		}
 		return
 	}
 
-	// Build hierarchical list: one repo header per registered repo, agents below.
+	// Build hierarchical list: repo > session > agent.
 	var items []listItem
 	for _, repo := range a.cfg.Repos {
 		items = append(items, listItem{
@@ -630,16 +702,24 @@ func (a *App) refreshAgentList() {
 		})
 		mgr := a.managers[repo.Path]
 		if mgr != nil {
-			agents := mgr.List()
-			sort.Slice(agents, func(i, j int) bool {
-				return agents[i].CreatedAt.Before(agents[j].CreatedAt)
+			sessions := mgr.ListSessions()
+			sort.Slice(sessions, func(i, j int) bool {
+				return sessions[i].CreatedAt.Before(sessions[j].CreatedAt)
 			})
-			for _, ag := range agents {
+			for _, sess := range sessions {
 				items = append(items, listItem{
-					kind:     listItemAgent,
+					kind:     listItemSession,
 					repoPath: repo.Path,
-					agent:    ag,
+					session:  sess,
 				})
+				for _, ag := range sess.Agents() {
+					items = append(items, listItem{
+						kind:     listItemAgent,
+						repoPath: repo.Path,
+						session:  sess,
+						agent:    ag,
+					})
+				}
 			}
 		}
 	}

@@ -1,25 +1,24 @@
 package agent
 
 import (
-	"fmt"
 	"os/exec"
 	"sync"
 	"time"
 
-	"github.com/devenjarvis/baton/internal/git"
 	bpty "github.com/devenjarvis/baton/internal/pty"
 	"github.com/devenjarvis/baton/internal/vt"
 
 	xvt "github.com/charmbracelet/x/vt"
 )
 
-// Agent ties together a PTY, VT terminal, and git worktree into a managed unit.
+// Agent ties together a PTY and VT terminal into a managed unit.
+// Agents do not own worktrees — sessions do.
 type Agent struct {
-	ID        string
-	Name      string
-	Task      string
-	Worktree  *git.WorktreeInfo
-	CreatedAt time.Time
+	ID           string
+	Name         string
+	Task         string
+	WorktreePath string // reference only; session owns the worktree
+	CreatedAt    time.Time
 
 	pty      *bpty.PTY
 	terminal *vt.Terminal
@@ -45,13 +44,9 @@ type Config struct {
 	BypassPermissions bool
 }
 
-// newAgent creates and starts an agent. Called by Manager.
-func newAgent(id string, cfg Config) (*Agent, error) {
-	wt, err := git.CreateWorktree(cfg.RepoPath, cfg.Name)
-	if err != nil {
-		return nil, fmt.Errorf("creating worktree: %w", err)
-	}
-
+// newAgent creates and starts an agent with the default claude command.
+// The worktreePath is provided by the session — agents do not create worktrees.
+func newAgent(id string, cfg Config, worktreePath string) (*Agent, error) {
 	term := vt.New(cfg.Cols, cfg.Rows)
 
 	var cmd *exec.Cmd
@@ -68,25 +63,23 @@ func newAgent(id string, cfg Config) (*Agent, error) {
 			cmd = exec.Command("claude")
 		}
 	}
-	cmd.Dir = wt.Path
+	cmd.Dir = worktreePath
 	cmd.Env = append(cmd.Environ(), "TERM=xterm-256color")
 
 	p := &bpty.PTY{}
 	if err := p.Start(cmd, uint16(cfg.Rows), uint16(cfg.Cols)); err != nil {
-		// Clean up worktree on failure.
-		_ = git.RemoveWorktree(cfg.RepoPath, wt, true)
-		return nil, fmt.Errorf("starting PTY: %w", err)
+		return nil, err
 	}
 
 	a := &Agent{
-		ID:        id,
-		Name:      cfg.Name,
-		Task:      cfg.Task,
-		Worktree:  wt,
-		CreatedAt: time.Now(),
-		pty:       p,
-		terminal:  term,
-		status:    StatusStarting,
+		ID:           id,
+		Name:         cfg.Name,
+		Task:         cfg.Task,
+		WorktreePath: worktreePath,
+		CreatedAt:    time.Now(),
+		pty:          p,
+		terminal:     term,
+		status:       StatusStarting,
 		done:          make(chan struct{}),
 		stop:          make(chan struct{}),
 		writeLoopDone: make(chan struct{}),
@@ -100,33 +93,27 @@ func newAgent(id string, cfg Config) (*Agent, error) {
 }
 
 // newAgentWithCommand creates an agent using a custom command instead of claude.
-// Used for testing.
-func newAgentWithCommand(id string, cfg Config, cmd *exec.Cmd) (*Agent, error) {
-	wt, err := git.CreateWorktree(cfg.RepoPath, cfg.Name)
-	if err != nil {
-		return nil, fmt.Errorf("creating worktree: %w", err)
-	}
-
+// Used for testing. The worktreePath is provided by the session.
+func newAgentWithCommand(id string, cfg Config, worktreePath string, cmd *exec.Cmd) (*Agent, error) {
 	term := vt.New(cfg.Cols, cfg.Rows)
 
-	cmd.Dir = wt.Path
+	cmd.Dir = worktreePath
 	cmd.Env = append(cmd.Environ(), "TERM=xterm-256color")
 
 	p := &bpty.PTY{}
 	if err := p.Start(cmd, uint16(cfg.Rows), uint16(cfg.Cols)); err != nil {
-		_ = git.RemoveWorktree(cfg.RepoPath, wt, true)
-		return nil, fmt.Errorf("starting PTY: %w", err)
+		return nil, err
 	}
 
 	a := &Agent{
-		ID:        id,
-		Name:      cfg.Name,
-		Task:      cfg.Task,
-		Worktree:  wt,
-		CreatedAt: time.Now(),
-		pty:       p,
-		terminal:  term,
-		status:    StatusStarting,
+		ID:           id,
+		Name:         cfg.Name,
+		Task:         cfg.Task,
+		WorktreePath: worktreePath,
+		CreatedAt:    time.Now(),
+		pty:          p,
+		terminal:     term,
+		status:       StatusStarting,
 		done:          make(chan struct{}),
 		stop:          make(chan struct{}),
 		writeLoopDone: make(chan struct{}),
@@ -300,7 +287,3 @@ func (a *Agent) Kill() {
 	<-a.writeLoopDone
 }
 
-// Cleanup removes the agent's worktree and branch.
-func (a *Agent) Cleanup(repoPath string) error {
-	return git.RemoveWorktree(repoPath, a.Worktree, true)
-}
