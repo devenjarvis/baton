@@ -47,7 +47,7 @@ func (d dashboardModel) Update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 		if d.panelFocus == focusTerminal {
 			ag := d.selectedAgent()
 			switch msg.String() {
-			case "esc":
+			case "ctrl+e":
 				d.panelFocus = focusList
 				d.scrollOffset = 0
 			case "enter":
@@ -106,7 +106,7 @@ func (d dashboardModel) Update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 				d.selected--
 				d.scrollOffset = 0
 			}
-		case "right":
+		case "right", "enter":
 			if d.selectedAgent() != nil {
 				d.panelFocus = focusTerminal
 			}
