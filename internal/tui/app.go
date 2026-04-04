@@ -31,6 +31,12 @@ type createResultMsg struct {
 	err     error
 }
 
+// splashResizeMsg is a delayed resize sent after agent creation to clear
+// Claude Code's splash text once its TUI has had time to initialize.
+type splashResizeMsg struct {
+	agentID string
+}
+
 // initAppMsg carries the result of app initialization.
 type initAppMsg struct {
 	cfg *config.Config
@@ -197,6 +203,24 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Resize to force a clean redraw — Claude Code's initial splash output
 		// gets baked into the VT before its TUI fully initializes, and a SIGWINCH clears it.
 		a.resizeSelectedForDashboard()
+		// Schedule a delayed follow-up resize: the immediate one above sets correct
+		// dimensions but arrives before Claude Code's TUI is ready. The delayed
+		// SIGWINCH hits after the TUI has initialized and triggers a clean redraw.
+		delayedResize := tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg {
+			return splashResizeMsg{agentID: msg.agentID}
+		})
+		return a, delayedResize
+
+	case splashResizeMsg:
+		// Guard: only resize if we're still on the dashboard and the agent
+		// that triggered this is still selected.
+		if a.view != ViewDashboard {
+			return a, nil
+		}
+		ag := a.dashboard.selectedAgent()
+		if ag != nil && ag.ID == msg.agentID {
+			a.resizeSelectedForDashboard()
+		}
 		return a, nil
 	}
 
