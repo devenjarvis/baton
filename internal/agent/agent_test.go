@@ -182,6 +182,66 @@ func TestConfig_BypassPermissionsField(t *testing.T) {
 	}
 }
 
+func TestIdleSuppressedWhileTyping(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo)
+	defer mgr.Shutdown()
+
+	cfg := Config{Name: "test-idle-typing", Task: "test", Rows: 24, Cols: 80}
+	a, err := mgr.CreateWithCommand(cfg, func(name string) *exec.Cmd {
+		// cat reads stdin forever, producing initial output then waiting.
+		return exec.Command("bash", "-c", "echo ready; cat")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for initial output to set status to Active.
+	time.Sleep(500 * time.Millisecond)
+	if s := a.Status(); s != StatusActive {
+		t.Fatalf("expected Active after output, got %s", s)
+	}
+
+	// Simulate user typing every 500ms for 5 seconds (well past the 3s idle timeout).
+	for i := 0; i < 10; i++ {
+		a.SendText("x")
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	// Agent should still be Active because user input keeps it non-idle.
+	if s := a.Status(); s != StatusActive {
+		t.Errorf("expected Active while typing, got %s", s)
+	}
+}
+
+func TestIdleTransitionWithoutInput(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo)
+	defer mgr.Shutdown()
+
+	cfg := Config{Name: "test-idle-no-input", Task: "test", Rows: 24, Cols: 80}
+	a, err := mgr.CreateWithCommand(cfg, func(name string) *exec.Cmd {
+		// Produce output then go quiet — no user input at all.
+		return exec.Command("bash", "-c", "echo ready; sleep 60")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for initial output.
+	time.Sleep(500 * time.Millisecond)
+	if s := a.Status(); s != StatusActive {
+		t.Fatalf("expected Active after output, got %s", s)
+	}
+
+	// Wait past idle timeout (3s) + statusLoop tick (500ms) margin.
+	time.Sleep(4 * time.Second)
+
+	if s := a.Status(); s != StatusIdle {
+		t.Errorf("expected Idle after timeout with no input, got %s", s)
+	}
+}
+
 func TestShutdownCleansAll(t *testing.T) {
 	repo := setupTestRepo(t)
 	mgr := NewManager(repo)

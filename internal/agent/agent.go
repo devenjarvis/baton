@@ -27,6 +27,7 @@ type Agent struct {
 	displayName string
 	status      Status
 	lastOutput  time.Time
+	lastInput   time.Time
 	exitErr     error
 
 	done         chan struct{}
@@ -188,7 +189,7 @@ func (a *Agent) statusLoop() {
 			return
 		case <-ticker.C:
 			a.mu.Lock()
-			if a.status == StatusActive && time.Since(a.lastOutput) > idleTimeout {
+			if a.status == StatusActive && time.Since(a.lastOutput) > idleTimeout && time.Since(a.lastInput) > idleTimeout {
 				a.status = StatusIdle
 			} else if a.status == StatusIdle && time.Since(a.lastOutput) <= idleTimeout {
 				a.status = StatusActive
@@ -210,11 +211,17 @@ func (a *Agent) RenderRegion(startRow, endRow int) string {
 
 // SendKey forwards a key event to the VT terminal.
 func (a *Agent) SendKey(key xvt.KeyPressEvent) {
+	a.mu.Lock()
+	a.lastInput = time.Now()
+	a.mu.Unlock()
 	a.terminal.SendKey(key)
 }
 
 // SendText forwards text input to the VT terminal.
 func (a *Agent) SendText(text string) {
+	a.mu.Lock()
+	a.lastInput = time.Now()
+	a.mu.Unlock()
 	a.terminal.SendText(text)
 }
 
