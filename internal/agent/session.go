@@ -36,6 +36,9 @@ func newSession(id, name string, wt *git.WorktreeInfo) *Session {
 // AddAgent creates and starts a new agent within this session using the session's worktree.
 func (s *Session) AddAgent(cfg Config, cmd *exec.Cmd) (*Agent, error) {
 	s.mu.Lock()
+	if cfg.Name == "" {
+		cfg.Name = RandomName(s.existingNames())
+	}
 	s.nextAgentNum++
 	num := s.nextAgentNum
 	id := fmt.Sprintf("%s-agent-%d", s.ID, num)
@@ -56,6 +59,9 @@ func (s *Session) AddAgent(cfg Config, cmd *exec.Cmd) (*Agent, error) {
 // AddAgentDefault creates and starts a new agent using the default claude command.
 func (s *Session) AddAgentDefault(cfg Config) (*Agent, error) {
 	s.mu.Lock()
+	if cfg.Name == "" {
+		cfg.Name = RandomName(s.existingNames())
+	}
 	s.nextAgentNum++
 	num := s.nextAgentNum
 	id := fmt.Sprintf("%s-agent-%d", s.ID, num)
@@ -193,6 +199,17 @@ func (s *Session) KillAll() {
 // Cleanup removes the session's worktree and branch.
 func (s *Session) Cleanup(repoPath string) error {
 	return git.RemoveWorktree(repoPath, s.Worktree, true)
+}
+
+// existingNames returns the session name and all current agent names.
+// Must be called with s.mu held.
+func (s *Session) existingNames() []string {
+	names := make([]string, 0, len(s.agents)+1)
+	names = append(names, s.Name)
+	for _, a := range s.agents {
+		names = append(names, a.Name)
+	}
+	return names
 }
 
 // Elapsed returns how long the session has been running.

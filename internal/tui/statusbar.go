@@ -19,7 +19,8 @@ var (
 		{"c", "add agent"},
 		{"a", "add repo"},
 		{"d", "diff/remove"},
-		{"x", "kill"},
+		{"x", "kill agent"},
+		{"X", "kill session"},
 		{"m", "merge"},
 		{"q", "quit"},
 	}
