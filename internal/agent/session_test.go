@@ -228,3 +228,54 @@ func TestSessionAgentsSorted(t *testing.T) {
 		t.Errorf("expected second agent %s, got %s", ag2.ID, agents[1].ID)
 	}
 }
+
+func TestAddAgentDefaultAssignsUniqueName(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo)
+	defer mgr.Shutdown()
+
+	cfg := Config{Task: "test", Rows: 24, Cols: 80}
+	sess, ag1, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Agent should get a random name distinct from session name.
+	if ag1.Name == "" {
+		t.Fatal("agent 1 should have a non-empty name")
+	}
+	if ag1.Name == sess.Name {
+		t.Errorf("agent name %q should differ from session name %q", ag1.Name, sess.Name)
+	}
+
+	// Add a second agent — should also get a unique name.
+	ag2, err := mgr.AddAgentWithCommand(sess.ID, cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if ag2.Name == "" {
+		t.Fatal("agent 2 should have a non-empty name")
+	}
+	if ag2.Name == ag1.Name {
+		t.Errorf("agent 2 name %q should differ from agent 1 name %q", ag2.Name, ag1.Name)
+	}
+	if ag2.Name == sess.Name {
+		t.Errorf("agent 2 name %q should differ from session name %q", ag2.Name, sess.Name)
+	}
+
+	// Explicit names should be preserved.
+	ag3, err := mgr.AddAgentWithCommand(sess.ID, Config{Name: "custom-name", Task: "test", Rows: 24, Cols: 80}, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ag3.Name != "custom-name" {
+		t.Errorf("explicit name should be preserved, got %q", ag3.Name)
+	}
+}

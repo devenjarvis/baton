@@ -714,3 +714,106 @@ func TestErrorPersistsAcrossTicks(t *testing.T) {
 		t.Fatalf("Error should be cleared after 30 ticks, got %q", app.err)
 	}
 }
+
+func TestNavigationSkipsSessionRows(t *testing.T) {
+	sess := &agent.Session{Name: "test-session"}
+	ag1 := &agent.Agent{Name: "agent-1"}
+	ag2 := &agent.Agent{Name: "agent-2"}
+
+	d := newDashboardModel()
+	d.width = 120
+	d.height = 39
+	d.items = []listItem{
+		{kind: listItemRepo, repoPath: "/fake/repo", repoName: "repo"},
+		{kind: listItemSession, repoPath: "/fake/repo", session: sess},
+		{kind: listItemAgent, repoPath: "/fake/repo", session: sess, agent: ag1},
+		{kind: listItemSession, repoPath: "/fake/repo", session: sess},
+		{kind: listItemAgent, repoPath: "/fake/repo", session: sess, agent: ag2},
+	}
+	d.selected = 0 // repo row
+
+	// j from repo should skip session at index 1, land on agent at index 2.
+	d, _ = d.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
+	if d.selected != 2 {
+		t.Fatalf("Expected selected=2 (agent), got %d", d.selected)
+	}
+
+	// j from agent at 2 should skip session at 3, land on agent at 4.
+	d, _ = d.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
+	if d.selected != 4 {
+		t.Fatalf("Expected selected=4 (agent), got %d", d.selected)
+	}
+
+	// k from agent at 4 should skip session at 3, land on agent at 2.
+	d, _ = d.Update(tea.KeyPressMsg{Code: 'k', Text: "k"})
+	if d.selected != 2 {
+		t.Fatalf("Expected selected=2 (agent), got %d", d.selected)
+	}
+
+	// k from agent at 2 should skip session at 1, land on repo at 0.
+	d, _ = d.Update(tea.KeyPressMsg{Code: 'k', Text: "k"})
+	if d.selected != 0 {
+		t.Fatalf("Expected selected=0 (repo), got %d", d.selected)
+	}
+}
+
+func TestMouseClickSessionSnapsToAgent(t *testing.T) {
+	dir, err := os.MkdirTemp("", "baton-snap-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+
+	run := func(args ...string) {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("cmd %v: %v\n%s", args, err, out)
+		}
+	}
+	run("git", "init")
+	run("git", "commit", "--allow-empty", "-m", "init")
+
+	mgr := agent.NewManager(dir)
+	defer mgr.Shutdown()
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.managers[dir] = mgr
+	app.activeRepo = dir
+
+	// Create a session with an agent.
+	app = createAgent(t, app)
+	if app.err != "" {
+		t.Fatalf("Error creating session: %s", app.err)
+	}
+
+	// Return to list focus.
+	model, _ := app.Update(tea.KeyPressMsg{Code: 'e', Mod: tea.ModCtrl})
+	app = model.(App)
+
+	// Find the session row index.
+	sessionIdx := -1
+	for i, item := range app.dashboard.items {
+		if item.kind == listItemSession {
+			sessionIdx = i
+			break
+		}
+	}
+	if sessionIdx < 0 {
+		t.Fatal("No session row found in dashboard items")
+	}
+
+	// Click the session header row (Y = 2 header rows + sessionIdx).
+	model, _ = app.Update(tea.MouseClickMsg{Button: tea.MouseLeft, X: 5, Y: 2 + sessionIdx})
+	app = model.(App)
+
+	// Should snap from session to the nearest agent.
+	if app.dashboard.items[app.dashboard.selected].kind == listItemSession {
+		t.Fatalf("Expected selection to snap away from session row, but selected=%d is a session", app.dashboard.selected)
+	}
+}

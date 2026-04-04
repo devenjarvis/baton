@@ -103,14 +103,20 @@ func (d dashboardModel) Update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 		// focusList mode
 		switch msg.String() {
 		case "j", "down":
-			if d.selected < len(d.items)-1 {
-				d.selected++
-				d.scrollOffset = 0
+			for next := d.selected + 1; next < len(d.items); next++ {
+				if d.items[next].kind != listItemSession {
+					d.selected = next
+					d.scrollOffset = 0
+					break
+				}
 			}
 		case "k", "up":
-			if d.selected > 0 {
-				d.selected--
-				d.scrollOffset = 0
+			for next := d.selected - 1; next >= 0; next-- {
+				if d.items[next].kind != listItemSession {
+					d.selected = next
+					d.scrollOffset = 0
+					break
+				}
 			}
 		case "right", "enter":
 			if d.selectedAgent() != nil {
@@ -171,7 +177,7 @@ func (d dashboardModel) previewTermWidth() int {
 
 // previewTermHeight returns the terminal row count for the preview panel.
 func (d dashboardModel) previewTermHeight() int {
-	h := d.contentHeight() - 3 // title + task info + blank line
+	h := d.contentHeight() - 4 // title + session info + task info + blank line
 	if d.panelFocus == focusTerminal {
 		h -= 2 // NormalBorder consumes 1 row top and bottom
 	}
@@ -188,7 +194,7 @@ func (d dashboardModel) emptyView() string {
 }
 
 func (d dashboardModel) renderList(width int) string {
-	title := StyleTitle.Render("SESSIONS")
+	title := StyleTitle.Render("AGENTS")
 	sepWidth := width - 2
 	if sepWidth < 0 {
 		sepWidth = 0
@@ -222,46 +228,31 @@ func (d dashboardModel) renderList(width int) string {
 			lines = append(lines, prefix+repoStyle.Render(name))
 
 		case listItemSession:
-			// Session row — indented under its repo.
+			// Session separator header — not selectable.
 			sess := item.session
 			status := sess.Status()
 			symbol := status.Symbol()
-			elapsed := humanizeElapsed(sess.Elapsed())
-			count := fmt.Sprintf("[%d]", sess.AgentCount())
+			count := fmt.Sprintf("%d agents", sess.AgentCount())
 
-			var style lipgloss.Style
+			var symbolStyle lipgloss.Style
 			switch status {
 			case agent.StatusActive:
-				style = lipgloss.NewStyle().Foreground(ColorSecondary)
+				symbolStyle = lipgloss.NewStyle().Foreground(ColorSecondary)
 			case agent.StatusDone:
-				style = lipgloss.NewStyle().Foreground(ColorSuccess)
+				symbolStyle = lipgloss.NewStyle().Foreground(ColorSuccess)
 			case agent.StatusError:
-				style = lipgloss.NewStyle().Foreground(ColorError)
-			case agent.StatusIdle:
-				style = lipgloss.NewStyle().Foreground(ColorMuted)
+				symbolStyle = lipgloss.NewStyle().Foreground(ColorError)
 			default:
-				style = lipgloss.NewStyle().Foreground(ColorWarning)
+				symbolStyle = lipgloss.NewStyle().Foreground(ColorMuted)
 			}
 
-			nameWidth := width - 20 // space for indent, symbol, count badge, elapsed, padding
-			name := sess.Name
-			if len(name) > nameWidth {
-				name = name[:nameWidth-1] + "…"
+			label := fmt.Sprintf(" %s %s (%s) ", symbolStyle.Render(symbol), sess.Name, count)
+			labelLen := len(symbol) + 1 + len(sess.Name) + len(count) + 5 // approximate visible length
+			padLen := width - 4 - labelLen
+			if padLen < 0 {
+				padLen = 0
 			}
-
-			sessionPrefix := "    "
-			if isSelected {
-				sessionPrefix = "  " + StyleActive.Render("▸ ")
-			}
-
-			line := fmt.Sprintf("%s%s %-*s %s %5s",
-				sessionPrefix,
-				style.Render(symbol),
-				nameWidth,
-				name,
-				StyleSubtle.Render(count),
-				elapsed,
-			)
+			line := StyleSubtle.Render("  ──") + label + StyleSubtle.Render(strings.Repeat("─", padLen))
 			lines = append(lines, line)
 
 		case listItemAgent:
@@ -325,23 +316,18 @@ func (d dashboardModel) renderPreview(width int) string {
 		return lipgloss.JoinVertical(lipgloss.Left, title, pathLine, "", hint)
 	}
 
-	if item.kind == listItemSession {
-		// Show session info in the preview panel when a session row is selected.
-		sess := item.session
-		title := StyleTitle.Render(" " + sess.Name + " ")
-		pathLine := StyleSubtle.Render(" Worktree: " + sess.Worktree.Path)
-		statusLine := StyleSubtle.Render(fmt.Sprintf(" Agents: %d  Status: %s", sess.AgentCount(), sess.Status()))
-		hint := StyleSubtle.Render(" Press c to add an agent")
-		return lipgloss.JoinVertical(lipgloss.Left, title, pathLine, statusLine, "", hint)
-	}
-
-	// Agent selected — show terminal preview.
+	// Agent selected — show terminal preview with session context.
 	ag := item.agent
 	titleText := " " + ag.GetDisplayName() + " "
 	if d.scrollOffset > 0 {
 		titleText = fmt.Sprintf(" %s [↑%d] ", ag.GetDisplayName(), d.scrollOffset)
 	}
 	title := StyleTitle.Render(titleText)
+
+	sessionInfo := ""
+	if item.session != nil {
+		sessionInfo = StyleSubtle.Render(fmt.Sprintf(" Session: %s  Worktree: %s", item.session.Name, item.session.Worktree.Path))
+	}
 	taskInfo := StyleSubtle.Render(" Task: " + ag.Task)
 
 	var render string
@@ -366,6 +352,7 @@ func (d dashboardModel) renderPreview(width int) string {
 
 	return lipgloss.JoinVertical(lipgloss.Left,
 		title,
+		sessionInfo,
 		taskInfo,
 		"",
 		render,
@@ -406,6 +393,37 @@ func (d dashboardModel) selectedRepoPath() string {
 		return ""
 	}
 	return item.repoPath
+}
+
+// clampToAgent adjusts selected to the nearest non-session row.
+// Searches forward first, then backward. Falls through to repo rows if no agents exist.
+func (d *dashboardModel) clampToAgent() {
+	if len(d.items) == 0 {
+		return
+	}
+	if d.selected >= len(d.items) {
+		d.selected = len(d.items) - 1
+	}
+	if d.selected < 0 {
+		d.selected = 0
+	}
+	if d.items[d.selected].kind != listItemSession {
+		return
+	}
+	// Search forward for an agent or repo.
+	for i := d.selected + 1; i < len(d.items); i++ {
+		if d.items[i].kind != listItemSession {
+			d.selected = i
+			return
+		}
+	}
+	// Search backward.
+	for i := d.selected - 1; i >= 0; i-- {
+		if d.items[i].kind != listItemSession {
+			d.selected = i
+			return
+		}
+	}
 }
 
 // agentItems returns all agent items from the list (for resize operations).

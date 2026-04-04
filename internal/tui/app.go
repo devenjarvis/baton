@@ -442,31 +442,37 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 
 		case "x":
+			// Kill the selected agent.
 			item := a.dashboard.selectedItem()
-			if item == nil {
+			if item == nil || item.kind != listItemAgent || item.agent == nil || item.session == nil {
 				return a, nil
 			}
 			mgr := a.managers[item.repoPath]
 			if mgr == nil {
 				return a, nil
 			}
-			if item.kind == listItemAgent && item.session != nil {
-				// Kill just this agent.
-				if err := mgr.KillAgent(item.session.ID, item.agent.ID); err != nil {
-					a.setError(err.Error())
-				}
-			} else if item.kind == listItemSession && item.session != nil {
-				// Kill entire session.
-				if err := mgr.KillSession(item.session.ID); err != nil {
-					a.setError(err.Error())
-				}
+			if err := mgr.KillAgent(item.session.ID, item.agent.ID); err != nil {
+				a.setError(err.Error())
 			}
-			if item.kind == listItemSession && item.session != nil {
-				for _, ag := range item.session.Agents() {
-					delete(a.lastKnownStatus, ag.ID)
-				}
-			} else if item.agent != nil {
-				delete(a.lastKnownStatus, item.agent.ID)
+			delete(a.lastKnownStatus, item.agent.ID)
+			a.refreshAgentList()
+			return a, nil
+
+		case "X":
+			// Kill the entire parent session of the selected agent.
+			item := a.dashboard.selectedItem()
+			if item == nil || item.session == nil {
+				return a, nil
+			}
+			mgr := a.managers[item.repoPath]
+			if mgr == nil {
+				return a, nil
+			}
+			for _, ag := range item.session.Agents() {
+				delete(a.lastKnownStatus, ag.ID)
+			}
+			if err := mgr.KillSession(item.session.ID); err != nil {
+				a.setError(err.Error())
 			}
 			a.refreshAgentList()
 			return a, nil
@@ -514,6 +520,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				itemIndex := msg.Y - dashboardTopY - 2
 				if itemIndex >= 0 && itemIndex < len(a.dashboard.items) {
 					a.dashboard.selected = itemIndex
+					a.dashboard.clampToAgent()
 					a.dashboard.panelFocus = focusList
 					a.dashboard.scrollOffset = 0
 					a.resizeSelectedForDashboard()
@@ -615,17 +622,18 @@ func (a App) updateMerge(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		// Merge succeeded — clean up the entire session.
+		// Collect agent IDs before KillSession clears the agents map.
 		sess := a.dashboard.selectedSession()
 		if sess != nil {
+			for _, ag := range sess.Agents() {
+				delete(a.lastKnownStatus, ag.ID)
+			}
 			item := a.dashboard.selectedItem()
 			if item != nil {
 				mgr := a.managers[item.repoPath]
 				if mgr != nil {
 					_ = mgr.KillSession(sess.ID)
 				}
-			}
-			for _, ag := range sess.Agents() {
-				delete(a.lastKnownStatus, ag.ID)
 			}
 			a.refreshAgentList()
 		}
@@ -696,7 +704,8 @@ func (a *App) refreshAgentList() {
 				}
 			}
 			a.dashboard.items = items
-		}
+			a.dashboard.clampToAgent()
+			}
 		return
 	}
 
@@ -737,6 +746,7 @@ func (a *App) refreshAgentList() {
 		a.dashboard.selected = len(items) - 1
 	}
 	a.dashboard.items = items
+	a.dashboard.clampToAgent()
 }
 
 func (a App) View() tea.View {
