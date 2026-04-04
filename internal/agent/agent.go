@@ -272,6 +272,13 @@ func (a *Agent) GetDisplayName() string {
 	return a.Name
 }
 
+// HasReceivedInput reports whether the user has sent any input to this agent.
+func (a *Agent) HasReceivedInput() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return !a.lastInput.IsZero()
+}
+
 // HasDisplayName reports whether a display name has been explicitly set.
 func (a *Agent) HasDisplayName() bool {
 	a.mu.RLock()

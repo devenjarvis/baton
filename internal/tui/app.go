@@ -174,7 +174,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			// Check for Active->Idle transition.
 			if prev, ok := a.lastKnownStatus[ag.ID]; ok {
-				if prev == agent.StatusActive && currentStatus == agent.StatusIdle {
+				if prev == agent.StatusActive && currentStatus == agent.StatusIdle && ag.HasReceivedInput() {
 					if a.audioPlayer != nil {
 						a.audioPlayer.Play()
 					}
