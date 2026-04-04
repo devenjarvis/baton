@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	xvt "github.com/charmbracelet/x/vt"
 )
 
 // setupTestRepo creates a temporary git repo with an initial commit.
@@ -240,6 +242,102 @@ func TestIdleTransitionWithoutInput(t *testing.T) {
 	if s := a.Status(); s != StatusIdle {
 		t.Errorf("expected Idle after timeout with no input, got %s", s)
 	}
+}
+
+func TestIdleWhileComposingUsesLongerTimeout(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo)
+	defer mgr.Shutdown()
+
+	cfg := Config{Name: "test-composing-idle", Task: "test", Rows: 24, Cols: 80}
+	a, err := mgr.CreateWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "echo ready; cat")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for initial output to become Active.
+	time.Sleep(500 * time.Millisecond)
+	if s := a.Status(); s != StatusActive {
+		t.Fatalf("expected Active after output, got %s", s)
+	}
+
+	// Type some text (sets composing = true), then stop typing.
+	a.SendText("hello")
+
+	// Wait 5s — past the normal 3s idle timeout but within composing 30s timeout.
+	time.Sleep(5 * time.Second)
+
+	if s := a.Status(); s != StatusActive {
+		t.Errorf("expected Active while composing (5s pause), got %s", s)
+	}
+}
+
+func TestIdleAfterEnterUsesNormalTimeout(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo)
+	defer mgr.Shutdown()
+
+	cfg := Config{Name: "test-enter-idle", Task: "test", Rows: 24, Cols: 80}
+	a, err := mgr.CreateWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "echo ready; cat")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for initial output.
+	time.Sleep(500 * time.Millisecond)
+	if s := a.Status(); s != StatusActive {
+		t.Fatalf("expected Active after output, got %s", s)
+	}
+
+	// Type text then press Enter (clears composing).
+	a.SendText("hello")
+	a.SendKey(xvt.KeyPressEvent{Code: xvt.KeyEnter})
+
+	// Wait past normal 3s idle timeout + tick margin.
+	// cat echoes input back, resetting lastOutput, so allow extra margin.
+	time.Sleep(5 * time.Second)
+
+	if s := a.Status(); s != StatusIdle {
+		t.Errorf("expected Idle after Enter + 4s, got %s", s)
+	}
+}
+
+func TestComposingClearedOnEnter(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo)
+	defer mgr.Shutdown()
+
+	cfg := Config{Name: "test-composing-clear", Task: "test", Rows: 24, Cols: 80}
+	a, err := mgr.CreateWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "echo ready; cat")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(500 * time.Millisecond)
+
+	// SendText sets composing = true.
+	a.SendText("hello")
+	a.mu.RLock()
+	if !a.composing {
+		a.mu.RUnlock()
+		t.Fatal("expected composing to be true after SendText")
+	}
+	a.mu.RUnlock()
+
+	// SendKey(Enter) clears composing.
+	a.SendKey(xvt.KeyPressEvent{Code: xvt.KeyEnter})
+	a.mu.RLock()
+	if a.composing {
+		a.mu.RUnlock()
+		t.Fatal("expected composing to be false after Enter")
+	}
+	a.mu.RUnlock()
 }
 
 func TestShutdownCleansAll(t *testing.T) {

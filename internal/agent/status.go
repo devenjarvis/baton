@@ -49,3 +49,4 @@ func (s Status) Symbol() string {
 }
 
 const idleTimeout = 3 * time.Second
+const composingIdleTimeout = 30 * time.Second
