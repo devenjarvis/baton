@@ -461,7 +461,13 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.setError(err.Error())
 				}
 			}
-			delete(a.lastKnownStatus, item.agent.ID)
+			if item.kind == listItemSession && item.session != nil {
+				for _, ag := range item.session.Agents() {
+					delete(a.lastKnownStatus, ag.ID)
+				}
+			} else if item.agent != nil {
+				delete(a.lastKnownStatus, item.agent.ID)
+			}
 			a.refreshAgentList()
 			return a, nil
 
@@ -618,7 +624,9 @@ func (a App) updateMerge(msg tea.Msg) (tea.Model, tea.Cmd) {
 					_ = mgr.KillSession(sess.ID)
 				}
 			}
-			delete(a.lastKnownStatus, item.agent.ID)
+			for _, ag := range sess.Agents() {
+				delete(a.lastKnownStatus, ag.ID)
+			}
 			a.refreshAgentList()
 		}
 		a.view = ViewDashboard
