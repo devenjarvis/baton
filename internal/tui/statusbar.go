@@ -14,7 +14,7 @@ type keyHint struct {
 var (
 	dashboardHints = []keyHint{
 		{"j/k", "navigate"},
-		{"→", "interact"},
+		{"⏎/→", "interact"},
 		{"n", "new agent"},
 		{"a", "add repo"},
 		{"d", "diff/remove"},
@@ -27,7 +27,7 @@ var (
 		{"enter", "send"},
 		{"pgup/pgdn", "scroll"},
 		{"home", "live"},
-		{"esc", "back"},
+		{"ctrl+e", "back"},
 	}
 
 	diffHints = []keyHint{

@@ -11,14 +11,14 @@ import (
 )
 
 // createAgent presses 'n' and executes the async create cmd, returning the updated app.
-// If the terminal panel is already focused it presses Esc first so the 'n' key isn't
+// If the terminal panel is already focused it presses Ctrl+E first so the 'n' key isn't
 // forwarded to the agent.
 func createAgent(t *testing.T, app App) App {
 	t.Helper()
 
 	// Return to list focus if terminal has focus so 'n' is handled by the app.
 	if app.dashboard.panelFocus == focusTerminal {
-		model, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+		model, _ := app.Update(tea.KeyPressMsg{Code: 'e', Mod: tea.ModCtrl})
 		app = model.(App)
 	}
 
@@ -130,7 +130,7 @@ func TestCreateMultipleAgentsViaTUI(t *testing.T) {
 		t.Fatalf("Expected 1 agent, got %d", mgr.AgentCount())
 	}
 
-	// Create second agent (createAgent presses Esc first to exit focusTerminal)
+	// Create second agent (createAgent presses Ctrl+E first to exit focusTerminal)
 	t.Log("=== Creating agent 2 ===")
 	app = createAgent(t, app)
 	t.Logf("After agent2: view=%v, err=%q, agents=%d, dashboard=%d",
@@ -207,11 +207,11 @@ func TestPanelFocusSwitching(t *testing.T) {
 		t.Fatalf("Expected focusTerminal after creation, got %v", app.dashboard.panelFocus)
 	}
 
-	// Esc returns to focusList.
-	model, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	// Ctrl+E returns to focusList.
+	model, _ := app.Update(tea.KeyPressMsg{Code: 'e', Mod: tea.ModCtrl})
 	app = model.(App)
 	if app.dashboard.panelFocus != focusList {
-		t.Fatalf("Expected focusList after esc, got %v", app.dashboard.panelFocus)
+		t.Fatalf("Expected focusList after ctrl+e, got %v", app.dashboard.panelFocus)
 	}
 
 	// Right arrow enters focusTerminal.
@@ -393,11 +393,11 @@ func TestMouseClickPreviewEntersFocus(t *testing.T) {
 		t.Fatal("Expected at least one agent")
 	}
 
-	// After creation the terminal is auto-focused; press Esc to return to list.
-	model, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	// After creation the terminal is auto-focused; press Ctrl+E to return to list.
+	model, _ := app.Update(tea.KeyPressMsg{Code: 'e', Mod: tea.ModCtrl})
 	app = model.(App)
 	if app.dashboard.panelFocus != focusList {
-		t.Fatalf("Expected focusList after esc, got %v", app.dashboard.panelFocus)
+		t.Fatalf("Expected focusList after ctrl+e, got %v", app.dashboard.panelFocus)
 	}
 
 	// Click the preview panel (X >= 32) — should enter focusTerminal.
@@ -407,11 +407,11 @@ func TestMouseClickPreviewEntersFocus(t *testing.T) {
 		t.Fatalf("Expected focusTerminal after preview click, got %v", app.dashboard.panelFocus)
 	}
 
-	// Esc returns to focusList.
-	model, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	// Ctrl+E returns to focusList.
+	model, _ = app.Update(tea.KeyPressMsg{Code: 'e', Mod: tea.ModCtrl})
 	app = model.(App)
 	if app.dashboard.panelFocus != focusList {
-		t.Fatalf("Expected focusList after esc, got %v", app.dashboard.panelFocus)
+		t.Fatalf("Expected focusList after ctrl+e, got %v", app.dashboard.panelFocus)
 	}
 }
 
