@@ -28,6 +28,7 @@ type Agent struct {
 	status      Status
 	lastOutput  time.Time
 	lastInput   time.Time
+	composing   bool
 	exitErr     error
 
 	done         chan struct{}
@@ -189,8 +190,13 @@ func (a *Agent) statusLoop() {
 			return
 		case <-ticker.C:
 			a.mu.Lock()
-			if a.status == StatusActive && time.Since(a.lastOutput) > idleTimeout && time.Since(a.lastInput) > idleTimeout {
+			timeout := idleTimeout
+			if a.composing {
+				timeout = composingIdleTimeout
+			}
+			if a.status == StatusActive && time.Since(a.lastOutput) > timeout && time.Since(a.lastInput) > timeout {
 				a.status = StatusIdle
+				a.composing = false
 			} else if a.status == StatusIdle && time.Since(a.lastOutput) <= idleTimeout {
 				a.status = StatusActive
 			}
@@ -213,6 +219,11 @@ func (a *Agent) RenderRegion(startRow, endRow int) string {
 func (a *Agent) SendKey(key xvt.KeyPressEvent) {
 	a.mu.Lock()
 	a.lastInput = time.Now()
+	if key.Code == xvt.KeyEnter {
+		a.composing = false
+	} else {
+		a.composing = true
+	}
 	a.mu.Unlock()
 	a.terminal.SendKey(key)
 }
@@ -221,6 +232,7 @@ func (a *Agent) SendKey(key xvt.KeyPressEvent) {
 func (a *Agent) SendText(text string) {
 	a.mu.Lock()
 	a.lastInput = time.Now()
+	a.composing = true
 	a.mu.Unlock()
 	a.terminal.SendText(text)
 }
