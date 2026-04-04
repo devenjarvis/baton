@@ -12,6 +12,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/devenjarvis/baton/internal/agent"
+	"github.com/devenjarvis/baton/internal/audio"
 	"github.com/devenjarvis/baton/internal/config"
 	"github.com/devenjarvis/baton/internal/git"
 )
@@ -60,13 +61,17 @@ type App struct {
 	err         string
 	errTicks    int // ticks remaining to show error
 	confirmQuit bool
+
+	lastKnownStatus map[string]agent.Status
+	audioPlayer     *audio.Player
 }
 
 func NewApp() App {
 	return App{
-		view:      ViewDashboard,
-		dashboard: newDashboardModel(),
-		managers:  make(map[string]*agent.Manager),
+		view:            ViewDashboard,
+		dashboard:       newDashboardModel(),
+		managers:        make(map[string]*agent.Manager),
+		lastKnownStatus: make(map[string]agent.Status),
 	}
 }
 
@@ -136,6 +141,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		a.cfg = msg.cfg
+		// Initialize audio player (best-effort — nil on failure).
+		if p, err := audio.NewPlayer(); err == nil {
+			a.audioPlayer = p
+		}
 		// Create a manager for every registered repo and start event listeners.
 		var cmds []tea.Cmd
 		for _, repo := range msg.cfg.Repos {
@@ -153,13 +162,26 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		a.refreshAgentList()
-		// Auto-rename agents that just went idle for the first time.
+		// Auto-rename agents that just went idle for the first time,
+		// and detect Active->Idle transitions for audio notification.
 		for _, item := range a.dashboard.items {
 			if item.kind != listItemAgent || item.agent == nil {
 				continue
 			}
 			ag := item.agent
-			if ag.Status() != agent.StatusIdle || ag.HasDisplayName() {
+			currentStatus := ag.Status()
+
+			// Check for Active->Idle transition.
+			if prev, ok := a.lastKnownStatus[ag.ID]; ok {
+				if prev == agent.StatusActive && currentStatus == agent.StatusIdle {
+					if a.audioPlayer != nil {
+						a.audioPlayer.Play()
+					}
+				}
+			}
+			a.lastKnownStatus[ag.ID] = currentStatus
+
+			if currentStatus != agent.StatusIdle || ag.HasDisplayName() {
 				continue
 			}
 			name := extractAgentName(ag.Render())
@@ -290,6 +312,9 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			for _, mgr := range a.managers {
 				mgr.Shutdown()
 			}
+			if a.audioPlayer != nil {
+				a.audioPlayer.Close()
+			}
 			return a, tea.Quit
 		default:
 			a.confirmQuit = false
@@ -384,6 +409,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.setError(err.Error())
 				}
 			}
+			delete(a.lastKnownStatus, item.agent.ID)
 			a.refreshAgentList()
 			return a, nil
 
@@ -528,6 +554,7 @@ func (a App) updateMerge(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if mgr != nil {
 				_ = mgr.Kill(item.agent.ID)
 			}
+			delete(a.lastKnownStatus, item.agent.ID)
 			a.refreshAgentList()
 		}
 		a.view = ViewDashboard
