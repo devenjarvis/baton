@@ -11,23 +11,25 @@ import (
 	"github.com/devenjarvis/baton/internal/agent"
 )
 
-// listItemKind distinguishes repo headers from agent rows in the dashboard list.
+// listItemKind distinguishes repo headers, session rows, and agent rows in the dashboard list.
 type listItemKind int
 
 const (
-	listItemRepo  listItemKind = iota
-	listItemAgent listItemKind = iota
+	listItemRepo listItemKind = iota
+	listItemSession
+	listItemAgent
 )
 
 // listItem represents one row in the hierarchical dashboard list.
 type listItem struct {
 	kind     listItemKind
 	repoPath string
-	repoName string       // set for repo header items
-	agent    *agent.Agent // set for agent items
+	repoName string          // set for repo header items
+	session  *agent.Session  // set for session and agent items
+	agent    *agent.Agent    // set for agent items
 }
 
-// dashboardModel shows the hierarchical repo/agent list and terminal preview.
+// dashboardModel shows the hierarchical repo/session/agent list and terminal preview.
 type dashboardModel struct {
 	items        []listItem
 	selected     int
@@ -175,7 +177,7 @@ func (d dashboardModel) previewTermHeight() int {
 func (d dashboardModel) emptyView() string {
 	title := StyleTitle.Render("Baton")
 	subtitle := StyleSubtle.Render("No agents running")
-	hint := StyleSubtle.Render("Press n to create a new agent")
+	hint := StyleSubtle.Render("Press n to create a new session")
 
 	content := lipgloss.JoinVertical(lipgloss.Center, title, "", subtitle, "", hint)
 	return lipgloss.Place(d.width, d.contentHeight(), lipgloss.Center, lipgloss.Center, content)
@@ -215,8 +217,51 @@ func (d dashboardModel) renderList(width int) string {
 			}
 			lines = append(lines, prefix+repoStyle.Render(name))
 
+		case listItemSession:
+			// Session row — indented under its repo.
+			sess := item.session
+			status := sess.Status()
+			symbol := status.Symbol()
+			elapsed := humanizeElapsed(sess.Elapsed())
+			count := fmt.Sprintf("[%d]", sess.AgentCount())
+
+			var style lipgloss.Style
+			switch status {
+			case agent.StatusActive:
+				style = lipgloss.NewStyle().Foreground(ColorSecondary)
+			case agent.StatusDone:
+				style = lipgloss.NewStyle().Foreground(ColorSuccess)
+			case agent.StatusError:
+				style = lipgloss.NewStyle().Foreground(ColorError)
+			case agent.StatusIdle:
+				style = lipgloss.NewStyle().Foreground(ColorMuted)
+			default:
+				style = lipgloss.NewStyle().Foreground(ColorWarning)
+			}
+
+			nameWidth := width - 20 // space for indent, symbol, count badge, elapsed, padding
+			name := sess.Name
+			if len(name) > nameWidth {
+				name = name[:nameWidth-1] + "…"
+			}
+
+			sessionPrefix := "    "
+			if isSelected {
+				sessionPrefix = "  " + StyleActive.Render("▸ ")
+			}
+
+			line := fmt.Sprintf("%s%s %-*s %s %5s",
+				sessionPrefix,
+				style.Render(symbol),
+				nameWidth,
+				name,
+				StyleSubtle.Render(count),
+				elapsed,
+			)
+			lines = append(lines, line)
+
 		case listItemAgent:
-			// Agent row — indented under its repo.
+			// Agent row — indented under its session.
 			ag := item.agent
 			status := ag.Status()
 			symbol := status.Symbol()
@@ -236,15 +281,15 @@ func (d dashboardModel) renderList(width int) string {
 				style = lipgloss.NewStyle().Foreground(ColorWarning)
 			}
 
-			nameWidth := width - 16 // space for indent, symbol, elapsed, padding
+			nameWidth := width - 18 // space for indent, symbol, elapsed, padding
 			name := ag.GetDisplayName()
 			if len(name) > nameWidth {
 				name = name[:nameWidth-1] + "…"
 			}
 
-			agentPrefix := "    "
+			agentPrefix := "      "
 			if isSelected {
-				agentPrefix = "  " + StyleActive.Render("▸ ")
+				agentPrefix = "    " + StyleActive.Render("▸ ")
 			}
 
 			line := fmt.Sprintf("%s%s %-*s %5s",
@@ -272,8 +317,18 @@ func (d dashboardModel) renderPreview(width int) string {
 		// Show repo info in the preview panel when a repo header is selected.
 		title := StyleTitle.Render(" " + item.repoName + " ")
 		pathLine := StyleSubtle.Render(" " + item.repoPath)
-		hint := StyleSubtle.Render(" Press n to create an agent in this repo")
+		hint := StyleSubtle.Render(" Press n to create a session in this repo")
 		return lipgloss.JoinVertical(lipgloss.Left, title, pathLine, "", hint)
+	}
+
+	if item.kind == listItemSession {
+		// Show session info in the preview panel when a session row is selected.
+		sess := item.session
+		title := StyleTitle.Render(" " + sess.Name + " ")
+		pathLine := StyleSubtle.Render(" Worktree: " + sess.Worktree.Path)
+		statusLine := StyleSubtle.Render(fmt.Sprintf(" Agents: %d  Status: %s", sess.AgentCount(), sess.Status()))
+		hint := StyleSubtle.Render(" Press c to add an agent")
+		return lipgloss.JoinVertical(lipgloss.Left, title, pathLine, statusLine, "", hint)
 	}
 
 	// Agent selected — show terminal preview.
@@ -321,13 +376,23 @@ func (d dashboardModel) selectedItem() *listItem {
 	return &d.items[d.selected]
 }
 
-// selectedAgent returns the currently selected agent, or nil if a repo header is selected.
+// selectedAgent returns the currently selected agent, or nil if a repo/session header is selected.
 func (d dashboardModel) selectedAgent() *agent.Agent {
 	item := d.selectedItem()
 	if item == nil || item.kind != listItemAgent {
 		return nil
 	}
 	return item.agent
+}
+
+// selectedSession returns the session for the currently selected item.
+// Works for both session and agent items.
+func (d dashboardModel) selectedSession() *agent.Session {
+	item := d.selectedItem()
+	if item == nil {
+		return nil
+	}
+	return item.session
 }
 
 // selectedRepoPath returns the repo path of the currently selected item.

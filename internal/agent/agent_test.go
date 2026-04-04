@@ -103,32 +103,30 @@ func TestAgentStatusTransitions(t *testing.T) {
 	}
 }
 
-func TestMultipleAgentsUniqueWorktrees(t *testing.T) {
+func TestMultipleSessionsUniqueWorktrees(t *testing.T) {
 	repo := setupTestRepo(t)
 	mgr := NewManager(repo)
 	defer mgr.Shutdown()
 
-	agents := make([]*Agent, 3)
-	names := []string{"alpha", "beta", "gamma"}
-
-	for i, name := range names {
-		cfg := Config{Name: name, Task: "test", Rows: 24, Cols: 80}
-		a, err := mgr.CreateWithCommand(cfg, func(n string) *exec.Cmd {
+	sessions := make([]*Session, 3)
+	for i := 0; i < 3; i++ {
+		cfg := Config{Task: "test", Rows: 24, Cols: 80}
+		sess, _, err := mgr.CreateSessionWithCommand(cfg, func(n string) *exec.Cmd {
 			return exec.Command("bash", "-c", "sleep 2")
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
-		agents[i] = a
+		sessions[i] = sess
 	}
 
 	// Check unique worktree paths.
 	paths := make(map[string]bool)
-	for _, a := range agents {
-		if paths[a.Worktree.Path] {
-			t.Errorf("duplicate worktree path: %s", a.Worktree.Path)
+	for _, s := range sessions {
+		if paths[s.Worktree.Path] {
+			t.Errorf("duplicate worktree path: %s", s.Worktree.Path)
 		}
-		paths[a.Worktree.Path] = true
+		paths[s.Worktree.Path] = true
 	}
 
 	if mgr.AgentCount() != 3 {
@@ -142,16 +140,16 @@ func TestKillAndCleanup(t *testing.T) {
 	defer mgr.Shutdown()
 
 	cfg := Config{Name: "test-kill", Task: "test", Rows: 24, Cols: 80}
-	a, err := mgr.CreateWithCommand(cfg, func(name string) *exec.Cmd {
+	sess, _, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
 		return exec.Command("bash", "-c", "sleep 60")
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	wtPath := a.Worktree.Path
+	wtPath := sess.Worktree.Path
 
-	if err := mgr.Kill(a.ID); err != nil {
+	if err := mgr.KillSession(sess.ID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -189,8 +187,8 @@ func TestShutdownCleansAll(t *testing.T) {
 	mgr := NewManager(repo)
 
 	for i := 0; i < 3; i++ {
-		cfg := Config{Name: "shut-" + string(rune('a'+i)), Task: "test", Rows: 24, Cols: 80}
-		_, err := mgr.CreateWithCommand(cfg, func(name string) *exec.Cmd {
+		cfg := Config{Task: "test", Rows: 24, Cols: 80}
+		_, _, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
 			return exec.Command("bash", "-c", "sleep 60")
 		})
 		if err != nil {

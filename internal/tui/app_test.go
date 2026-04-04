@@ -36,6 +36,30 @@ func createAgent(t *testing.T, app App) App {
 	return app
 }
 
+// addAgentToSession presses 'c' and executes the async add cmd, returning the updated app.
+func addAgentToSession(t *testing.T, app App) App {
+	t.Helper()
+
+	// Return to list focus if terminal has focus so 'c' is handled by the app.
+	if app.dashboard.panelFocus == focusTerminal {
+		model, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+		app = model.(App)
+	}
+
+	model, cmd := app.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
+	app = model.(App)
+
+	if cmd == nil {
+		t.Fatal("Expected cmd from 'c', got nil")
+	}
+
+	msg := cmd()
+	model, _ = app.Update(msg)
+	app = model.(App)
+
+	return app
+}
+
 func TestCreateAgentViaN(t *testing.T) {
 	dir, err := os.MkdirTemp("", "baton-tui-*")
 	if err != nil {
@@ -86,6 +110,11 @@ func TestCreateAgentViaN(t *testing.T) {
 	if app.dashboard.panelFocus != focusTerminal {
 		t.Errorf("Expected focusTerminal after creation, got %v", app.dashboard.panelFocus)
 	}
+	// Session should be present.
+	sessions := mgr.ListSessions()
+	if len(sessions) != 1 {
+		t.Errorf("Expected 1 session, got %d", len(sessions))
+	}
 }
 
 func TestCreateMultipleAgentsViaTUI(t *testing.T) {
@@ -117,27 +146,27 @@ func TestCreateMultipleAgentsViaTUI(t *testing.T) {
 	app.managers[dir] = mgr
 	app.activeRepo = dir
 
-	// Create first agent
-	t.Log("=== Creating agent 1 ===")
+	// Create first session+agent
+	t.Log("=== Creating session 1 ===")
 	app = createAgent(t, app)
-	t.Logf("After agent1: view=%v, err=%q, agents=%d, dashboard=%d",
+	t.Logf("After session1: view=%v, err=%q, agents=%d, dashboard=%d",
 		app.view, app.err, mgr.AgentCount(), len(app.dashboard.agentItems()))
 
 	if app.err != "" {
-		t.Fatalf("Agent 1 error: %s", app.err)
+		t.Fatalf("Session 1 error: %s", app.err)
 	}
 	if mgr.AgentCount() != 1 {
 		t.Fatalf("Expected 1 agent, got %d", mgr.AgentCount())
 	}
 
-	// Create second agent (createAgent presses Esc first to exit focusTerminal)
-	t.Log("=== Creating agent 2 ===")
+	// Create second session+agent
+	t.Log("=== Creating session 2 ===")
 	app = createAgent(t, app)
-	t.Logf("After agent2: view=%v, err=%q, agents=%d, dashboard=%d",
+	t.Logf("After session2: view=%v, err=%q, agents=%d, dashboard=%d",
 		app.view, app.err, mgr.AgentCount(), len(app.dashboard.agentItems()))
 
 	if app.err != "" {
-		t.Fatalf("Agent 2 error: %s", app.err)
+		t.Fatalf("Session 2 error: %s", app.err)
 	}
 	if mgr.AgentCount() != 2 {
 		t.Fatalf("Expected 2 agents, got %d", mgr.AgentCount())
@@ -146,14 +175,14 @@ func TestCreateMultipleAgentsViaTUI(t *testing.T) {
 		t.Fatalf("Expected 2 dashboard agents, got %d", len(app.dashboard.agentItems()))
 	}
 
-	// Create third agent
-	t.Log("=== Creating agent 3 ===")
+	// Create third session+agent
+	t.Log("=== Creating session 3 ===")
 	app = createAgent(t, app)
-	t.Logf("After agent3: view=%v, err=%q, agents=%d, dashboard=%d",
+	t.Logf("After session3: view=%v, err=%q, agents=%d, dashboard=%d",
 		app.view, app.err, mgr.AgentCount(), len(app.dashboard.agentItems()))
 
 	if app.err != "" {
-		t.Fatalf("Agent 3 error: %s", app.err)
+		t.Fatalf("Session 3 error: %s", app.err)
 	}
 	if mgr.AgentCount() != 3 {
 		t.Fatalf("Expected 3 agents, got %d", mgr.AgentCount())
@@ -162,9 +191,77 @@ func TestCreateMultipleAgentsViaTUI(t *testing.T) {
 		t.Fatalf("Expected 3 dashboard agents, got %d", len(app.dashboard.agentItems()))
 	}
 
-	t.Logf("SUCCESS: Created %d agents", len(app.dashboard.agentItems()))
-	for _, a := range app.dashboard.agentItems() {
-		t.Logf("  %s: status=%v", a.Name, a.Status())
+	// Should have 3 sessions.
+	sessions := mgr.ListSessions()
+	if len(sessions) != 3 {
+		t.Fatalf("Expected 3 sessions, got %d", len(sessions))
+	}
+
+	t.Logf("SUCCESS: Created %d sessions with %d agents", len(sessions), len(app.dashboard.agentItems()))
+}
+
+func TestAddAgentToSessionViaC(t *testing.T) {
+	dir, err := os.MkdirTemp("", "baton-tui-addagent-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+
+	run := func(args ...string) {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("cmd %v: %v\n%s", args, err, out)
+		}
+	}
+	run("git", "init")
+	run("git", "commit", "--allow-empty", "-m", "init")
+
+	mgr := agent.NewManager(dir)
+	defer mgr.Shutdown()
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.managers[dir] = mgr
+	app.activeRepo = dir
+
+	// Create first session with 'n'.
+	app = createAgent(t, app)
+	if app.err != "" {
+		t.Fatalf("Error creating session: %s", app.err)
+	}
+	if mgr.AgentCount() != 1 {
+		t.Fatalf("Expected 1 agent, got %d", mgr.AgentCount())
+	}
+
+	sessions := mgr.ListSessions()
+	if len(sessions) != 1 {
+		t.Fatalf("Expected 1 session, got %d", len(sessions))
+	}
+
+	// Navigate to the session row or agent row (either works for 'c').
+	// The agent row should be selected already after creation + esc.
+
+	// Add second agent with 'c'.
+	app = addAgentToSession(t, app)
+	if app.err != "" {
+		t.Fatalf("Error adding agent: %s", app.err)
+	}
+
+	if mgr.AgentCount() != 2 {
+		t.Fatalf("Expected 2 agents, got %d", mgr.AgentCount())
+	}
+	// Should still be the same single session.
+	sessions = mgr.ListSessions()
+	if len(sessions) != 1 {
+		t.Fatalf("Expected still 1 session after 'c', got %d", len(sessions))
+	}
+	if sessions[0].AgentCount() != 2 {
+		t.Fatalf("Expected 2 agents in session, got %d", sessions[0].AgentCount())
 	}
 }
 
@@ -284,7 +381,7 @@ func TestMouseClickSelectsListItem(t *testing.T) {
 	app.dashboard.width = 120
 	app.dashboard.height = 39
 
-	// Directly populate the list with fake agent items (no real processes needed).
+	// Directly populate the list with fake items (no real processes needed).
 	app.dashboard.items = []listItem{
 		{kind: listItemAgent, repoPath: "/fake/repo"},
 		{kind: listItemAgent, repoPath: "/fake/repo"},
@@ -436,9 +533,8 @@ func TestMouseWheelScrollInFocusTerminal(t *testing.T) {
 	mgr := agent.NewManager(dir)
 	defer mgr.Shutdown()
 
-	// Create an agent with bash that writes 40 lines (more than the 24-row terminal height)
-	// so scrollback is populated before we test wheel scrolling.
-	ag, err := mgr.CreateWithCommand(agent.Config{
+	// Create a session with an agent that writes 40 lines.
+	sess, ag, err := mgr.CreateSessionWithCommand(agent.Config{
 		Name:     "wheel-test",
 		Task:     "test",
 		RepoPath: dir,
@@ -450,6 +546,7 @@ func TestMouseWheelScrollInFocusTerminal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	_ = sess // used for session creation
 
 	// Wait for bash output to be processed into scrollback.
 	time.Sleep(300 * time.Millisecond)
@@ -458,7 +555,7 @@ func TestMouseWheelScrollInFocusTerminal(t *testing.T) {
 		t.Fatal("Expected scrollback lines after bash output")
 	}
 
-	// Build an app with this agent directly in dashboard items — no TUI prompt needed.
+	// Build an app with this agent directly in dashboard items.
 	app := NewApp()
 	app.width = 120
 	app.height = 40
@@ -467,7 +564,7 @@ func TestMouseWheelScrollInFocusTerminal(t *testing.T) {
 	app.managers[dir] = mgr
 	app.activeRepo = dir
 	app.dashboard.items = []listItem{
-		{kind: listItemAgent, repoPath: dir, agent: ag},
+		{kind: listItemAgent, repoPath: dir, session: sess, agent: ag},
 	}
 	app.dashboard.panelFocus = focusTerminal
 
