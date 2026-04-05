@@ -229,6 +229,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, tea.Batch(tickCmd(), diffCmd)
 
 	case agentEventMsg:
+		// Clean up stale lastKnownStatus entries when a session auto-closes.
+		if msg.event.Type == agent.EventSessionClosed && msg.event.SessionID != "" {
+			prefix := msg.event.SessionID + "-agent-"
+			for id := range a.lastKnownStatus {
+				if strings.HasPrefix(id, prefix) {
+					delete(a.lastKnownStatus, id)
+				}
+			}
+		}
 		// Refresh list on any agent event — all repos are visible in the dashboard.
 		a.refreshAgentList()
 		if mgr := a.managers[msg.repoPath]; mgr != nil {
