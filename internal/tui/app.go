@@ -39,10 +39,22 @@ type splashResizeMsg struct {
 	agentID string
 }
 
+// diffStatsMsg carries the result of an async diff stats refresh.
+type diffStatsMsg struct {
+	sessionID string
+	stats     *diffSummaryData
+}
+
 // initAppMsg carries the result of app initialization.
 type initAppMsg struct {
 	cfg *config.Config
 	err error
+}
+
+// diffStatsEntry holds cached diff stats for a single session.
+type diffStatsEntry struct {
+	stats       *diffSummaryData
+	lastRefresh time.Time
 }
 
 // App is the root Bubble Tea model.
@@ -65,6 +77,9 @@ type App struct {
 
 	lastKnownStatus map[string]agent.Status
 	audioPlayer     *audio.Player
+
+	diffStatsCache    map[string]*diffStatsEntry // keyed by session ID
+	diffRefreshInFlight bool
 }
 
 func NewApp() App {
@@ -73,6 +88,7 @@ func NewApp() App {
 		dashboard:       newDashboardModel(),
 		managers:        make(map[string]*agent.Manager),
 		lastKnownStatus: make(map[string]agent.Status),
+		diffStatsCache:  make(map[string]*diffStatsEntry),
 	}
 }
 
@@ -164,7 +180,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		a.refreshAgentList()
 		// Auto-rename agents that just went idle for the first time,
-		// and detect Active->Idle transitions for audio notification.
+		// and detect Active->Idle transitions for audio notification and diff refresh.
+		idleTransition := false
 		for _, item := range a.dashboard.items {
 			if item.kind != listItemAgent || item.agent == nil {
 				continue
@@ -178,6 +195,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if a.audioPlayer != nil {
 						a.audioPlayer.Play()
 					}
+					idleTransition = true
 				}
 			}
 			a.lastKnownStatus[ag.ID] = currentStatus
@@ -197,7 +215,18 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.err = ""
 			}
 		}
-		return a, tickCmd()
+		// Clean stale diff cache entries periodically.
+		a.cleanDiffStatsCache()
+		// Refresh diff stats periodically or on idle transition.
+		var diffCmd tea.Cmd
+		if sess := a.dashboard.selectedSession(); sess != nil {
+			entry := a.diffStatsCache[sess.ID]
+			stale := entry == nil || time.Since(entry.lastRefresh) > 5*time.Second
+			if (stale || idleTransition) && !a.diffRefreshInFlight {
+				diffCmd = a.refreshDiffStatsCmd()
+			}
+		}
+		return a, tea.Batch(tickCmd(), diffCmd)
 
 	case agentEventMsg:
 		// Refresh list on any agent event — all repos are visible in the dashboard.
@@ -233,6 +262,19 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return splashResizeMsg{agentID: msg.agentID}
 		})
 		return a, delayedResize
+
+	case diffStatsMsg:
+		a.diffRefreshInFlight = false
+		// Always update cache timestamp to prevent tight retry loops on persistent errors.
+		a.diffStatsCache[msg.sessionID] = &diffStatsEntry{
+			stats:       msg.stats,
+			lastRefresh: time.Now(),
+		}
+		// Update dashboard with current session's stats.
+		if sess := a.dashboard.selectedSession(); sess != nil && sess.ID == msg.sessionID {
+			a.dashboard.diffStats = msg.stats
+		}
+		return a, nil
 
 	case splashResizeMsg:
 		// Guard: only resize if we're still on the dashboard and the agent
@@ -468,13 +510,16 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if mgr == nil {
 				return a, nil
 			}
+			sessID := item.session.ID
 			for _, ag := range item.session.Agents() {
 				delete(a.lastKnownStatus, ag.ID)
 			}
-			if err := mgr.KillSession(item.session.ID); err != nil {
+			if err := mgr.KillSession(sessID); err != nil {
 				a.setError(err.Error())
 			}
+			delete(a.diffStatsCache, sessID)
 			a.refreshAgentList()
+			a.updateDashboardDiffStats()
 			return a, nil
 
 		case "m":
@@ -566,6 +611,17 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if a.dashboard.selected != prevSelected || a.dashboard.panelFocus != prevPanelFocus {
 		a.resizeSelectedForDashboard()
 	}
+	// On selection change, update diff stats from cache (or trigger refresh).
+	if a.dashboard.selected != prevSelected {
+		a.updateDashboardDiffStats()
+		if sess := a.dashboard.selectedSession(); sess != nil {
+			entry := a.diffStatsCache[sess.ID]
+			if (entry == nil || time.Since(entry.lastRefresh) > 5*time.Second) && !a.diffRefreshInFlight {
+				diffCmd := a.refreshDiffStatsCmd()
+				return a, tea.Batch(cmd, diffCmd)
+			}
+		}
+	}
 	return a, cmd
 }
 
@@ -625,6 +681,7 @@ func (a App) updateMerge(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Collect agent IDs before KillSession clears the agents map.
 		sess := a.dashboard.selectedSession()
 		if sess != nil {
+			sessID := sess.ID
 			for _, ag := range sess.Agents() {
 				delete(a.lastKnownStatus, ag.ID)
 			}
@@ -632,10 +689,12 @@ func (a App) updateMerge(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if item != nil {
 				mgr := a.managers[item.repoPath]
 				if mgr != nil {
-					_ = mgr.KillSession(sess.ID)
+					_ = mgr.KillSession(sessID)
 				}
 			}
+			delete(a.diffStatsCache, sessID)
 			a.refreshAgentList()
+			a.updateDashboardDiffStats()
 		}
 		a.view = ViewDashboard
 		return a, nil
@@ -844,6 +903,77 @@ func slugify(s string) string {
 		}
 	}
 	return slug
+}
+
+// refreshDiffStatsCmd returns a Cmd that fetches diff stats for the currently selected session.
+func (a *App) refreshDiffStatsCmd() tea.Cmd {
+	sess := a.dashboard.selectedSession()
+	if sess == nil {
+		return nil
+	}
+	repoPath := a.dashboard.selectedRepoPath()
+	if repoPath == "" {
+		return nil
+	}
+	a.diffRefreshInFlight = true
+	sessionID := sess.ID
+	wt := sess.Worktree
+	return func() tea.Msg {
+		fileStats, agg, err := git.GetPerFileDiffStats(repoPath, wt)
+		if err != nil {
+			return diffStatsMsg{sessionID: sessionID, stats: nil}
+		}
+		// Convert git.FileStat to diffFileStat.
+		var files []diffFileStat
+		for _, fs := range fileStats {
+			files = append(files, diffFileStat{
+				Path:       fs.Path,
+				Status:     fs.Status,
+				Insertions: fs.Insertions,
+				Deletions:  fs.Deletions,
+			})
+		}
+		return diffStatsMsg{
+			sessionID: sessionID,
+			stats: &diffSummaryData{
+				Files: files,
+				Aggregate: diffAggregateStats{
+					Files:      agg.Files,
+					Insertions: agg.Insertions,
+					Deletions:  agg.Deletions,
+				},
+			},
+		}
+	}
+}
+
+// updateDashboardDiffStats passes cached diff stats to the dashboard for the current selection.
+func (a *App) updateDashboardDiffStats() {
+	sess := a.dashboard.selectedSession()
+	if sess == nil {
+		a.dashboard.diffStats = nil
+		return
+	}
+	if entry, ok := a.diffStatsCache[sess.ID]; ok {
+		a.dashboard.diffStats = entry.stats
+	} else {
+		a.dashboard.diffStats = nil
+	}
+}
+
+// cleanDiffStatsCache removes entries for sessions that no longer exist.
+func (a *App) cleanDiffStatsCache() {
+	activeSessions := make(map[string]bool)
+	for _, mgr := range a.managers {
+		for _, sess := range mgr.ListSessions() {
+			activeSessions[sess.ID] = true
+		}
+	}
+	for id := range a.diffStatsCache {
+		if !activeSessions[id] {
+			delete(a.diffStatsCache, id)
+		}
+	}
 }
 
 // ensureGitignore adds .baton/ to .gitignore in the given path if not already present.

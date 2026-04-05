@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -29,6 +30,25 @@ type listItem struct {
 	agent    *agent.Agent    // set for agent items
 }
 
+// diffSummaryData holds cached diff stats for rendering in the dashboard.
+type diffSummaryData struct {
+	Files     []diffFileStat
+	Aggregate diffAggregateStats
+}
+
+type diffFileStat struct {
+	Path       string
+	Status     string // "A", "M", or "D"
+	Insertions int
+	Deletions  int
+}
+
+type diffAggregateStats struct {
+	Files      int
+	Insertions int
+	Deletions  int
+}
+
 // dashboardModel shows the hierarchical repo/session/agent list and terminal preview.
 type dashboardModel struct {
 	items        []listItem
@@ -37,6 +57,7 @@ type dashboardModel struct {
 	height       int
 	panelFocus   panelFocus
 	scrollOffset int
+	diffStats    *diffSummaryData // nil when no session selected or no data
 }
 
 func newDashboardModel() dashboardModel {
@@ -298,6 +319,26 @@ func (d dashboardModel) renderList(width int) string {
 		}
 	}
 
+	// If we have diff stats, render the diff summary at the bottom.
+	if d.diffStats != nil {
+		contentH := d.contentHeight()
+		agentListHeight := len(lines)
+		maxDiffHeight := contentH / 3
+		availHeight := contentH - agentListHeight
+		if availHeight > maxDiffHeight {
+			availHeight = maxDiffHeight
+		}
+		if availHeight >= 2 { // need at least separator + one line
+			diffLines := d.renderDiffSummary(width, availHeight)
+			// Pad blank lines between agent list and diff summary.
+			padding := contentH - agentListHeight - len(diffLines)
+			for i := 0; i < padding; i++ {
+				lines = append(lines, "")
+			}
+			lines = append(lines, diffLines...)
+		}
+	}
+
 	return strings.Join(lines, "\n")
 }
 
@@ -435,6 +476,92 @@ func (d dashboardModel) agentItems() []*agent.Agent {
 		}
 	}
 	return result
+}
+
+// renderDiffSummary renders the CHANGES section for the diff summary panel.
+// It returns a slice of lines that fit within the given height.
+func (d dashboardModel) renderDiffSummary(width, maxHeight int) []string {
+	stats := d.diffStats
+
+	// Build the header line: "── CHANGES ── 3 files +47 -12"
+	agg := stats.Aggregate
+	headerStats := fmt.Sprintf(" %d files ", agg.Files)
+	headerStats += StyleSuccess.Render(fmt.Sprintf("+%d", agg.Insertions))
+	headerStats += " "
+	headerStats += StyleError.Render(fmt.Sprintf("-%d", agg.Deletions))
+
+	sepWidth := width - 2
+	if sepWidth < 0 {
+		sepWidth = 0
+	}
+	headerLabel := "── CHANGES ──"
+	padLen := sepWidth - len(headerLabel) - len(fmt.Sprintf(" %d files +%d -%d", agg.Files, agg.Insertions, agg.Deletions))
+	if padLen < 0 {
+		padLen = 0
+	}
+	header := StyleSubtle.Render(headerLabel) + headerStats + StyleSubtle.Render(strings.Repeat("─", padLen))
+
+	var lines []string
+	lines = append(lines, header)
+
+	if len(stats.Files) == 0 {
+		lines = append(lines, StyleSubtle.Render("  No changes"))
+		return lines
+	}
+
+	// Determine how many file rows we can show.
+	availRows := maxHeight - 1 // subtract header
+	fileCount := len(stats.Files)
+	showMore := false
+	visibleFiles := fileCount
+	if fileCount > availRows {
+		visibleFiles = availRows - 1 // leave room for "+N more" indicator
+		showMore = true
+	}
+
+	statusStyle := func(status string) lipgloss.Style {
+		switch status {
+		case "A":
+			return lipgloss.NewStyle().Foreground(ColorSuccess)
+		case "D":
+			return lipgloss.NewStyle().Foreground(ColorError)
+		default: // "M"
+			return lipgloss.NewStyle().Foreground(ColorSecondary)
+		}
+	}
+
+	for i := 0; i < visibleFiles; i++ {
+		f := stats.Files[i]
+		styledStatus := statusStyle(f.Status).Render(f.Status)
+		ins := StyleSuccess.Render(fmt.Sprintf("+%d", f.Insertions))
+		del := StyleError.Render(fmt.Sprintf("-%d", f.Deletions))
+		statsText := fmt.Sprintf(" %s %s", ins, del)
+		// Visible length of stats: " +N -N"
+		statsLen := 2 + len(fmt.Sprintf("+%d", f.Insertions)) + 1 + len(fmt.Sprintf("-%d", f.Deletions))
+
+		name := filepath.Base(f.Path)
+		// "  S name    +N -N" — 4 chars prefix ("  S "), stats at end
+		maxNameLen := width - 4 - statsLen
+		if maxNameLen < 1 {
+			maxNameLen = 1
+		}
+		if len(name) > maxNameLen {
+			name = name[:maxNameLen-1] + "…"
+		}
+		padName := maxNameLen - len(name)
+		if padName < 0 {
+			padName = 0
+		}
+		line := fmt.Sprintf("  %s %s%s%s", styledStatus, name, strings.Repeat(" ", padName), statsText)
+		lines = append(lines, line)
+	}
+
+	if showMore {
+		remaining := fileCount - visibleFiles
+		lines = append(lines, StyleSubtle.Render(fmt.Sprintf("  +%d more files", remaining)))
+	}
+
+	return lines
 }
 
 // humanizeElapsed formats a duration for display.
