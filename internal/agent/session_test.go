@@ -229,6 +229,108 @@ func TestSessionAgentsSorted(t *testing.T) {
 	}
 }
 
+func TestKillLastAgentAutoClosesSession(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo)
+	defer mgr.Shutdown()
+
+	cfg := Config{Task: "test", Rows: 24, Cols: 80}
+	sess, ag1, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 10")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ag2, err := mgr.AddAgentWithCommand(sess.ID, cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 10")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wtPath := sess.Worktree.Path
+	sessID := sess.ID
+
+	// Kill first agent — session should survive.
+	if err := mgr.KillAgent(sessID, ag1.ID); err != nil {
+		t.Fatal(err)
+	}
+	if mgr.GetSession(sessID) == nil {
+		t.Fatal("session should still exist after killing first agent")
+	}
+
+	// Kill second agent — session should auto-close.
+	if err := mgr.KillAgent(sessID, ag2.ID); err != nil {
+		t.Fatal(err)
+	}
+	if mgr.GetSession(sessID) != nil {
+		t.Error("session should be removed after killing last agent")
+	}
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Error("worktree should be removed after session auto-close")
+	}
+
+	// Verify EventSessionClosed was emitted.
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case e := <-mgr.Events():
+			if e.Type == EventSessionClosed && e.SessionID == sessID {
+				return // success
+			}
+		case <-deadline:
+			t.Error("expected EventSessionClosed event")
+			return
+		}
+	}
+}
+
+func TestNaturalExitAutoClosesSession(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo)
+	defer mgr.Shutdown()
+
+	cfg := Config{Task: "test", Rows: 24, Cols: 80}
+	sess, _, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "echo done")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = mgr.AddAgentWithCommand(sess.ID, cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "echo done")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wtPath := sess.Worktree.Path
+	sessID := sess.ID
+
+	// Wait for both agents to exit naturally and session to auto-close.
+	deadline := time.After(5 * time.Second)
+	gotSessionClosed := false
+	for !gotSessionClosed {
+		select {
+		case e := <-mgr.Events():
+			if e.Type == EventSessionClosed && e.SessionID == sessID {
+				gotSessionClosed = true
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for EventSessionClosed")
+		}
+	}
+
+	if mgr.GetSession(sessID) != nil {
+		t.Error("session should be removed after all agents exit naturally")
+	}
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Error("worktree should be removed after session auto-close")
+	}
+}
+
 func TestAddAgentDefaultAssignsUniqueName(t *testing.T) {
 	repo := setupTestRepo(t)
 	mgr := NewManager(repo)
