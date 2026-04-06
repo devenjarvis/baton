@@ -17,6 +17,7 @@ var (
 		{"⏎/→", "interact"},
 		{"n", "new session"},
 		{"c", "add agent"},
+		{"t", "shell"},
 		{"a", "add repo"},
 		{"d", "diff/remove"},
 		{"x", "kill agent"},

@@ -199,6 +199,34 @@ func (m *Manager) AddAgentWithCommand(sessionID string, cfg Config, cmd func(nam
 	return a, nil
 }
 
+// AddShell adds a shell agent to an existing session.
+func (m *Manager) AddShell(sessionID string, cfg Config) (*Agent, error) {
+	m.mu.RLock()
+	sess := m.sessions[sessionID]
+	m.mu.RUnlock()
+
+	if sess == nil {
+		return nil, fmt.Errorf("session %s not found", sessionID)
+	}
+
+	cfg.RepoPath = m.repoPath
+
+	a, err := sess.AddShell(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	m.emit(Event{Type: EventCreated, AgentID: a.ID, SessionID: sessionID, Status: StatusStarting})
+
+	m.watchers.Add(1)
+	go func() {
+		defer m.watchers.Done()
+		m.watchAgent(a, sessionID)
+	}()
+
+	return a, nil
+}
+
 // Create starts a new session with its first agent (backward-compatible wrapper).
 func (m *Manager) Create(cfg Config) (*Agent, error) {
 	_, a, err := m.CreateSession(cfg)
@@ -529,6 +557,7 @@ func (m *Manager) closeSession(sessionID string, sess *Session) {
 	delete(m.sessions, sessionID)
 	m.mu.Unlock()
 
+	sess.KillAll()
 	_ = sess.Cleanup(m.repoPath)
 
 	m.emit(Event{Type: EventSessionClosed, SessionID: sessionID})

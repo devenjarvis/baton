@@ -253,8 +253,6 @@ func (d dashboardModel) renderList(width int) string {
 			sess := item.session
 			status := sess.Status()
 			symbol := status.Symbol()
-			count := fmt.Sprintf("%d agents", sess.AgentCount())
-
 			var symbolStyle lipgloss.Style
 			switch status {
 			case agent.StatusActive:
@@ -267,8 +265,18 @@ func (d dashboardModel) renderList(width int) string {
 				symbolStyle = lipgloss.NewStyle().Foreground(ColorMuted)
 			}
 
-			label := fmt.Sprintf(" %s %s (%s) ", symbolStyle.Render(symbol), sess.GetDisplayName(), count)
-			labelLen := len(symbol) + 1 + len(sess.GetDisplayName()) + len(count) + 5 // approximate visible length
+			displayName := sess.GetDisplayName()
+			// 4 for "  ──", 3 for " symbol ", 1 trailing space, plus some padding chars
+			maxNameLen := width - 10
+			if maxNameLen < 5 {
+				maxNameLen = 5
+			}
+			if len(displayName) > maxNameLen {
+				displayName = displayName[:maxNameLen-1] + "…"
+			}
+
+			label := fmt.Sprintf(" %s %s ", symbolStyle.Render(symbol), displayName)
+			labelLen := len(symbol) + 1 + len(displayName) + 2 // approximate visible length
 			padLen := width - 4 - labelLen
 			if padLen < 0 {
 				padLen = 0
@@ -283,18 +291,26 @@ func (d dashboardModel) renderList(width int) string {
 			symbol := status.Symbol()
 			elapsed := humanizeElapsed(ag.Elapsed())
 
+			if ag.IsShell {
+				symbol = "$"
+			}
+
 			var style lipgloss.Style
-			switch status {
-			case agent.StatusActive:
-				style = lipgloss.NewStyle().Foreground(ColorSecondary)
-			case agent.StatusDone:
-				style = lipgloss.NewStyle().Foreground(ColorSuccess)
-			case agent.StatusError:
-				style = lipgloss.NewStyle().Foreground(ColorError)
-			case agent.StatusIdle:
+			if ag.IsShell {
 				style = lipgloss.NewStyle().Foreground(ColorMuted)
-			default:
-				style = lipgloss.NewStyle().Foreground(ColorWarning)
+			} else {
+				switch status {
+				case agent.StatusActive:
+					style = lipgloss.NewStyle().Foreground(ColorSecondary)
+				case agent.StatusDone:
+					style = lipgloss.NewStyle().Foreground(ColorSuccess)
+				case agent.StatusError:
+					style = lipgloss.NewStyle().Foreground(ColorError)
+				case agent.StatusIdle:
+					style = lipgloss.NewStyle().Foreground(ColorMuted)
+				default:
+					style = lipgloss.NewStyle().Foreground(ColorWarning)
+				}
 			}
 
 			nameWidth := width - 18 // space for indent, symbol, elapsed, padding
@@ -369,7 +385,12 @@ func (d dashboardModel) renderPreview(width int) string {
 	if item.session != nil {
 		sessionInfo = StyleSubtle.Render(fmt.Sprintf(" Session: %s  Worktree: %s", item.session.GetDisplayName(), item.session.Worktree.Path))
 	}
-	taskInfo := StyleSubtle.Render(" Task: " + ag.Task)
+	var taskInfo string
+	if ag.IsShell {
+		taskInfo = StyleSubtle.Render(" Shell — " + ag.WorktreePath)
+	} else {
+		taskInfo = StyleSubtle.Render(" Task: " + ag.Task)
+	}
 
 	var render string
 	if d.scrollOffset > 0 {

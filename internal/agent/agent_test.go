@@ -340,6 +340,105 @@ func TestComposingClearedOnEnter(t *testing.T) {
 	a.mu.RUnlock()
 }
 
+func TestNewShellAgent(t *testing.T) {
+	dir := t.TempDir()
+
+	cfg := Config{Rows: 24, Cols: 80}
+	a, err := newShellAgent("test-shell-1", cfg, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Kill()
+
+	// Verify IsShell flag.
+	if !a.IsShell {
+		t.Error("expected IsShell to be true")
+	}
+	if a.Name != "shell" {
+		t.Errorf("expected Name 'shell', got %q", a.Name)
+	}
+	if a.GetDisplayName() != "shell" {
+		t.Errorf("expected display name 'shell', got %q", a.GetDisplayName())
+	}
+
+	// Send a command to trigger output.
+	a.SendText("echo hello\n")
+	time.Sleep(500 * time.Millisecond)
+
+	// Should transition to Active on output.
+	if s := a.Status(); s != StatusActive {
+		t.Errorf("expected Active after shell output, got %s", s)
+	}
+
+	// Verify output appears in render.
+	render := a.Render()
+	if !strings.Contains(render, "hello") {
+		t.Errorf("expected render to contain 'hello', got: %q", render)
+	}
+
+	// Shell agents should NOT transition to Idle (no statusLoop).
+	time.Sleep(4 * time.Second)
+	if s := a.Status(); s == StatusIdle {
+		t.Error("shell agent should not transition to Idle (no statusLoop)")
+	}
+}
+
+func TestNaturalExitCleansUpGoroutines(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo)
+	defer mgr.Shutdown()
+
+	cfg := Config{Name: "test-natural-exit", Task: "test", Rows: 24, Cols: 80}
+	a, err := mgr.CreateWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "echo done")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for the agent to exit naturally.
+	select {
+	case <-a.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for agent to finish")
+	}
+
+	// writeLoopDone should already be closed (goroutine cleaned up).
+	select {
+	case <-a.writeLoopDone:
+	default:
+		t.Error("writeLoopDone should be closed after natural exit")
+	}
+
+	if s := a.Status(); s != StatusDone {
+		t.Errorf("expected Done, got %s", s)
+	}
+}
+
+func TestKillAfterNaturalExitDoesNotPanic(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo)
+	defer mgr.Shutdown()
+
+	cfg := Config{Name: "test-kill-after-exit", Task: "test", Rows: 24, Cols: 80}
+	a, err := mgr.CreateWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "echo done")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for natural exit.
+	select {
+	case <-a.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for agent to finish")
+	}
+
+	// Kill on an already-exited agent must not panic.
+	a.Kill()
+}
+
 func TestShutdownCleansAll(t *testing.T) {
 	repo := setupTestRepo(t)
 	mgr := NewManager(repo)

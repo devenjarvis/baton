@@ -8,6 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/devenjarvis/baton/internal/agent"
+	"github.com/devenjarvis/baton/internal/config"
 )
 
 // createAgent presses 'n' and executes the async create cmd, returning the updated app.
@@ -815,5 +816,101 @@ func TestMouseClickSessionSnapsToAgent(t *testing.T) {
 	// Should snap from session to the nearest agent.
 	if app.dashboard.items[app.dashboard.selected].kind == listItemSession {
 		t.Fatalf("Expected selection to snap away from session row, but selected=%d is a session", app.dashboard.selected)
+	}
+}
+
+// TestRefreshAgentListRepoAffinity verifies that after killing the last agent
+// in a repo's session, the cursor lands on that repo's header — not on an item
+// in a different repo.
+func TestRefreshAgentListRepoAffinity(t *testing.T) {
+	// Set up two temp repos with git init.
+	dir1, err := os.MkdirTemp("", "baton-repo1-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir1)
+	dir2, err := os.MkdirTemp("", "baton-repo2-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir2)
+
+	initRepo := func(dir string) {
+		for _, args := range [][]string{
+			{"git", "init"},
+			{"git", "commit", "--allow-empty", "-m", "init"},
+		} {
+			cmd := exec.Command(args[0], args[1:]...)
+			cmd.Dir = dir
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("cmd %v in %s: %v\n%s", args, dir, err, out)
+			}
+		}
+	}
+	initRepo(dir1)
+	initRepo(dir2)
+
+	mgr1 := agent.NewManager(dir1)
+	defer mgr1.Shutdown()
+	mgr2 := agent.NewManager(dir2)
+	defer mgr2.Shutdown()
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.managers[dir1] = mgr1
+	app.managers[dir2] = mgr2
+	app.activeRepo = dir1
+
+	app.cfg = &config.Config{
+		Repos: []config.Repo{
+			{Path: dir1, Name: "repo1"},
+			{Path: dir2, Name: "repo2"},
+		},
+	}
+
+	// Create an agent under repo1 (the first repo).
+	sess1, _, err := mgr1.CreateSessionWithCommand(
+		agent.Config{Name: "test-agent", Task: "test"},
+		func(name string) *exec.Cmd { return exec.Command("bash", "-c", "sleep 999") },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	app.refreshAgentList()
+	// List should be: [repo1, session1, agent1, repo2]
+	// Select the agent in repo1 (index 2).
+	for i, it := range app.dashboard.items {
+		if it.kind == listItemAgent && it.repoPath == dir1 {
+			app.dashboard.selected = i
+			break
+		}
+	}
+	if app.dashboard.items[app.dashboard.selected].repoPath != dir1 {
+		t.Fatalf("setup: expected selected item in repo1")
+	}
+
+	// Now kill the session, simulating what happens when 'X' is pressed.
+	mgr1.KillSession(sess1.ID)
+	// Give the agent time to exit.
+	time.Sleep(200 * time.Millisecond)
+	// Refresh the list — list becomes [repo1, repo2].
+	// Without the fix, selected=2 clamps to 1 which is repo2 (wrong repo).
+	app.refreshAgentList()
+
+	// After refresh, the cursor should still be on a repo1 item (the repo header).
+	if len(app.dashboard.items) == 0 {
+		t.Fatal("expected non-empty items after refresh")
+	}
+	selected := app.dashboard.items[app.dashboard.selected]
+	if selected.repoPath != dir1 {
+		t.Errorf("cursor jumped to repo %q, want %q (selected=%d, kind=%v)",
+			selected.repoPath, dir1, app.dashboard.selected, selected.kind)
+	}
+	if selected.kind != listItemRepo {
+		t.Errorf("expected cursor on repo header, got kind=%v", selected.kind)
 	}
 }

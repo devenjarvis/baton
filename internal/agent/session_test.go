@@ -5,6 +5,8 @@ import (
 	"os/exec"
 	"testing"
 	"time"
+
+	"github.com/devenjarvis/baton/internal/git"
 )
 
 func TestSessionCreation(t *testing.T) {
@@ -328,6 +330,98 @@ func TestNaturalExitAutoClosesSession(t *testing.T) {
 	}
 	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
 		t.Error("worktree should be removed after session auto-close")
+	}
+}
+
+func TestAddShellCreatesShellAgent(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo)
+	defer mgr.Shutdown()
+
+	cfg := Config{Task: "test", Rows: 24, Cols: 80}
+	sess, _, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	shellCfg := Config{Rows: 24, Cols: 80}
+	shell, err := sess.AddShell(shellCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !shell.IsShell {
+		t.Error("shell agent should have IsShell == true")
+	}
+	if shell.Name != "shell" {
+		t.Errorf("expected shell agent name 'shell', got %q", shell.Name)
+	}
+	if !sess.HasShell() {
+		t.Error("HasShell() should return true after adding shell")
+	}
+}
+
+func TestAddShellEnforcesOnePerSession(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo)
+	defer mgr.Shutdown()
+
+	cfg := Config{Task: "test", Rows: 24, Cols: 80}
+	sess, _, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	shellCfg := Config{Rows: 24, Cols: 80}
+	_, err = sess.AddShell(shellCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Second shell should fail.
+	_, err = sess.AddShell(shellCfg)
+	if err == nil {
+		t.Error("expected error when adding second shell, got nil")
+	}
+}
+
+func TestSessionStatusExcludesShell(t *testing.T) {
+	repo := setupTestRepo(t)
+
+	// Create session directly (no manager) to avoid auto-close interference.
+	wt := &git.WorktreeInfo{Path: repo, Branch: "main", BaseBranch: "main"}
+	sess := newSession("test-sess", "test", wt)
+
+	// Add a Claude agent that exits quickly.
+	cfg := Config{Task: "test", Rows: 24, Cols: 80}
+	ag, err := sess.AddAgent(cfg, exec.Command("bash", "-c", "echo done"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Add a shell (which will stay active).
+	shellCfg := Config{Rows: 24, Cols: 80}
+	shell, err := sess.AddShell(shellCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer shell.Kill()
+
+	// Wait for the Claude agent to exit naturally.
+	select {
+	case <-ag.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for Claude agent to exit")
+	}
+
+	// Session status should be Done — shell is excluded from the composite.
+	st := sess.Status()
+	if st != StatusDone {
+		t.Fatalf("expected session status Done (shell excluded), got %s", st)
 	}
 }
 
