@@ -83,6 +83,25 @@ func TestCatWriteReadRoundTrip(t *testing.T) {
 	}
 }
 
+func TestPid(t *testing.T) {
+	p := &pty.PTY{}
+	// Before Start, Pid should return 0.
+	if got := p.Pid(); got != 0 {
+		t.Errorf("expected Pid() == 0 before Start, got %d", got)
+	}
+
+	cmd := exec.Command("sleep", "5")
+	if err := p.Start(cmd, 24, 80); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer p.Close()
+
+	// After Start, Pid should be a positive integer.
+	if got := p.Pid(); got <= 0 {
+		t.Errorf("expected Pid() > 0 after Start, got %d", got)
+	}
+}
+
 func TestCloseAndDoneChannel(t *testing.T) {
 	p := &pty.PTY{}
 	cmd := exec.Command("sleep", "60")

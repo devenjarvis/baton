@@ -1,6 +1,10 @@
 package agent
 
-import "math/rand/v2"
+import (
+	"math/rand/v2"
+	"regexp"
+	"strings"
+)
 
 var adjectives = []string{
 	"brave", "calm", "dark", "eager", "fair",
@@ -39,4 +43,27 @@ func RandomName(existing []string) string {
 		}
 	}
 	return name
+}
+
+var nonAlnumRe = regexp.MustCompile(`[^a-zA-Z0-9]+`)
+
+// slugify lowercases s, collapses runs of non-alphanumeric characters to "-",
+// trims leading/trailing "-", and truncates to 40 characters.
+// Returns "" if the result is empty or doesn't start with [a-zA-Z0-9].
+func slugify(s string) string {
+	slug := nonAlnumRe.ReplaceAllString(strings.ToLower(s), "-")
+	slug = strings.Trim(slug, "-")
+	if len(slug) > 40 {
+		slug = slug[:40]
+		slug = strings.TrimRight(slug, "-")
+	}
+	if slug == "" {
+		return ""
+	}
+	if slug[0] < 'a' || slug[0] > 'z' {
+		if slug[0] < '0' || slug[0] > '9' {
+			return ""
+		}
+	}
+	return slug
 }

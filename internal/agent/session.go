@@ -20,6 +20,7 @@ type Session struct {
 	mu           sync.RWMutex
 	agents       map[string]*Agent
 	nextAgentNum int
+	displayName  string
 }
 
 // newSession creates a session with the given worktree.
@@ -210,6 +211,30 @@ func (s *Session) existingNames() []string {
 		names = append(names, a.Name)
 	}
 	return names
+}
+
+// SetDisplayName sets a human-readable display name for the session.
+func (s *Session) SetDisplayName(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.displayName = name
+}
+
+// GetDisplayName returns the display name if set, otherwise falls back to Name.
+func (s *Session) GetDisplayName() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.displayName != "" {
+		return s.displayName
+	}
+	return s.Name
+}
+
+// HasDisplayName reports whether a display name has been set.
+func (s *Session) HasDisplayName() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.displayName != ""
 }
 
 // Elapsed returns how long the session has been running.

@@ -1,7 +1,11 @@
 package agent
 
 import (
+	"encoding/json"
+	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -23,9 +27,11 @@ type Agent struct {
 	pty      *bpty.PTY
 	terminal *vt.Terminal
 
-	mu          sync.RWMutex
-	displayName string
-	status      Status
+	mu             sync.RWMutex
+	displayName    string
+	claudePid      int
+	hasClaudeName  bool
+	status         Status
 	lastOutput  time.Time
 	lastInput   time.Time
 	composing   bool
@@ -73,6 +79,8 @@ func newAgent(id string, cfg Config, worktreePath string) (*Agent, error) {
 		return nil, err
 	}
 
+	claudePid := p.Pid()
+
 	a := &Agent{
 		ID:           id,
 		Name:         cfg.Name,
@@ -81,10 +89,15 @@ func newAgent(id string, cfg Config, worktreePath string) (*Agent, error) {
 		CreatedAt:    time.Now(),
 		pty:          p,
 		terminal:     term,
+		claudePid:    claudePid,
 		status:       StatusStarting,
 		done:          make(chan struct{}),
 		stop:          make(chan struct{}),
 		writeLoopDone: make(chan struct{}),
+	}
+
+	if cfg.Task != "" {
+		a.SetDisplayName(slugify(cfg.Task))
 	}
 
 	go a.readLoop()
@@ -115,6 +128,7 @@ func newAgentWithCommand(id string, cfg Config, worktreePath string, cmd *exec.C
 		CreatedAt:    time.Now(),
 		pty:          p,
 		terminal:     term,
+		claudePid:    p.Pid(),
 		status:       StatusStarting,
 		done:          make(chan struct{}),
 		stop:          make(chan struct{}),
@@ -311,5 +325,66 @@ func (a *Agent) Kill() {
 	a.terminal.Close()
 	// Wait for writeLoop to finish before returning.
 	<-a.writeLoopDone
+}
+
+// ClaudeSessionDir overrides the session directory for testing.
+// When empty, claudeSessionDir() uses the real home directory.
+var ClaudeSessionDir string
+
+func claudeSessionDir() string {
+	if ClaudeSessionDir != "" {
+		return ClaudeSessionDir
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".claude", "sessions")
+}
+
+// PollClaudeSessionName reads the Claude session file for this agent's PID
+// and returns the "name" field if present. Returns "" on any error or if
+// the name field is not yet populated.
+func (a *Agent) PollClaudeSessionName() string {
+	a.mu.RLock()
+	pid := a.claudePid
+	a.mu.RUnlock()
+
+	if pid == 0 {
+		return ""
+	}
+
+	dir := claudeSessionDir()
+	if dir == "" {
+		return ""
+	}
+
+	path := filepath.Join(dir, fmt.Sprintf("%d.json", pid))
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+
+	var session struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(data, &session); err != nil {
+		return ""
+	}
+	return session.Name
+}
+
+// HasClaudeName reports whether the agent has been given a Claude session name.
+func (a *Agent) HasClaudeName() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.hasClaudeName
+}
+
+// SetClaudeName sets whether the agent has been given a Claude session name.
+func (a *Agent) SetClaudeName(v bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.hasClaudeName = v
 }
 
