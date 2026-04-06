@@ -23,7 +23,8 @@ var (
 		{"x", "kill agent"},
 		{"X", "kill session"},
 		{"m", "merge"},
-		{"q", "quit"},
+		{"q", "detach"},
+		{"Q", "quit"},
 	}
 
 	focusTerminalHints = []keyHint{

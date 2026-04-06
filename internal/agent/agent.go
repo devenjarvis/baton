@@ -30,8 +30,9 @@ type Agent struct {
 
 	mu             sync.RWMutex
 	displayName    string
-	claudePid      int
-	hasClaudeName  bool
+	claudePid       int
+	claudeSessionID string
+	hasClaudeName   bool
 	status         Status
 	lastOutput  time.Time
 	lastInput   time.Time
@@ -107,6 +108,66 @@ func newAgent(id string, cfg Config, worktreePath string) (*Agent, error) {
 	go a.statusLoop()
 
 	return a, nil
+}
+
+// newResumedAgent creates and starts an agent that resumes a previous Claude session.
+// It uses `claude --resume <sessionId>` if claudeSessionID is provided, falls back to
+// `claude --continue` if empty, then plain `claude` as last resort.
+func newResumedAgent(id string, cfg Config, worktreePath string, claudeSessionID string) (*Agent, error) {
+	term := vt.New(cfg.Cols, cfg.Rows)
+
+	args := buildResumeArgs(cfg, claudeSessionID)
+	cmd := exec.Command("claude", args...)
+	cmd.Dir = worktreePath
+	cmd.Env = append(cmd.Environ(), "TERM=xterm-256color")
+
+	p := &bpty.PTY{}
+	if err := p.Start(cmd, uint16(cfg.Rows), uint16(cfg.Cols)); err != nil {
+		return nil, err
+	}
+
+	a := &Agent{
+		ID:              id,
+		Name:            cfg.Name,
+		Task:            cfg.Task,
+		WorktreePath:    worktreePath,
+		CreatedAt:       time.Now(),
+		pty:             p,
+		terminal:        term,
+		claudePid:       p.Pid(),
+		claudeSessionID: claudeSessionID,
+		status:          StatusStarting,
+		done:            make(chan struct{}),
+		stop:            make(chan struct{}),
+		writeLoopDone:   make(chan struct{}),
+	}
+
+	go a.readLoop()
+	go a.writeLoop()
+	go a.statusLoop()
+
+	return a, nil
+}
+
+// buildResumeArgs constructs claude CLI arguments for resuming a session.
+func buildResumeArgs(cfg Config, claudeSessionID string) []string {
+	var args []string
+
+	if cfg.BypassPermissions {
+		args = append(args, "--dangerously-skip-permissions")
+	}
+
+	if claudeSessionID != "" {
+		args = append(args, "--resume", claudeSessionID)
+	} else {
+		args = append(args, "--continue")
+	}
+
+	if cfg.Task != "" {
+		args = append(args, cfg.Task)
+	}
+
+	return args
 }
 
 // newAgentWithCommand creates an agent using a custom command instead of claude.
@@ -420,12 +481,32 @@ func (a *Agent) PollClaudeSessionName() string {
 	}
 
 	var session struct {
-		Name string `json:"name"`
+		Name      string `json:"name"`
+		SessionID string `json:"sessionId"`
 	}
 	if err := json.Unmarshal(data, &session); err != nil {
 		return ""
 	}
+	if session.SessionID != "" {
+		a.mu.Lock()
+		a.claudeSessionID = session.SessionID
+		a.mu.Unlock()
+	}
 	return session.Name
+}
+
+// ClaudeSessionID returns the Claude session ID captured from the session file.
+func (a *Agent) ClaudeSessionID() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.claudeSessionID
+}
+
+// SetClaudeSessionID sets the Claude session ID.
+func (a *Agent) SetClaudeSessionID(id string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.claudeSessionID = id
 }
 
 // HasClaudeName reports whether the agent has been given a Claude session name.

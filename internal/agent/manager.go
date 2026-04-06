@@ -2,11 +2,16 @@ package agent
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
+	"strconv"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/devenjarvis/baton/internal/git"
+	"github.com/devenjarvis/baton/internal/state"
 )
 
 var validName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
@@ -382,6 +387,146 @@ func (m *Manager) AgentCount() int {
 // RepoPath returns the manager's repo path.
 func (m *Manager) RepoPath() string {
 	return m.repoPath
+}
+
+// Detach snapshots all sessions into a BatonState, kills all agents but preserves
+// worktrees, and shuts down the manager. Returns the state for persistence.
+func (m *Manager) Detach() *state.BatonState {
+	close(m.done)
+
+	m.mu.RLock()
+	sessions := make([]*Session, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		sessions = append(sessions, s)
+	}
+	m.mu.RUnlock()
+
+	// Snapshot state before killing agents.
+	var sessionStates []state.SessionState
+	for _, s := range sessions {
+		ss := state.SessionState{
+			ID:           s.ID,
+			Name:         s.Name,
+			DisplayName:  s.GetDisplayName(),
+			WorktreePath: s.Worktree.Path,
+			Branch:       s.Worktree.Branch,
+			BaseBranch:   s.Worktree.BaseBranch,
+		}
+		for _, a := range s.Agents() {
+			as := state.AgentState{
+				ID:              a.ID,
+				Name:            a.Name,
+				DisplayName:     a.GetDisplayName(),
+				Task:            a.Task,
+				ClaudeSessionID: a.ClaudeSessionID(),
+			}
+			ss.Agents = append(ss.Agents, as)
+		}
+		sessionStates = append(sessionStates, ss)
+	}
+
+	// Kill all agents but do NOT call Cleanup (preserve worktrees).
+	for _, s := range sessions {
+		s.KillAll()
+	}
+
+	m.watchers.Wait()
+
+	m.mu.Lock()
+	m.sessions = make(map[string]*Session)
+	m.mu.Unlock()
+
+	close(m.events)
+
+	if len(sessionStates) == 0 {
+		return nil
+	}
+
+	return &state.BatonState{
+		Version:  1,
+		SavedAt:  time.Now(),
+		Sessions: sessionStates,
+	}
+}
+
+// ResumeSession recreates a session from saved state without creating a new worktree.
+// It verifies the worktree directory exists, constructs a Session from saved data,
+// and spawns agents with --resume flags.
+func (m *Manager) ResumeSession(ss state.SessionState, cfg Config) error {
+	// Verify worktree directory exists.
+	if _, err := os.Stat(ss.WorktreePath); err != nil {
+		return fmt.Errorf("worktree %s not found: %w", ss.WorktreePath, err)
+	}
+
+	wt := &git.WorktreeInfo{
+		Name:       ss.Name,
+		Path:       ss.WorktreePath,
+		Branch:     ss.Branch,
+		BaseBranch: ss.BaseBranch,
+	}
+
+	sess := newSession(ss.ID, ss.Name, wt)
+	if ss.DisplayName != "" && ss.DisplayName != ss.Name {
+		sess.SetDisplayName(ss.DisplayName)
+	}
+
+	m.mu.Lock()
+	m.sessions[ss.ID] = sess
+	// Parse session ID number to avoid collisions with nextID.
+	if num := parseSessionNum(ss.ID); num >= m.nextID {
+		m.nextID = num + 1
+	}
+	m.mu.Unlock()
+
+	for _, as := range ss.Agents {
+		agentCfg := Config{
+			Name:              as.Name,
+			Task:              as.Task,
+			Rows:              cfg.Rows,
+			Cols:              cfg.Cols,
+			RepoPath:          m.repoPath,
+			BypassPermissions: cfg.BypassPermissions,
+		}
+
+		a, err := sess.AddAgentResumed(agentCfg, as.ClaudeSessionID)
+		if err != nil {
+			// Clean up any agents already created in this session.
+			sess.KillAll()
+			m.mu.Lock()
+			delete(m.sessions, ss.ID)
+			m.mu.Unlock()
+			return fmt.Errorf("resuming agent %s: %w", as.Name, err)
+		}
+
+		// Restore display name from saved state.
+		if as.DisplayName != "" {
+			a.SetDisplayName(as.DisplayName)
+			a.SetClaudeName(true)
+		}
+
+		m.emit(Event{Type: EventCreated, AgentID: a.ID, SessionID: sess.ID, Status: StatusStarting})
+
+		m.watchers.Add(1)
+		go func() {
+			defer m.watchers.Done()
+			m.watchAgent(a, sess.ID)
+		}()
+	}
+
+	return nil
+}
+
+// parseSessionNum extracts the numeric ID from a session ID like "session-3".
+func parseSessionNum(id string) int {
+	parts := strings.SplitN(id, "-", 2)
+	if len(parts) != 2 {
+		return 0
+	}
+	n, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 func (m *Manager) watchAgent(a *Agent, sessionID string) {
