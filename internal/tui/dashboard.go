@@ -283,18 +283,26 @@ func (d dashboardModel) renderList(width int) string {
 			symbol := status.Symbol()
 			elapsed := humanizeElapsed(ag.Elapsed())
 
+			if ag.IsShell {
+				symbol = "$"
+			}
+
 			var style lipgloss.Style
-			switch status {
-			case agent.StatusActive:
-				style = lipgloss.NewStyle().Foreground(ColorSecondary)
-			case agent.StatusDone:
-				style = lipgloss.NewStyle().Foreground(ColorSuccess)
-			case agent.StatusError:
-				style = lipgloss.NewStyle().Foreground(ColorError)
-			case agent.StatusIdle:
+			if ag.IsShell {
 				style = lipgloss.NewStyle().Foreground(ColorMuted)
-			default:
-				style = lipgloss.NewStyle().Foreground(ColorWarning)
+			} else {
+				switch status {
+				case agent.StatusActive:
+					style = lipgloss.NewStyle().Foreground(ColorSecondary)
+				case agent.StatusDone:
+					style = lipgloss.NewStyle().Foreground(ColorSuccess)
+				case agent.StatusError:
+					style = lipgloss.NewStyle().Foreground(ColorError)
+				case agent.StatusIdle:
+					style = lipgloss.NewStyle().Foreground(ColorMuted)
+				default:
+					style = lipgloss.NewStyle().Foreground(ColorWarning)
+				}
 			}
 
 			nameWidth := width - 18 // space for indent, symbol, elapsed, padding
@@ -369,7 +377,12 @@ func (d dashboardModel) renderPreview(width int) string {
 	if item.session != nil {
 		sessionInfo = StyleSubtle.Render(fmt.Sprintf(" Session: %s  Worktree: %s", item.session.GetDisplayName(), item.session.Worktree.Path))
 	}
-	taskInfo := StyleSubtle.Render(" Task: " + ag.Task)
+	var taskInfo string
+	if ag.IsShell {
+		taskInfo = StyleSubtle.Render(" Shell — " + ag.WorktreePath)
+	} else {
+		taskInfo = StyleSubtle.Render(" Task: " + ag.Task)
+	}
 
 	var render string
 	if d.scrollOffset > 0 {

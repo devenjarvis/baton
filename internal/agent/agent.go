@@ -21,6 +21,7 @@ type Agent struct {
 	ID           string
 	Name         string
 	Task         string
+	IsShell      bool   // true for shell agents (not Claude)
 	WorktreePath string // reference only; session owns the worktree
 	CreatedAt    time.Time
 
@@ -40,6 +41,7 @@ type Agent struct {
 	done         chan struct{}
 	stop         chan struct{}
 	writeLoopDone chan struct{}
+	killOnce     sync.Once
 }
 
 // Config holds parameters for creating a new agent.
@@ -138,6 +140,47 @@ func newAgentWithCommand(id string, cfg Config, worktreePath string, cmd *exec.C
 	go a.readLoop()
 	go a.writeLoop()
 	go a.statusLoop()
+
+	return a, nil
+}
+
+// newShellAgent creates an agent that spawns the user's shell instead of claude.
+// It reuses the same PTY+VT setup and readLoop/writeLoop but skips statusLoop —
+// shell agents stay StatusActive once output is received.
+func newShellAgent(id string, cfg Config, worktreePath string) (*Agent, error) {
+	term := vt.New(cfg.Cols, cfg.Rows)
+
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/sh"
+	}
+	cmd := exec.Command(shell)
+	cmd.Dir = worktreePath
+	cmd.Env = append(cmd.Environ(), "TERM=xterm-256color")
+
+	p := &bpty.PTY{}
+	if err := p.Start(cmd, uint16(cfg.Rows), uint16(cfg.Cols)); err != nil {
+		return nil, err
+	}
+
+	a := &Agent{
+		ID:           id,
+		Name:         "shell",
+		IsShell:      true,
+		WorktreePath: worktreePath,
+		CreatedAt:    time.Now(),
+		pty:          p,
+		terminal:     term,
+		displayName:  "shell",
+		status:       StatusStarting,
+		done:         make(chan struct{}),
+		stop:         make(chan struct{}),
+		writeLoopDone: make(chan struct{}),
+	}
+
+	go a.readLoop()
+	go a.writeLoop()
+	// No statusLoop — shell agents don't transition to Idle.
 
 	return a, nil
 }
@@ -318,11 +361,14 @@ func (a *Agent) ExitErr() error {
 }
 
 // Kill terminates the agent's process and waits for goroutines to exit.
+// Safe to call multiple times — subsequent calls are no-ops.
 func (a *Agent) Kill() {
-	close(a.stop)
-	a.pty.Close()
-	// Close terminal to unblock writeLoop's Read call.
-	a.terminal.Close()
+	a.killOnce.Do(func() {
+		close(a.stop)
+		a.pty.Close()
+		// Close terminal to unblock writeLoop's Read call.
+		a.terminal.Close()
+	})
 	// Wait for writeLoop to finish before returning.
 	<-a.writeLoopDone
 }
