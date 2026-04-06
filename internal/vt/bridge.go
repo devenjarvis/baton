@@ -106,7 +106,9 @@ func (t *Terminal) Write(p []byte) (int, error) {
 				t.historyMu.Lock()
 				t.history = append(t.history, topLine)
 				if len(t.history) > maxHistoryLines {
-					t.history = t.history[len(t.history)-maxHistoryLines:]
+					trimmed := make([]string, maxHistoryLines)
+					copy(trimmed, t.history[len(t.history)-maxHistoryLines:])
+					t.history = trimmed
 				}
 				t.historyMu.Unlock()
 			}

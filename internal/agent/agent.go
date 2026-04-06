@@ -39,6 +39,7 @@ type Agent struct {
 
 	done         chan struct{}
 	stop         chan struct{}
+	stopOnce     sync.Once
 	writeLoopDone chan struct{}
 }
 
@@ -172,6 +173,11 @@ func (a *Agent) readLoop() {
 		a.status = StatusDone
 	}
 	a.mu.Unlock()
+
+	// Close terminal to unblock writeLoop's Read call and bridgeRead's pipe,
+	// mirroring what Kill() does for forced exits.
+	a.terminal.Close()
+	<-a.writeLoopDone
 
 	close(a.done)
 }
@@ -319,12 +325,17 @@ func (a *Agent) ExitErr() error {
 
 // Kill terminates the agent's process and waits for goroutines to exit.
 func (a *Agent) Kill() {
-	close(a.stop)
+	a.closeStop()
 	a.pty.Close()
 	// Close terminal to unblock writeLoop's Read call.
 	a.terminal.Close()
 	// Wait for writeLoop to finish before returning.
 	<-a.writeLoopDone
+}
+
+// closeStop safely closes the stop channel exactly once.
+func (a *Agent) closeStop() {
+	a.stopOnce.Do(func() { close(a.stop) })
 }
 
 // ClaudeSessionDir overrides the session directory for testing.
