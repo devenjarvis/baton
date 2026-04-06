@@ -80,6 +80,29 @@ func (s *Session) AddAgentDefault(cfg Config) (*Agent, error) {
 	return a, nil
 }
 
+// AddAgentResumed creates and starts a new agent that resumes a previous Claude session.
+func (s *Session) AddAgentResumed(cfg Config, claudeSessionID string) (*Agent, error) {
+	s.mu.Lock()
+	if cfg.Name == "" {
+		cfg.Name = RandomName(s.existingNames())
+	}
+	s.nextAgentNum++
+	num := s.nextAgentNum
+	id := fmt.Sprintf("%s-agent-%d", s.ID, num)
+	s.mu.Unlock()
+
+	a, err := newResumedAgent(id, cfg, s.Worktree.Path, claudeSessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	s.agents[id] = a
+	s.mu.Unlock()
+
+	return a, nil
+}
+
 // GetAgent returns an agent by ID, or nil if not found.
 func (s *Session) GetAgent(id string) *Agent {
 	s.mu.RLock()

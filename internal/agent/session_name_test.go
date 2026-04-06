@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -83,6 +84,32 @@ func TestSlugify(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("slugify(%q) = %q, want %q", tc.input, got, tc.want)
 		}
+	}
+}
+
+func TestPollClaudeSessionName_CapturesSessionID(t *testing.T) {
+	dir := t.TempDir()
+	old := ClaudeSessionDir
+	ClaudeSessionDir = dir
+	defer func() { ClaudeSessionDir = old }()
+
+	pid := 12345
+	data, _ := json.Marshal(map[string]string{
+		"sessionId": "test-uuid-123",
+		"name":      "test-session",
+	})
+	os.WriteFile(filepath.Join(dir, fmt.Sprintf("%d.json", pid)), data, 0644)
+
+	a := &Agent{
+		claudePid: pid,
+	}
+
+	name := a.PollClaudeSessionName()
+	if name != "test-session" {
+		t.Errorf("expected name 'test-session', got %q", name)
+	}
+	if got := a.ClaudeSessionID(); got != "test-uuid-123" {
+		t.Errorf("expected session ID 'test-uuid-123', got %q", got)
 	}
 }
 

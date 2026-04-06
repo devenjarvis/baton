@@ -14,6 +14,7 @@ import (
 	"github.com/devenjarvis/baton/internal/audio"
 	"github.com/devenjarvis/baton/internal/config"
 	"github.com/devenjarvis/baton/internal/git"
+	"github.com/devenjarvis/baton/internal/state"
 )
 
 // tickMsg triggers periodic re-renders.
@@ -170,6 +171,34 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				ensureGitignore(repo.Path)
 				cmds = append(cmds, listenEvents(mgr))
 			}
+		}
+		// Auto-resume saved sessions for each repo.
+		for _, repo := range msg.cfg.Repos {
+			bs, err := state.Load(repo.Path)
+			if err != nil || bs == nil {
+				continue
+			}
+			mgr := a.managers[repo.Path]
+			if mgr == nil {
+				continue
+			}
+			bypassPerms := true
+			if a.cfg != nil {
+				bypassPerms = a.cfg.GetBypassPermissions()
+			}
+			resumeCfg := agent.Config{
+				Rows:              24,
+				Cols:              80,
+				BypassPermissions: bypassPerms,
+			}
+			for _, ss := range bs.Sessions {
+				if err := mgr.ResumeSession(ss, resumeCfg); err != nil {
+					// Skip sessions whose worktrees are missing — don't crash.
+					continue
+				}
+			}
+			// Clean up state file after successful resume.
+			_ = state.Remove(repo.Path)
 		}
 		// Always start on the dashboard — single repo or many.
 		a.view = ViewDashboard
@@ -350,6 +379,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch msg.String() {
 		case "q", "ctrl+c":
+			// Detach path: save state and exit, preserving worktrees.
 			hasRunning := false
 			for _, mgr := range a.managers {
 				if mgr.AgentCount() > 0 {
@@ -361,8 +391,35 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.confirmQuit = true
 				return a, nil
 			}
+			// Detach all managers and save state.
+			for repoPath, mgr := range a.managers {
+				bs := mgr.Detach()
+				if bs != nil {
+					_ = state.Save(repoPath, bs)
+				} else {
+					_ = state.Remove(repoPath)
+				}
+			}
+			if a.audioPlayer != nil {
+				a.audioPlayer.Close()
+			}
+			return a, tea.Quit
+		case "Q":
+			// Force quit: full cleanup, remove state.
+			hasRunning := false
 			for _, mgr := range a.managers {
+				if mgr.AgentCount() > 0 {
+					hasRunning = true
+					break
+				}
+			}
+			if hasRunning && !a.confirmQuit {
+				a.confirmQuit = true
+				return a, nil
+			}
+			for repoPath, mgr := range a.managers {
 				mgr.Shutdown()
+				_ = state.Remove(repoPath)
 			}
 			if a.audioPlayer != nil {
 				a.audioPlayer.Close()
@@ -843,7 +900,7 @@ func (a App) View() tea.View {
 
 	// Show quit confirmation.
 	if a.confirmQuit {
-		confirmLine := StyleWarning.Render("Agents are running. Press q again to quit, or any key to cancel.")
+		confirmLine := StyleWarning.Render("Agents are running. q to detach (resume later), Q to quit and clean up, any key to cancel.")
 		content = lipgloss.JoinVertical(lipgloss.Left, confirmLine, content)
 	}
 
