@@ -189,7 +189,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			// Check for Active->Idle transition.
 			if prev, ok := a.lastKnownStatus[ag.ID]; ok {
-				if prev == agent.StatusActive && currentStatus == agent.StatusIdle && ag.HasReceivedInput() {
+				if prev == agent.StatusActive && currentStatus == agent.StatusIdle && ag.HasReceivedInput() && !ag.IsShell {
 					if a.audioPlayer != nil {
 						a.audioPlayer.Play()
 					}
@@ -199,7 +199,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.lastKnownStatus[ag.ID] = currentStatus
 
 			// Poll Claude session file for auto-generated name.
-			if !ag.HasClaudeName() {
+			if !ag.IsShell && !ag.HasClaudeName() {
 				if name := ag.PollClaudeSessionName(); name != "" {
 					ag.SetDisplayName(name)
 					ag.SetClaudeName(true)
@@ -457,6 +457,52 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.view = ViewFileBrowser
 			return a, nil
 
+		case "t":
+			// Open or focus a shell terminal in the selected session.
+			sess := a.dashboard.selectedSession()
+			if sess == nil {
+				a.setError("No session selected")
+				return a, nil
+			}
+			if sess.HasShell() {
+				// Shell exists — select it and enter focusTerminal.
+				for i, item := range a.dashboard.items {
+					if item.kind == listItemAgent && item.agent != nil && item.agent.IsShell && item.session == sess {
+						a.dashboard.selected = i
+						a.dashboard.panelFocus = focusTerminal
+						a.resizeSelectedForDashboard()
+						break
+					}
+				}
+				return a, nil
+			}
+			repoPath := a.dashboard.selectedRepoPath()
+			if repoPath == "" {
+				repoPath = a.activeRepo
+			}
+			mgr := a.managers[repoPath]
+			if mgr == nil {
+				return a, nil
+			}
+			previewW := a.dashboard.previewTermWidth()
+			previewH := a.dashboard.previewTermHeight()
+			if previewW <= 0 || previewH <= 0 {
+				a.setError("Terminal size not yet known; try again")
+				return a, nil
+			}
+			cfg := agent.Config{
+				Rows: previewH,
+				Cols: previewW,
+			}
+			sessionID := sess.ID
+			return a, func() tea.Msg {
+				ag, err := mgr.AddShell(sessionID, cfg)
+				if err != nil {
+					return createResultMsg{err: err}
+				}
+				return createResultMsg{sessionID: sessionID, agentID: ag.ID}
+			}
+
 		case "d":
 			item := a.dashboard.selectedItem()
 			if item == nil {
@@ -540,8 +586,11 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if sess == nil {
 				return a, nil
 			}
-			// Check that all agents in the session are done or idle.
+			// Check that all non-shell agents in the session are done or idle.
 			for _, ag := range sess.Agents() {
+				if ag.IsShell {
+					continue
+				}
 				st := ag.Status()
 				if st != agent.StatusDone && st != agent.StatusIdle {
 					a.setError("All agents in session must be done or idle to merge")

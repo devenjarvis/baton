@@ -80,6 +80,45 @@ func (s *Session) AddAgentDefault(cfg Config) (*Agent, error) {
 	return a, nil
 }
 
+// AddShell creates and starts a shell agent within this session.
+// Only one shell per session is allowed.
+func (s *Session) AddShell(cfg Config) (*Agent, error) {
+	s.mu.Lock()
+	for _, a := range s.agents {
+		if a.IsShell {
+			s.mu.Unlock()
+			return nil, fmt.Errorf("session %s already has a shell agent", s.ID)
+		}
+	}
+	s.nextAgentNum++
+	num := s.nextAgentNum
+	id := fmt.Sprintf("%s-agent-%d", s.ID, num)
+	s.mu.Unlock()
+
+	a, err := newShellAgent(id, cfg, s.Worktree.Path)
+	if err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	s.agents[id] = a
+	s.mu.Unlock()
+
+	return a, nil
+}
+
+// HasShell reports whether this session has a shell agent.
+func (s *Session) HasShell() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, a := range s.agents {
+		if a.IsShell {
+			return true
+		}
+	}
+	return false
+}
+
 // GetAgent returns an agent by ID, or nil if not found.
 func (s *Session) GetAgent(id string) *Agent {
 	s.mu.RLock()
@@ -116,8 +155,13 @@ func (s *Session) Status() Status {
 	hasIdle := false
 	hasError := false
 	allDone := true
+	nonShellCount := 0
 
 	for _, a := range s.agents {
+		if a.IsShell {
+			continue
+		}
+		nonShellCount++
 		st := a.Status()
 		switch st {
 		case StatusActive:
@@ -138,6 +182,9 @@ func (s *Session) Status() Status {
 		}
 	}
 
+	if nonShellCount == 0 {
+		return StatusIdle
+	}
 	if hasStarting {
 		return StatusStarting
 	}
