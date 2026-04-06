@@ -826,6 +826,12 @@ func (a *App) refreshAgentList() {
 		return
 	}
 
+	// Remember which repo the cursor is in before rebuilding.
+	var prevRepo string
+	if a.dashboard.selected >= 0 && a.dashboard.selected < len(a.dashboard.items) {
+		prevRepo = a.dashboard.items[a.dashboard.selected].repoPath
+	}
+
 	// Build hierarchical list: repo > session > agent.
 	var items []listItem
 	for _, repo := range a.cfg.Repos {
@@ -864,6 +870,17 @@ func (a *App) refreshAgentList() {
 	}
 	a.dashboard.items = items
 	a.dashboard.clampToAgent()
+
+	// If the selection landed in a different repo, search backward for the
+	// nearest item in the original repo (an agent or the repo header).
+	if prevRepo != "" && len(items) > 0 && items[a.dashboard.selected].repoPath != prevRepo {
+		for i := a.dashboard.selected; i >= 0; i-- {
+			if items[i].repoPath == prevRepo && items[i].kind != listItemSession {
+				a.dashboard.selected = i
+				break
+			}
+		}
+	}
 }
 
 func (a App) View() tea.View {
