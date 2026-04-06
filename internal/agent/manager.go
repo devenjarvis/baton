@@ -20,6 +20,7 @@ const (
 	EventOutput
 	EventDone
 	EventError
+	EventSessionClosed
 )
 
 // Event represents something that happened to an agent.
@@ -246,7 +247,8 @@ func (m *Manager) List() []*Agent {
 	return result
 }
 
-// KillAgent kills a single agent within a session. Does not remove the session.
+// KillAgent kills a single agent within a session. If the session becomes
+// empty after the kill, the session is automatically cleaned up and removed.
 func (m *Manager) KillAgent(sessionID, agentID string) error {
 	m.mu.RLock()
 	sess := m.sessions[sessionID]
@@ -261,6 +263,12 @@ func (m *Manager) KillAgent(sessionID, agentID string) error {
 	}
 
 	sess.KillAgent(agentID)
+
+	// Auto-close empty sessions.
+	if sess.AgentCount() == 0 {
+		m.closeSession(sessionID, sess)
+	}
+
 	return nil
 }
 
@@ -353,8 +361,32 @@ func (m *Manager) watchAgent(a *Agent, sessionID string) {
 	case <-a.Done():
 		status := a.Status()
 		m.emit(Event{Type: EventDone, AgentID: a.ID, SessionID: sessionID, Status: status})
+
+		// Auto-close session if all agents are done.
+		m.mu.RLock()
+		sess := m.sessions[sessionID]
+		m.mu.RUnlock()
+		if sess != nil && sess.Status() == StatusDone {
+			m.closeSession(sessionID, sess)
+		}
 	case <-m.done:
 	}
+}
+
+// closeSession cleans up and removes a session, emitting EventSessionClosed.
+// Safe to call concurrently — only the first caller performs cleanup.
+func (m *Manager) closeSession(sessionID string, sess *Session) {
+	m.mu.Lock()
+	if _, exists := m.sessions[sessionID]; !exists {
+		m.mu.Unlock()
+		return // already cleaned up by another goroutine
+	}
+	delete(m.sessions, sessionID)
+	m.mu.Unlock()
+
+	_ = sess.Cleanup(m.repoPath)
+
+	m.emit(Event{Type: EventSessionClosed, SessionID: sessionID})
 }
 
 func (m *Manager) emit(e Event) {
