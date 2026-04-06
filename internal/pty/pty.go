@@ -81,6 +81,15 @@ func (p *PTY) Close() error {
 	return closeErr
 }
 
+// Pid returns the process ID of the spawned subprocess.
+// Returns 0 if the process has not been started yet.
+func (p *PTY) Pid() int {
+	if p.cmd != nil && p.cmd.Process != nil {
+		return p.cmd.Process.Pid
+	}
+	return 0
+}
+
 // Done returns a channel that fires when the subprocess exits.
 func (p *PTY) Done() <-chan struct{} {
 	return p.done

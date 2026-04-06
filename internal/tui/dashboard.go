@@ -246,8 +246,8 @@ func (d dashboardModel) renderList(width int) string {
 				symbolStyle = lipgloss.NewStyle().Foreground(ColorMuted)
 			}
 
-			label := fmt.Sprintf(" %s %s (%s) ", symbolStyle.Render(symbol), sess.Name, count)
-			labelLen := len(symbol) + 1 + len(sess.Name) + len(count) + 5 // approximate visible length
+			label := fmt.Sprintf(" %s %s (%s) ", symbolStyle.Render(symbol), sess.GetDisplayName(), count)
+			labelLen := len(symbol) + 1 + len(sess.GetDisplayName()) + len(count) + 5 // approximate visible length
 			padLen := width - 4 - labelLen
 			if padLen < 0 {
 				padLen = 0
@@ -326,7 +326,7 @@ func (d dashboardModel) renderPreview(width int) string {
 
 	sessionInfo := ""
 	if item.session != nil {
-		sessionInfo = StyleSubtle.Render(fmt.Sprintf(" Session: %s  Worktree: %s", item.session.Name, item.session.Worktree.Path))
+		sessionInfo = StyleSubtle.Render(fmt.Sprintf(" Session: %s  Worktree: %s", item.session.GetDisplayName(), item.session.Worktree.Path))
 	}
 	taskInfo := StyleSubtle.Render(" Task: " + ag.Task)
 

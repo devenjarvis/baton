@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -163,8 +162,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		a.refreshAgentList()
-		// Auto-rename agents that just went idle for the first time,
-		// and detect Active->Idle transitions for audio notification.
+		// Poll for Claude session names and detect Active->Idle transitions.
 		for _, item := range a.dashboard.items {
 			if item.kind != listItemAgent || item.agent == nil {
 				continue
@@ -182,14 +180,16 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			a.lastKnownStatus[ag.ID] = currentStatus
 
-			if currentStatus != agent.StatusIdle || ag.HasDisplayName() {
-				continue
+			// Poll Claude session file for auto-generated name.
+			if !ag.HasClaudeName() {
+				if name := ag.PollClaudeSessionName(); name != "" {
+					ag.SetDisplayName(name)
+					ag.SetClaudeName(true)
+					if item.session != nil && !item.session.HasDisplayName() {
+						item.session.SetDisplayName(name)
+					}
+				}
 			}
-			name := extractAgentName(ag.Render())
-			if name == "" {
-				name = ag.Name // fallback: use random name to prevent retrying
-			}
-			ag.SetDisplayName(name)
 		}
 		if a.errTicks > 0 {
 			a.errTicks--
@@ -428,7 +428,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				files := git.ParseDiffFiles(rawDiff)
 				a.view = ViewDiff
-				a.diff = newDiffModel(sess.Name, files, a.width, a.height-1)
+				a.diff = newDiffModel(sess.GetDisplayName(), files, a.width, a.height-1)
 				return a, nil
 			}
 			// Repo header selected — remove the repo.
@@ -791,59 +791,6 @@ func (a App) View() tea.View {
 		v.MouseMode = tea.MouseModeCellMotion
 	}
 	return v
-}
-
-var (
-	ansiEscapeRe = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
-	nonAlnumRe   = regexp.MustCompile(`[^a-zA-Z0-9]+`)
-)
-
-// extractAgentName scans ANSI-rendered terminal output for the first Claude REPL
-// user-input line ("> " prefix after stripping escape codes) and returns a slug.
-// Returns "" if no suitable line is found.
-func extractAgentName(rendered string) string {
-	// Strip ANSI escape codes.
-	plain := ansiEscapeRe.ReplaceAllString(rendered, "")
-
-	// Find the first line starting with "> " (Claude REPL user input).
-	for _, line := range strings.Split(plain, "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "> ") {
-			continue
-		}
-		input := strings.TrimPrefix(line, "> ")
-		input = strings.TrimSpace(input)
-		if input == "" {
-			continue
-		}
-		slug := slugify(input)
-		if slug != "" {
-			return slug
-		}
-	}
-	return ""
-}
-
-// slugify lowercases s, collapses runs of non-alphanumeric characters to "-",
-// trims leading/trailing "-", and truncates to 40 characters.
-// Returns "" if the result is empty or doesn't start with [a-zA-Z0-9].
-func slugify(s string) string {
-	slug := nonAlnumRe.ReplaceAllString(strings.ToLower(s), "-")
-	slug = strings.Trim(slug, "-")
-	if len(slug) > 40 {
-		slug = slug[:40]
-		slug = strings.TrimRight(slug, "-")
-	}
-	if slug == "" {
-		return ""
-	}
-	// Must start with alphanumeric (validName constraint).
-	if slug[0] < 'a' || slug[0] > 'z' {
-		if slug[0] < '0' || slug[0] > '9' {
-			return ""
-		}
-	}
-	return slug
 }
 
 // ensureGitignore adds .baton/ to .gitignore in the given path if not already present.
