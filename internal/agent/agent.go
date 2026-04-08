@@ -53,25 +53,35 @@ type Config struct {
 	Cols              int
 	RepoPath          string
 	BypassPermissions bool
+	AgentProgram      string // CLI program to spawn; defaults to "claude" if empty
 }
 
-// newAgent creates and starts an agent with the default claude command.
+// agentProgram returns the CLI program from cfg, defaulting to "claude".
+func agentProgram(cfg Config) string {
+	if cfg.AgentProgram != "" {
+		return cfg.AgentProgram
+	}
+	return "claude"
+}
+
+// newAgent creates and starts an agent with the configured agent program.
 // The worktreePath is provided by the session — agents do not create worktrees.
 func newAgent(id string, cfg Config, worktreePath string) (*Agent, error) {
 	term := vt.New(cfg.Cols, cfg.Rows)
 
+	prog := agentProgram(cfg)
 	var cmd *exec.Cmd
 	if cfg.BypassPermissions {
 		if cfg.Task != "" {
-			cmd = exec.Command("claude", "--dangerously-skip-permissions", cfg.Task)
+			cmd = exec.Command(prog, "--dangerously-skip-permissions", cfg.Task)
 		} else {
-			cmd = exec.Command("claude", "--dangerously-skip-permissions")
+			cmd = exec.Command(prog, "--dangerously-skip-permissions")
 		}
 	} else {
 		if cfg.Task != "" {
-			cmd = exec.Command("claude", cfg.Task)
+			cmd = exec.Command(prog, cfg.Task)
 		} else {
-			cmd = exec.Command("claude")
+			cmd = exec.Command(prog)
 		}
 	}
 	cmd.Dir = worktreePath
@@ -117,7 +127,7 @@ func newResumedAgent(id string, cfg Config, worktreePath string, claudeSessionID
 	term := vt.New(cfg.Cols, cfg.Rows)
 
 	args := buildResumeArgs(cfg, claudeSessionID)
-	cmd := exec.Command("claude", args...)
+	cmd := exec.Command(agentProgram(cfg), args...)
 	cmd.Dir = worktreePath
 	cmd.Env = append(cmd.Environ(), "TERM=xterm-256color")
 

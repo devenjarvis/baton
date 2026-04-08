@@ -8,6 +8,7 @@ import (
 	"time"
 
 	xvt "github.com/charmbracelet/x/vt"
+	"github.com/devenjarvis/baton/internal/config"
 )
 
 // setupTestRepo creates a temporary git repo with an initial commit.
@@ -19,6 +20,7 @@ func setupTestRepo(t *testing.T) string {
 		{"git", "init"},
 		{"git", "config", "user.email", "test@test.com"},
 		{"git", "config", "user.name", "Test"},
+		{"git", "config", "commit.gpgsign", "false"},
 	}
 	for _, args := range cmds {
 		cmd := exec.Command(args[0], args[1:]...)
@@ -46,9 +48,13 @@ func setupTestRepo(t *testing.T) string {
 	return dir
 }
 
+func defaultTestSettings() config.ResolvedSettings {
+	return config.Resolve(nil, nil)
+}
+
 func TestAgentRenderContainsOutput(t *testing.T) {
 	repo := setupTestRepo(t)
-	mgr := NewManager(repo)
+	mgr := NewManager(repo, defaultTestSettings())
 	defer mgr.Shutdown()
 
 	cfg := Config{Name: "test-echo", Task: "echo hello", Rows: 24, Cols: 80}
@@ -70,7 +76,7 @@ func TestAgentRenderContainsOutput(t *testing.T) {
 
 func TestAgentStatusTransitions(t *testing.T) {
 	repo := setupTestRepo(t)
-	mgr := NewManager(repo)
+	mgr := NewManager(repo, defaultTestSettings())
 	defer mgr.Shutdown()
 
 	cfg := Config{Name: "test-status", Task: "test", Rows: 24, Cols: 80}
@@ -107,7 +113,7 @@ func TestAgentStatusTransitions(t *testing.T) {
 
 func TestMultipleSessionsUniqueWorktrees(t *testing.T) {
 	repo := setupTestRepo(t)
-	mgr := NewManager(repo)
+	mgr := NewManager(repo, defaultTestSettings())
 	defer mgr.Shutdown()
 
 	sessions := make([]*Session, 3)
@@ -138,7 +144,7 @@ func TestMultipleSessionsUniqueWorktrees(t *testing.T) {
 
 func TestKillAndCleanup(t *testing.T) {
 	repo := setupTestRepo(t)
-	mgr := NewManager(repo)
+	mgr := NewManager(repo, defaultTestSettings())
 	defer mgr.Shutdown()
 
 	cfg := Config{Name: "test-kill", Task: "test", Rows: 24, Cols: 80}
@@ -186,7 +192,7 @@ func TestConfig_BypassPermissionsField(t *testing.T) {
 
 func TestIdleSuppressedWhileTyping(t *testing.T) {
 	repo := setupTestRepo(t)
-	mgr := NewManager(repo)
+	mgr := NewManager(repo, defaultTestSettings())
 	defer mgr.Shutdown()
 
 	cfg := Config{Name: "test-idle-typing", Task: "test", Rows: 24, Cols: 80}
@@ -218,7 +224,7 @@ func TestIdleSuppressedWhileTyping(t *testing.T) {
 
 func TestIdleTransitionWithoutInput(t *testing.T) {
 	repo := setupTestRepo(t)
-	mgr := NewManager(repo)
+	mgr := NewManager(repo, defaultTestSettings())
 	defer mgr.Shutdown()
 
 	cfg := Config{Name: "test-idle-no-input", Task: "test", Rows: 24, Cols: 80}
@@ -246,7 +252,7 @@ func TestIdleTransitionWithoutInput(t *testing.T) {
 
 func TestIdleWhileComposingUsesLongerTimeout(t *testing.T) {
 	repo := setupTestRepo(t)
-	mgr := NewManager(repo)
+	mgr := NewManager(repo, defaultTestSettings())
 	defer mgr.Shutdown()
 
 	cfg := Config{Name: "test-composing-idle", Task: "test", Rows: 24, Cols: 80}
@@ -276,7 +282,7 @@ func TestIdleWhileComposingUsesLongerTimeout(t *testing.T) {
 
 func TestIdleAfterEnterUsesNormalTimeout(t *testing.T) {
 	repo := setupTestRepo(t)
-	mgr := NewManager(repo)
+	mgr := NewManager(repo, defaultTestSettings())
 	defer mgr.Shutdown()
 
 	cfg := Config{Name: "test-enter-idle", Task: "test", Rows: 24, Cols: 80}
@@ -308,7 +314,7 @@ func TestIdleAfterEnterUsesNormalTimeout(t *testing.T) {
 
 func TestComposingClearedOnEnter(t *testing.T) {
 	repo := setupTestRepo(t)
-	mgr := NewManager(repo)
+	mgr := NewManager(repo, defaultTestSettings())
 	defer mgr.Shutdown()
 
 	cfg := Config{Name: "test-composing-clear", Task: "test", Rows: 24, Cols: 80}
@@ -385,7 +391,7 @@ func TestNewShellAgent(t *testing.T) {
 
 func TestNaturalExitCleansUpGoroutines(t *testing.T) {
 	repo := setupTestRepo(t)
-	mgr := NewManager(repo)
+	mgr := NewManager(repo, defaultTestSettings())
 	defer mgr.Shutdown()
 
 	cfg := Config{Name: "test-natural-exit", Task: "test", Rows: 24, Cols: 80}
@@ -417,7 +423,7 @@ func TestNaturalExitCleansUpGoroutines(t *testing.T) {
 
 func TestKillAfterNaturalExitDoesNotPanic(t *testing.T) {
 	repo := setupTestRepo(t)
-	mgr := NewManager(repo)
+	mgr := NewManager(repo, defaultTestSettings())
 	defer mgr.Shutdown()
 
 	cfg := Config{Name: "test-kill-after-exit", Task: "test", Rows: 24, Cols: 80}
@@ -441,7 +447,7 @@ func TestKillAfterNaturalExitDoesNotPanic(t *testing.T) {
 
 func TestShutdownCleansAll(t *testing.T) {
 	repo := setupTestRepo(t)
-	mgr := NewManager(repo)
+	mgr := NewManager(repo, defaultTestSettings())
 
 	for i := 0; i < 3; i++ {
 		cfg := Config{Task: "test", Rows: 24, Cols: 80}

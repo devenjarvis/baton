@@ -11,16 +11,6 @@ import (
 	"github.com/devenjarvis/baton/internal/config"
 )
 
-// configDir returns the baton config directory as resolved by os.UserConfigDir.
-func configDir(t *testing.T) string {
-	t.Helper()
-	base, err := os.UserConfigDir()
-	if err != nil {
-		t.Fatalf("os.UserConfigDir: %v", err)
-	}
-	return filepath.Join(base, "baton")
-}
-
 // initTestRepo creates a temporary git repository with an initial commit.
 func initTestRepo(t *testing.T) string {
 	t.Helper()
@@ -56,25 +46,15 @@ func initTestRepo(t *testing.T) string {
 	return dir
 }
 
-// configDirInTmp redirects the user config dir into a temp directory so tests
-// never touch the real ~/.config (or ~/Library/Application Support on macOS).
-// It returns the baton-specific subdirectory that Load/Save will use.
+// configDirInTmp redirects $HOME into a temp directory so tests never touch
+// the real ~/.baton/.  It also sets $XDG_CONFIG_HOME so legacy migration
+// tests can exercise the old path.  Returns the ~/.baton directory.
 func configDirInTmp(t *testing.T) string {
 	t.Helper()
 	base := t.TempDir()
-	// On Linux, os.UserConfigDir() respects $XDG_CONFIG_HOME first, then
-	// falls back to $HOME/.config.  On macOS it uses $HOME/Library/Application
-	// Support.  Setting both $HOME and $XDG_CONFIG_HOME ensures portability.
 	t.Setenv("HOME", base)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(base, ".config"))
-
-	// Now ask os.UserConfigDir() which path it actually resolved to so we
-	// return the correct directory regardless of platform.
-	userCfg, err := os.UserConfigDir()
-	if err != nil {
-		t.Fatalf("os.UserConfigDir: %v", err)
-	}
-	return filepath.Join(userCfg, "baton")
+	return filepath.Join(base, ".baton")
 }
 
 // ---- Load ----

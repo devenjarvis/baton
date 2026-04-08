@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	xvt "github.com/charmbracelet/x/vt"
 	"github.com/devenjarvis/baton/internal/agent"
+	"github.com/devenjarvis/baton/internal/config"
 )
 
 // listItemKind distinguishes repo headers, session rows, and agent rows in the dashboard list.
@@ -49,6 +50,12 @@ type diffAggregateStats struct {
 	Deletions  int
 }
 
+// repoConfigSaveMsg is emitted when the repo config form is saved (ctrl+s).
+type repoConfigSaveMsg struct {
+	repoPath string
+	settings *config.RepoSettings
+}
+
 // dashboardModel shows the hierarchical repo/session/agent list and terminal preview.
 type dashboardModel struct {
 	items        []listItem
@@ -58,6 +65,10 @@ type dashboardModel struct {
 	panelFocus   panelFocus
 	scrollOffset int
 	diffStats    *diffSummaryData // nil when no session selected or no data
+
+	// Repo config form shown in the right panel when focusConfig is active.
+	repoConfigForm *configForm
+	configRepoPath string // path of the repo being configured
 }
 
 func newDashboardModel() dashboardModel {
@@ -67,6 +78,12 @@ func newDashboardModel() dashboardModel {
 func (d dashboardModel) Update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
+		// Config panel focus: delegate to form.
+		if d.panelFocus == focusConfig && d.repoConfigForm != nil {
+			cmd := d.repoConfigForm.Update(msg)
+			return d, cmd
+		}
+
 		if d.panelFocus == focusTerminal {
 			ag := d.selectedAgent()
 			switch msg.String() {
@@ -143,6 +160,8 @@ func (d dashboardModel) Update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 			if d.selectedAgent() != nil {
 				d.panelFocus = focusTerminal
 			}
+			// Repo config entry is handled at the app level (updateDashboard)
+			// so it has access to settings.
 		}
 	}
 	return d, nil
@@ -168,7 +187,7 @@ func (d dashboardModel) View() string {
 	previewStyle := lipgloss.NewStyle().
 		Width(previewWidth).
 		Height(d.contentHeight())
-	if d.panelFocus == focusTerminal {
+	if d.panelFocus == focusTerminal || d.panelFocus == focusConfig {
 		previewStyle = lipgloss.NewStyle().
 			Width(previewWidth).
 			Height(d.contentHeight() - 2).
@@ -366,10 +385,17 @@ func (d dashboardModel) renderPreview(width int) string {
 	}
 
 	if item.kind == listItemRepo {
+		if d.panelFocus == focusConfig && d.repoConfigForm != nil {
+			// Show repo config form.
+			title := StyleTitle.Render(" " + item.repoName + " Settings ")
+			pathLine := StyleSubtle.Render(" " + item.repoPath)
+			formView := d.repoConfigForm.View()
+			return lipgloss.JoinVertical(lipgloss.Left, title, pathLine, "", formView)
+		}
 		// Show repo info in the preview panel when a repo header is selected.
 		title := StyleTitle.Render(" " + item.repoName + " ")
 		pathLine := StyleSubtle.Render(" " + item.repoPath)
-		hint := StyleSubtle.Render(" Press n to create a session in this repo")
+		hint := StyleSubtle.Render(" Press enter to configure this repo")
 		return lipgloss.JoinVertical(lipgloss.Left, title, pathLine, "", hint)
 	}
 

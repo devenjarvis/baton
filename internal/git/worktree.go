@@ -69,17 +69,25 @@ func UpdateBaseBranch(repoPath, branch string) error {
 }
 
 // CreateWorktree creates a new git worktree for the named agent.
-// The worktree is placed at .baton/worktrees/<name> with branch baton/<name>.
+// branchPrefix and worktreeDir control naming and placement; pass empty
+// strings to use defaults ("baton/" and ".baton/worktrees").
 // An optional startPoint specifies the commit to branch from; if omitted,
 // the worktree branches from the current HEAD.
-func CreateWorktree(repoPath, agentName string, startPoint ...string) (*WorktreeInfo, error) {
+func CreateWorktree(repoPath, agentName, branchPrefix, worktreeDir string, startPoint ...string) (*WorktreeInfo, error) {
+	if branchPrefix == "" {
+		branchPrefix = "baton/"
+	}
+	if worktreeDir == "" {
+		worktreeDir = ".baton/worktrees"
+	}
+
 	base, err := BaseBranch(repoPath)
 	if err != nil {
 		return nil, fmt.Errorf("getting base branch: %w", err)
 	}
 
-	branch := "baton/" + agentName
-	wtPath := filepath.Join(repoPath, ".baton", "worktrees", agentName)
+	branch := branchPrefix + agentName
+	wtPath := filepath.Join(repoPath, worktreeDir, agentName)
 
 	args := []string{"worktree", "add", "-b", branch, wtPath}
 	if len(startPoint) > 0 && startPoint[0] != "" {
@@ -119,14 +127,20 @@ func RemoveWorktree(repoPath string, wt *WorktreeInfo, deleteBranch bool) error 
 }
 
 // ListWorktrees returns all baton-managed worktrees in the repo.
-// It identifies baton worktrees by their branch prefix "baton/".
-func ListWorktrees(repoPath string) ([]*WorktreeInfo, error) {
+// branchPrefix controls which branches are considered baton-managed;
+// pass empty string to use the default ("baton/").
+func ListWorktrees(repoPath, branchPrefix string) ([]*WorktreeInfo, error) {
+	if branchPrefix == "" {
+		branchPrefix = "baton/"
+	}
+
 	out, err := runGit(repoPath, "worktree", "list", "--porcelain")
 	if err != nil {
 		return nil, err
 	}
 
 	base, _ := BaseBranch(repoPath)
+	branchRef := "branch refs/heads/" + branchPrefix
 
 	var worktrees []*WorktreeInfo
 	var current *WorktreeInfo
@@ -136,10 +150,10 @@ func ListWorktrees(repoPath string) ([]*WorktreeInfo, error) {
 		case strings.HasPrefix(line, "worktree "):
 			path := strings.TrimPrefix(line, "worktree ")
 			current = &WorktreeInfo{Path: path}
-		case strings.HasPrefix(line, "branch refs/heads/baton/"):
+		case strings.HasPrefix(line, branchRef):
 			if current != nil {
 				branch := strings.TrimPrefix(line, "branch refs/heads/")
-				name := strings.TrimPrefix(branch, "baton/")
+				name := strings.TrimPrefix(branch, branchPrefix)
 				current.Branch = branch
 				current.Name = name
 				current.BaseBranch = base

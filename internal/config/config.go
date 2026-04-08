@@ -1,6 +1,8 @@
-// Package config manages the global registry of repos that Baton tracks.
-// The registry is stored at $XDG_CONFIG_HOME/baton/repos.json (or the
-// platform-appropriate equivalent returned by os.UserConfigDir).
+// Package config manages the global registry of repos that Baton tracks,
+// as well as global and per-repo settings.
+//
+// Global files live at ~/.baton/ (repos.json, config.json).
+// Per-repo settings live at <repo>/.baton/config.json.
 package config
 
 import (
@@ -23,12 +25,30 @@ type Repo struct {
 
 // Config is the top-level config structure persisted to disk.
 type Config struct {
-	Repos              []Repo `json:"repos"`
-	BypassPermissions  *bool  `json:"bypass_permissions,omitempty"`
+	Repos             []Repo `json:"repos"`
+	BypassPermissions *bool  `json:"bypass_permissions,omitempty"`
+}
+
+// BatonDir returns the absolute path to the ~/.baton directory.
+func BatonDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("config: finding home dir: %w", err)
+	}
+	return filepath.Join(home, ".baton"), nil
 }
 
 // configFile returns the absolute path to the repos.json file.
 func configFile() (string, error) {
+	dir, err := BatonDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "repos.json"), nil
+}
+
+// legacyConfigFile returns the old XDG-based path for migration.
+func legacyConfigFile() (string, error) {
 	base, err := os.UserConfigDir()
 	if err != nil {
 		return "", fmt.Errorf("config: finding user config dir: %w", err)
@@ -37,8 +57,8 @@ func configFile() (string, error) {
 }
 
 // Load reads the config from disk and returns it.
-// If the file does not exist (first run), it returns an empty Config with no
-// error.
+// If the file does not exist at ~/.baton/repos.json, it checks the legacy
+// XDG location and migrates if found. On first run it returns an empty Config.
 func Load() (*Config, error) {
 	path, err := configFile()
 	if err != nil {
@@ -47,12 +67,24 @@ func Load() (*Config, error) {
 
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		cfg := &Config{}
-		t := true
-		cfg.BypassPermissions = &t
-		return cfg, nil
+		// Try legacy XDG location and migrate if found.
+		if legacyPath, legacyErr := legacyConfigFile(); legacyErr == nil {
+			if legacyData, readErr := os.ReadFile(legacyPath); readErr == nil {
+				data = legacyData
+				// Migrate: write to new location, best-effort.
+				if writeErr := atomicWriteJSON(path, json.RawMessage(data)); writeErr == nil {
+					os.Remove(legacyPath)
+				}
+			}
+		}
+		if data == nil {
+			cfg := &Config{}
+			t := true
+			cfg.BypassPermissions = &t
+			return cfg, nil
+		}
 	}
-	if err != nil {
+	if err != nil && data == nil {
 		return nil, fmt.Errorf("config: reading %s: %w", path, err)
 	}
 
@@ -75,34 +107,36 @@ func (c *Config) GetBypassPermissions() bool {
 	return *c.BypassPermissions
 }
 
-// Save writes cfg atomically to disk.  It creates the config directory if
-// needed, writes to a temporary file in the same directory, then renames it
-// over the destination so that readers never see a partial write.
+// Save writes cfg atomically to disk.
 func Save(cfg *Config) error {
 	path, err := configFile()
 	if err != nil {
 		return err
 	}
+	return atomicWriteJSON(path, cfg)
+}
 
+// atomicWriteJSON marshals v as indented JSON and writes it atomically to
+// path. It creates parent directories as needed, writes to a temp file in the
+// same directory, then renames over the destination so readers never see a
+// partial write.
+func atomicWriteJSON(path string, v any) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("config: creating config dir %s: %w", dir, err)
+		return fmt.Errorf("config: creating dir %s: %w", dir, err)
 	}
 
-	data, err := json.MarshalIndent(cfg, "", "  ")
+	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
-		return fmt.Errorf("config: marshalling config: %w", err)
+		return fmt.Errorf("config: marshalling: %w", err)
 	}
 
-	// Write to a temp file in the same directory so rename is atomic on the
-	// same filesystem.
-	tmp, err := os.CreateTemp(dir, "repos-*.json.tmp")
+	tmp, err := os.CreateTemp(dir, "*.tmp")
 	if err != nil {
 		return fmt.Errorf("config: creating temp file: %w", err)
 	}
 	tmpName := tmp.Name()
 
-	// Always remove the temp file on failure.
 	defer func() {
 		if err != nil {
 			os.Remove(tmpName)
@@ -120,7 +154,7 @@ func Save(cfg *Config) error {
 	}
 
 	if renameErr := os.Rename(tmpName, path); renameErr != nil {
-		err = fmt.Errorf("config: renaming temp file to %s: %w", path, renameErr)
+		err = fmt.Errorf("config: renaming to %s: %w", path, renameErr)
 		return err
 	}
 	return nil

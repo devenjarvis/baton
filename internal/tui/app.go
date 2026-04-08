@@ -64,10 +64,16 @@ type App struct {
 	cfg        *config.Config
 	repoBrowser fileBrowserModel
 
-	view      ViewMode
-	dashboard dashboardModel
-	diff      diffModel
-	merge     mergeModel
+	// Settings
+	globalSettings *config.GlobalSettings
+	repoSettings   map[string]*config.RepoSettings   // keyed by repo path
+	resolvedCache  map[string]config.ResolvedSettings // keyed by repo path
+
+	view         ViewMode
+	dashboard    dashboardModel
+	diff         diffModel
+	merge        mergeModel
+	globalConfig globalConfigModel
 
 	width       int
 	height      int
@@ -87,6 +93,8 @@ func NewApp() App {
 		view:            ViewDashboard,
 		dashboard:       newDashboardModel(),
 		managers:        make(map[string]*agent.Manager),
+		repoSettings:    make(map[string]*config.RepoSettings),
+		resolvedCache:   make(map[string]config.ResolvedSettings),
 		lastKnownStatus: make(map[string]agent.Status),
 		diffStatsCache:  make(map[string]*diffStatsEntry),
 	}
@@ -158,6 +166,23 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		a.cfg = msg.cfg
+
+		// Load global settings and run one-time migration.
+		globalSettings, err := config.LoadGlobalSettings()
+		if err != nil {
+			a.setError(err.Error())
+		} else {
+			a.globalSettings = globalSettings
+			_ = config.MigrateBypassPermissions(a.cfg)
+		}
+
+		// Load per-repo settings and build resolved cache.
+		for _, repo := range msg.cfg.Repos {
+			rs, _ := config.LoadRepoSettings(repo.Path)
+			a.repoSettings[repo.Path] = rs
+			a.resolvedCache[repo.Path] = config.Resolve(a.globalSettings, rs)
+		}
+
 		// Initialize audio player (best-effort — nil on failure).
 		if p, err := audio.NewPlayer(); err == nil {
 			a.audioPlayer = p
@@ -166,7 +191,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmds []tea.Cmd
 		for _, repo := range msg.cfg.Repos {
 			if a.managers[repo.Path] == nil {
-				mgr := agent.NewManager(repo.Path)
+				mgr := agent.NewManager(repo.Path, a.resolvedCache[repo.Path])
 				a.managers[repo.Path] = mgr
 				ensureGitignore(repo.Path)
 				cmds = append(cmds, listenEvents(mgr))
@@ -182,14 +207,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if mgr == nil {
 				continue
 			}
-			bypassPerms := true
-			if a.cfg != nil {
-				bypassPerms = a.cfg.GetBypassPermissions()
-			}
+			resolved := a.resolvedCache[repo.Path]
 			resumeCfg := agent.Config{
 				Rows:              24,
 				Cols:              80,
-				BypassPermissions: bypassPerms,
+				BypassPermissions: resolved.BypassPermissions,
+				AgentProgram:      resolved.AgentProgram,
 			}
 			for _, ss := range bs.Sessions {
 				if err := mgr.ResumeSession(ss, resumeCfg); err != nil {
@@ -219,7 +242,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Check for Active->Idle transition.
 			if prev, ok := a.lastKnownStatus[ag.ID]; ok {
 				if prev == agent.StatusActive && currentStatus == agent.StatusIdle && ag.HasReceivedInput() && !ag.IsShell {
-					if a.audioPlayer != nil {
+					resolved := a.resolvedCache[item.repoPath]
+					if resolved.AudioEnabled && a.audioPlayer != nil {
 						a.audioPlayer.Play()
 					}
 					idleTransition = true
@@ -337,6 +361,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a.updateMerge(msg)
 	case ViewFileBrowser:
 		return a.updateFileBrowser(msg)
+	case ViewGlobalConfig:
+		return a.updateGlobalConfig(msg)
 	}
 
 	return a, nil
@@ -357,8 +383,14 @@ func (a *App) addRepo(path string) tea.Cmd {
 	}
 	// Resolve to the absolute path that AddRepo stored.
 	absPath := a.cfg.Repos[len(a.cfg.Repos)-1].Path
+
+	// Load repo settings and build resolved cache for new repo.
+	rs, _ := config.LoadRepoSettings(absPath)
+	a.repoSettings[absPath] = rs
+	a.resolvedCache[absPath] = config.Resolve(a.globalSettings, rs)
+
 	if a.managers[absPath] == nil {
-		mgr := agent.NewManager(absPath)
+		mgr := agent.NewManager(absPath, a.resolvedCache[absPath])
 		a.managers[absPath] = mgr
 		ensureGitignore(absPath)
 		a.refreshAgentList()
@@ -370,11 +402,45 @@ func (a *App) addRepo(path string) tea.Cmd {
 
 func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case configFormSaveMsg:
+		// Repo config form saved.
+		if a.dashboard.repoConfigForm != nil && a.dashboard.configRepoPath != "" {
+			repoPath := a.dashboard.configRepoPath
+			settings := a.extractRepoSettings()
+			if err := config.SaveRepoSettings(repoPath, settings); err != nil {
+				a.setError(err.Error())
+			} else {
+				a.repoSettings[repoPath] = settings
+				a.resolvedCache[repoPath] = config.Resolve(a.globalSettings, settings)
+				if mgr := a.managers[repoPath]; mgr != nil {
+					mgr.UpdateSettings(a.resolvedCache[repoPath])
+				}
+			}
+		}
+		a.dashboard.panelFocus = focusList
+		a.dashboard.repoConfigForm = nil
+		return a, nil
+
+	case configFormCancelMsg:
+		// Repo config form cancelled.
+		a.dashboard.panelFocus = focusList
+		a.dashboard.repoConfigForm = nil
+		return a, nil
+
 	case tea.KeyPressMsg:
-		// When the terminal panel has focus, skip all app-level bindings.
-		if a.dashboard.panelFocus == focusTerminal {
+		// When the terminal or config panel has focus, skip all app-level bindings.
+		if a.dashboard.panelFocus == focusTerminal || a.dashboard.panelFocus == focusConfig {
 			a.confirmQuit = false
 			break
+		}
+
+		// Enter/right on a repo header: open repo config in right panel.
+		if (msg.String() == "enter" || msg.String() == "right") && a.dashboard.panelFocus == focusList {
+			item := a.dashboard.selectedItem()
+			if item != nil && item.kind == listItemRepo {
+				a.initRepoConfigForm(item.repoPath)
+				return a, nil
+			}
 		}
 
 		switch msg.String() {
@@ -446,10 +512,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.setError("Terminal size not yet known; try again")
 				return a, nil
 			}
-			bypassPerms := true
-			if a.cfg != nil {
-				bypassPerms = a.cfg.GetBypassPermissions()
-			}
+			resolved := a.resolvedCache[repoPath]
 			mgr := a.managers[repoPath]
 			if mgr == nil {
 				return a, nil
@@ -457,7 +520,8 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cfg := agent.Config{
 				Rows:              previewH,
 				Cols:              previewW,
-				BypassPermissions: bypassPerms,
+				BypassPermissions: resolved.BypassPermissions,
+				AgentProgram:      resolved.AgentProgram,
 			}
 			return a, func() tea.Msg {
 				sess, ag, err := mgr.CreateSession(cfg)
@@ -488,14 +552,12 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.setError("Terminal size not yet known; try again")
 				return a, nil
 			}
-			bypassPerms := true
-			if a.cfg != nil {
-				bypassPerms = a.cfg.GetBypassPermissions()
-			}
+			resolved := a.resolvedCache[repoPath]
 			cfg := agent.Config{
 				Rows:              previewH,
 				Cols:              previewW,
-				BypassPermissions: bypassPerms,
+				BypassPermissions: resolved.BypassPermissions,
+				AgentProgram:      resolved.AgentProgram,
 			}
 			sessionID := sess.ID
 			return a, func() tea.Msg {
@@ -559,6 +621,12 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return createResultMsg{sessionID: sessionID, agentID: ag.ID}
 			}
+
+		case "s":
+			// Open global settings overlay.
+			a.globalConfig = newGlobalConfigModel(a.globalSettings, a.width, a.height)
+			a.view = ViewGlobalConfig
+			return a, nil
 
 		case "d":
 			item := a.dashboard.selectedItem()
@@ -781,9 +849,8 @@ func (a App) updateMerge(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		activeRepo := a.activeRepo
 		wt := sess.Worktree
-		sessName := sess.Name
 		return a, func() tea.Msg {
-			message := "Merge baton/" + sessName + " into " + wt.BaseBranch
+			message := "Merge " + wt.Branch + " into " + wt.BaseBranch
 			err := git.MergeWorktree(activeRepo, wt, message)
 			return mergeCompleteMsg{err: err}
 		}
@@ -817,6 +884,103 @@ func (a App) updateMerge(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	a.merge, cmd = a.merge.Update(msg)
+	return a, cmd
+}
+
+// initRepoConfigForm creates a config form for the given repo and enters config focus.
+func (a *App) initRepoConfigForm(repoPath string) {
+	rs := a.repoSettings[repoPath]
+	if rs == nil {
+		rs = &config.RepoSettings{}
+	}
+
+	bypassPerms := config.DefaultBypassPermissions
+	if rs.BypassPermissions != nil {
+		bypassPerms = *rs.BypassPermissions
+	}
+	defaultBranch := ""
+	if rs.DefaultBranch != nil {
+		defaultBranch = *rs.DefaultBranch
+	}
+	branchPrefix := ""
+	if rs.BranchPrefix != nil {
+		branchPrefix = *rs.BranchPrefix
+	}
+	agentProgram := ""
+	if rs.AgentProgram != nil {
+		agentProgram = *rs.AgentProgram
+	}
+	worktreeDir := ""
+	if rs.WorktreeDir != nil {
+		worktreeDir = *rs.WorktreeDir
+	}
+
+	inputWidth := 30
+	var fields []formField
+	fields = addToggle(fields, "Bypass Permissions", bypassPerms)
+	fields = addTextInput(fields, "Default Branch", defaultBranch, "auto-detect", inputWidth)
+	fields = addTextInput(fields, "Branch Prefix", branchPrefix, config.DefaultBranchPrefix, inputWidth)
+	fields = addTextInput(fields, "Agent Program", agentProgram, config.DefaultAgentProgram, inputWidth)
+	fields = addTextInput(fields, "Worktree Directory", worktreeDir, config.DefaultWorktreeDir, inputWidth)
+
+	form := newConfigForm(fields, a.dashboard.previewTermWidth())
+	a.dashboard.repoConfigForm = &form
+	a.dashboard.configRepoPath = repoPath
+	a.dashboard.panelFocus = focusConfig
+}
+
+// extractRepoSettings reads form values and creates a RepoSettings struct.
+func (a App) extractRepoSettings() *config.RepoSettings {
+	form := a.dashboard.repoConfigForm
+	if form == nil {
+		return &config.RepoSettings{}
+	}
+	s := &config.RepoSettings{}
+
+	bypassPerms := form.toggleValue("Bypass Permissions")
+	s.BypassPermissions = &bypassPerms
+
+	if v := form.textValue("Default Branch"); v != "" {
+		s.DefaultBranch = &v
+	}
+	if v := form.textValue("Branch Prefix"); v != "" {
+		s.BranchPrefix = &v
+	}
+	if v := form.textValue("Agent Program"); v != "" {
+		s.AgentProgram = &v
+	}
+	if v := form.textValue("Worktree Directory"); v != "" {
+		s.WorktreeDir = &v
+	}
+	return s
+}
+
+func (a App) updateGlobalConfig(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case globalConfigSaveMsg:
+		// Persist global settings.
+		if err := config.SaveGlobalSettings(msg.settings); err != nil {
+			a.setError(err.Error())
+			a.view = ViewDashboard
+			return a, nil
+		}
+		a.globalSettings = msg.settings
+		// Rebuild resolved cache and push to all managers.
+		for repoPath, rs := range a.repoSettings {
+			a.resolvedCache[repoPath] = config.Resolve(a.globalSettings, rs)
+			if mgr := a.managers[repoPath]; mgr != nil {
+				mgr.UpdateSettings(a.resolvedCache[repoPath])
+			}
+		}
+		a.view = ViewDashboard
+		return a, nil
+	case globalConfigCancelMsg:
+		a.view = ViewDashboard
+		return a, nil
+	}
+
+	var cmd tea.Cmd
+	a.globalConfig, cmd = a.globalConfig.Update(msg)
 	return a, cmd
 }
 
@@ -949,6 +1113,8 @@ func (a App) View() tea.View {
 		hints := dashboardHints
 		if a.dashboard.panelFocus == focusTerminal {
 			hints = focusTerminalHints
+		} else if a.dashboard.panelFocus == focusConfig {
+			hints = repoConfigHints
 		}
 		statusbar := renderStatusBar(hints, a.width)
 		content = lipgloss.JoinVertical(lipgloss.Left, body, statusbar)
@@ -962,6 +1128,8 @@ func (a App) View() tea.View {
 		body := a.repoBrowser.View()
 		statusbar := renderStatusBar(repoBrowsingHints, a.width)
 		content = lipgloss.JoinVertical(lipgloss.Left, body, statusbar)
+	case ViewGlobalConfig:
+		content = a.globalConfig.View()
 	}
 
 	// Show quit confirmation.
