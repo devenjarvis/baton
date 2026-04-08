@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/devenjarvis/baton/internal/config"
 	"github.com/devenjarvis/baton/internal/git"
 	"github.com/devenjarvis/baton/internal/state"
 )
@@ -39,6 +40,7 @@ type Event struct {
 // Manager manages the lifecycle of all sessions and their agents.
 type Manager struct {
 	repoPath string
+	settings config.ResolvedSettings
 
 	mu       sync.RWMutex
 	sessions map[string]*Session
@@ -50,13 +52,29 @@ type Manager struct {
 }
 
 // NewManager creates a new agent manager for the given repo.
-func NewManager(repoPath string) *Manager {
+func NewManager(repoPath string, settings config.ResolvedSettings) *Manager {
 	return &Manager{
 		repoPath: repoPath,
+		settings: settings,
 		sessions: make(map[string]*Session),
 		events:   make(chan Event, 64),
 		done:     make(chan struct{}),
 	}
+}
+
+// UpdateSettings replaces the manager's resolved settings.
+// New sessions will use the updated values; existing sessions are unaffected.
+func (m *Manager) UpdateSettings(s config.ResolvedSettings) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.settings = s
+}
+
+// Settings returns the current resolved settings.
+func (m *Manager) Settings() config.ResolvedSettings {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.settings
 }
 
 // CreateSession starts a new session with its first agent using the default claude command.
@@ -125,20 +143,32 @@ func (m *Manager) createSessionWorktree(cfg Config) (*Session, error) {
 	name := RandomName(existing)
 	m.nextID++
 	id := fmt.Sprintf("session-%d", m.nextID)
+	settings := m.settings
 	m.mu.Unlock()
 
 	cfg.RepoPath = m.repoPath
+	if cfg.AgentProgram == "" {
+		cfg.AgentProgram = settings.AgentProgram
+	}
+
+	// Determine base branch: use configured default, or auto-detect.
+	baseBranch := settings.DefaultBranch
+	if baseBranch == "" {
+		if detected, err := git.BaseBranch(m.repoPath); err == nil {
+			baseBranch = detected
+		}
+	}
 
 	// Best-effort: update base branch from remote so the worktree
 	// starts from the latest code. If offline, fall back to local HEAD.
 	startPoint := ""
-	if base, err := git.BaseBranch(m.repoPath); err == nil && base != "" {
-		if err := git.UpdateBaseBranch(m.repoPath, base); err == nil {
-			startPoint = "origin/" + base
+	if baseBranch != "" {
+		if err := git.UpdateBaseBranch(m.repoPath, baseBranch); err == nil {
+			startPoint = "origin/" + baseBranch
 		}
 	}
 
-	wt, err := git.CreateWorktree(m.repoPath, name, startPoint)
+	wt, err := git.CreateWorktree(m.repoPath, name, settings.BranchPrefix, settings.WorktreeDir, startPoint)
 	if err != nil {
 		return nil, fmt.Errorf("creating worktree: %w", err)
 	}
@@ -156,6 +186,7 @@ func (m *Manager) createSessionWorktree(cfg Config) (*Session, error) {
 func (m *Manager) AddAgent(sessionID string, cfg Config) (*Agent, error) {
 	m.mu.RLock()
 	sess := m.sessions[sessionID]
+	settings := m.settings
 	m.mu.RUnlock()
 
 	if sess == nil {
@@ -163,6 +194,9 @@ func (m *Manager) AddAgent(sessionID string, cfg Config) (*Agent, error) {
 	}
 
 	cfg.RepoPath = m.repoPath
+	if cfg.AgentProgram == "" {
+		cfg.AgentProgram = settings.AgentProgram
+	}
 
 	a, err := sess.AddAgentDefault(cfg)
 	if err != nil {
@@ -487,6 +521,8 @@ func (m *Manager) ResumeSession(ss state.SessionState, cfg Config) error {
 	}
 	m.mu.Unlock()
 
+	settings := m.Settings()
+
 	for _, as := range ss.Agents {
 		agentCfg := Config{
 			Name:              as.Name,
@@ -495,6 +531,7 @@ func (m *Manager) ResumeSession(ss state.SessionState, cfg Config) error {
 			Cols:              cfg.Cols,
 			RepoPath:          m.repoPath,
 			BypassPermissions: cfg.BypassPermissions,
+			AgentProgram:      settings.AgentProgram,
 		}
 
 		a, err := sess.AddAgentResumed(agentCfg, as.ClaudeSessionID)

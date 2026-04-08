@@ -11,7 +11,7 @@ import (
 
 func TestSessionCreation(t *testing.T) {
 	repo := setupTestRepo(t)
-	mgr := NewManager(repo)
+	mgr := NewManager(repo, defaultTestSettings())
 	defer mgr.Shutdown()
 
 	cfg := Config{Task: "test", Rows: 24, Cols: 80}
@@ -38,7 +38,7 @@ func TestSessionCreation(t *testing.T) {
 
 func TestMultipleAgentsShareWorktree(t *testing.T) {
 	repo := setupTestRepo(t)
-	mgr := NewManager(repo)
+	mgr := NewManager(repo, defaultTestSettings())
 	defer mgr.Shutdown()
 
 	cfg := Config{Task: "test", Rows: 24, Cols: 80}
@@ -73,7 +73,7 @@ func TestMultipleAgentsShareWorktree(t *testing.T) {
 
 func TestKillAgentSessionSurvives(t *testing.T) {
 	repo := setupTestRepo(t)
-	mgr := NewManager(repo)
+	mgr := NewManager(repo, defaultTestSettings())
 	defer mgr.Shutdown()
 
 	cfg := Config{Task: "test", Rows: 24, Cols: 80}
@@ -115,7 +115,7 @@ func TestKillAgentSessionSurvives(t *testing.T) {
 
 func TestKillSessionCleansAll(t *testing.T) {
 	repo := setupTestRepo(t)
-	mgr := NewManager(repo)
+	mgr := NewManager(repo, defaultTestSettings())
 	defer mgr.Shutdown()
 
 	cfg := Config{Task: "test", Rows: 24, Cols: 80}
@@ -155,7 +155,7 @@ func TestKillSessionCleansAll(t *testing.T) {
 
 func TestSessionCompositeStatus(t *testing.T) {
 	repo := setupTestRepo(t)
-	mgr := NewManager(repo)
+	mgr := NewManager(repo, defaultTestSettings())
 	defer mgr.Shutdown()
 
 	// Create a session with an agent that exits quickly.
@@ -199,7 +199,7 @@ func TestSessionCompositeStatus(t *testing.T) {
 
 func TestSessionAgentsSorted(t *testing.T) {
 	repo := setupTestRepo(t)
-	mgr := NewManager(repo)
+	mgr := NewManager(repo, defaultTestSettings())
 	defer mgr.Shutdown()
 
 	cfg := Config{Task: "test", Rows: 24, Cols: 80}
@@ -233,7 +233,7 @@ func TestSessionAgentsSorted(t *testing.T) {
 
 func TestKillLastAgentAutoClosesSession(t *testing.T) {
 	repo := setupTestRepo(t)
-	mgr := NewManager(repo)
+	mgr := NewManager(repo, defaultTestSettings())
 	defer mgr.Shutdown()
 
 	cfg := Config{Task: "test", Rows: 24, Cols: 80}
@@ -290,7 +290,7 @@ func TestKillLastAgentAutoClosesSession(t *testing.T) {
 
 func TestNaturalExitAutoClosesSession(t *testing.T) {
 	repo := setupTestRepo(t)
-	mgr := NewManager(repo)
+	mgr := NewManager(repo, defaultTestSettings())
 	defer mgr.Shutdown()
 
 	cfg := Config{Task: "test", Rows: 24, Cols: 80}
@@ -335,7 +335,7 @@ func TestNaturalExitAutoClosesSession(t *testing.T) {
 
 func TestAddShellCreatesShellAgent(t *testing.T) {
 	repo := setupTestRepo(t)
-	mgr := NewManager(repo)
+	mgr := NewManager(repo, defaultTestSettings())
 	defer mgr.Shutdown()
 
 	cfg := Config{Task: "test", Rows: 24, Cols: 80}
@@ -365,7 +365,7 @@ func TestAddShellCreatesShellAgent(t *testing.T) {
 
 func TestAddShellEnforcesOnePerSession(t *testing.T) {
 	repo := setupTestRepo(t)
-	mgr := NewManager(repo)
+	mgr := NewManager(repo, defaultTestSettings())
 	defer mgr.Shutdown()
 
 	cfg := Config{Task: "test", Rows: 24, Cols: 80}
@@ -427,7 +427,7 @@ func TestSessionStatusExcludesShell(t *testing.T) {
 
 func TestAddAgentDefaultAssignsUniqueName(t *testing.T) {
 	repo := setupTestRepo(t)
-	mgr := NewManager(repo)
+	mgr := NewManager(repo, defaultTestSettings())
 	defer mgr.Shutdown()
 
 	cfg := Config{Task: "test", Rows: 24, Cols: 80}

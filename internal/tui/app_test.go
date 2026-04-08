@@ -79,9 +79,10 @@ func TestCreateAgentViaN(t *testing.T) {
 		}
 	}
 	run("git", "init")
+	run("git", "config", "commit.gpgsign", "false")
 	run("git", "commit", "--allow-empty", "-m", "init")
 
-	mgr := agent.NewManager(dir)
+	mgr := agent.NewManager(dir, config.Resolve(nil, nil))
 	defer mgr.Shutdown()
 
 	app := NewApp()
@@ -136,9 +137,10 @@ func TestCreateMultipleAgentsViaTUI(t *testing.T) {
 		}
 	}
 	run("git", "init")
+	run("git", "config", "commit.gpgsign", "false")
 	run("git", "commit", "--allow-empty", "-m", "init")
 
-	mgr := agent.NewManager(dir)
+	mgr := agent.NewManager(dir, config.Resolve(nil, nil))
 	defer mgr.Shutdown()
 
 	app := NewApp()
@@ -219,9 +221,10 @@ func TestAddAgentToSessionViaC(t *testing.T) {
 		}
 	}
 	run("git", "init")
+	run("git", "config", "commit.gpgsign", "false")
 	run("git", "commit", "--allow-empty", "-m", "init")
 
-	mgr := agent.NewManager(dir)
+	mgr := agent.NewManager(dir, config.Resolve(nil, nil))
 	defer mgr.Shutdown()
 
 	app := NewApp()
@@ -284,9 +287,10 @@ func TestPanelFocusSwitching(t *testing.T) {
 		}
 	}
 	run("git", "init")
+	run("git", "config", "commit.gpgsign", "false")
 	run("git", "commit", "--allow-empty", "-m", "init")
 
-	mgr := agent.NewManager(dir)
+	mgr := agent.NewManager(dir, config.Resolve(nil, nil))
 	defer mgr.Shutdown()
 
 	app := NewApp()
@@ -359,9 +363,10 @@ func TestActionKeysBlockedInFocusTerminal(t *testing.T) {
 		}
 	}
 	run("git", "init")
+	run("git", "config", "commit.gpgsign", "false")
 	run("git", "commit", "--allow-empty", "-m", "init")
 
-	mgr := agent.NewManager(dir)
+	mgr := agent.NewManager(dir, config.Resolve(nil, nil))
 	defer mgr.Shutdown()
 
 	app := NewApp()
@@ -407,9 +412,10 @@ func TestShiftEscForwardsEscapeToAgent(t *testing.T) {
 		}
 	}
 	run("git", "init")
+	run("git", "config", "commit.gpgsign", "false")
 	run("git", "commit", "--allow-empty", "-m", "init")
 
-	mgr := agent.NewManager(dir)
+	mgr := agent.NewManager(dir, config.Resolve(nil, nil))
 	defer mgr.Shutdown()
 
 	app := NewApp()
@@ -538,9 +544,10 @@ func TestMouseClickPreviewEntersFocus(t *testing.T) {
 		}
 	}
 	run("git", "init")
+	run("git", "config", "commit.gpgsign", "false")
 	run("git", "commit", "--allow-empty", "-m", "init")
 
-	mgr := agent.NewManager(dir)
+	mgr := agent.NewManager(dir, config.Resolve(nil, nil))
 	defer mgr.Shutdown()
 
 	app := NewApp()
@@ -594,9 +601,10 @@ func TestMouseWheelScrollInFocusTerminal(t *testing.T) {
 		}
 	}
 	run("git", "init")
+	run("git", "config", "commit.gpgsign", "false")
 	run("git", "commit", "--allow-empty", "-m", "init")
 
-	mgr := agent.NewManager(dir)
+	mgr := agent.NewManager(dir, config.Resolve(nil, nil))
 	defer mgr.Shutdown()
 
 	// Create a session with an agent that writes 40 lines.
@@ -774,9 +782,10 @@ func TestMouseClickSessionSnapsToAgent(t *testing.T) {
 		}
 	}
 	run("git", "init")
+	run("git", "config", "commit.gpgsign", "false")
 	run("git", "commit", "--allow-empty", "-m", "init")
 
-	mgr := agent.NewManager(dir)
+	mgr := agent.NewManager(dir, config.Resolve(nil, nil))
 	defer mgr.Shutdown()
 
 	app := NewApp()
@@ -838,6 +847,7 @@ func TestRefreshAgentListRepoAffinity(t *testing.T) {
 	initRepo := func(dir string) {
 		for _, args := range [][]string{
 			{"git", "init"},
+			{"git", "config", "commit.gpgsign", "false"},
 			{"git", "commit", "--allow-empty", "-m", "init"},
 		} {
 			cmd := exec.Command(args[0], args[1:]...)
@@ -850,9 +860,9 @@ func TestRefreshAgentListRepoAffinity(t *testing.T) {
 	initRepo(dir1)
 	initRepo(dir2)
 
-	mgr1 := agent.NewManager(dir1)
+	mgr1 := agent.NewManager(dir1, config.Resolve(nil, nil))
 	defer mgr1.Shutdown()
-	mgr2 := agent.NewManager(dir2)
+	mgr2 := agent.NewManager(dir2, config.Resolve(nil, nil))
 	defer mgr2.Shutdown()
 
 	app := NewApp()

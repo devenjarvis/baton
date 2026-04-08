@@ -18,6 +18,7 @@ var (
 		{"n", "new session"},
 		{"c", "add agent"},
 		{"t", "shell"},
+		{"s", "settings"},
 		{"a", "add repo"},
 		{"d", "diff/remove"},
 		{"x", "kill agent"},
@@ -55,6 +56,20 @@ var (
 		{"enter", "open/select"},
 		{"backspace", "up"},
 		{"esc", "cancel"},
+	}
+
+	globalConfigHints = []keyHint{
+		{"j/k", "navigate"},
+		{"enter", "edit/toggle"},
+		{"ctrl+s", "save"},
+		{"esc", "cancel"},
+	}
+
+	repoConfigHints = []keyHint{
+		{"j/k", "navigate"},
+		{"enter", "edit/toggle"},
+		{"ctrl+s", "save"},
+		{"esc", "back"},
 	}
 )
 

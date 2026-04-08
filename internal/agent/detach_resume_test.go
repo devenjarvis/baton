@@ -12,7 +12,7 @@ import (
 
 func TestDetachSnapshotsState(t *testing.T) {
 	repo := setupTestRepo(t)
-	mgr := NewManager(repo)
+	mgr := NewManager(repo, defaultTestSettings())
 
 	cfg := Config{Task: "test", Rows: 24, Cols: 80}
 	sess, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
@@ -73,7 +73,7 @@ func TestDetachSnapshotsState(t *testing.T) {
 
 func TestDetachEmptyReturnsNil(t *testing.T) {
 	repo := setupTestRepo(t)
-	mgr := NewManager(repo)
+	mgr := NewManager(repo, defaultTestSettings())
 
 	bs := mgr.Detach()
 	if bs != nil {
@@ -83,7 +83,7 @@ func TestDetachEmptyReturnsNil(t *testing.T) {
 
 func TestDetachSaveLoadRoundTrip(t *testing.T) {
 	repo := setupTestRepo(t)
-	mgr := NewManager(repo)
+	mgr := NewManager(repo, defaultTestSettings())
 
 	cfg := Config{Task: "test", Rows: 24, Cols: 80}
 	sess, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
@@ -127,7 +127,7 @@ func TestResumeSessionCreatesAgentWithResume(t *testing.T) {
 	repo := setupTestRepo(t)
 
 	// First manager: create a session and detach.
-	mgr1 := NewManager(repo)
+	mgr1 := NewManager(repo, defaultTestSettings())
 	cfg := Config{Task: "test", Rows: 24, Cols: 80}
 	sess, ag, err := mgr1.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
 		return exec.Command("bash", "-c", "sleep 60")
@@ -152,7 +152,7 @@ func TestResumeSessionCreatesAgentWithResume(t *testing.T) {
 	}
 
 	// Second manager: resume from saved state.
-	mgr2 := NewManager(repo)
+	mgr2 := NewManager(repo, defaultTestSettings())
 	defer mgr2.Shutdown()
 
 	resumeCfg := Config{Rows: 24, Cols: 80}
@@ -193,7 +193,7 @@ func TestResumeSessionCreatesAgentWithResume(t *testing.T) {
 
 func TestResumeSessionMissingWorktreeReturnsError(t *testing.T) {
 	repo := setupTestRepo(t)
-	mgr := NewManager(repo)
+	mgr := NewManager(repo, defaultTestSettings())
 	defer mgr.Shutdown()
 
 	ss := state.SessionState{
@@ -218,11 +218,11 @@ func TestResumeSessionMissingWorktreeReturnsError(t *testing.T) {
 
 func TestResumeNextIDNoCollision(t *testing.T) {
 	repo := setupTestRepo(t)
-	mgr := NewManager(repo)
+	mgr := NewManager(repo, defaultTestSettings())
 	defer mgr.Shutdown()
 
 	// Create a session and detach from a first manager to get the worktree.
-	mgr1 := NewManager(repo)
+	mgr1 := NewManager(repo, defaultTestSettings())
 	cfg := Config{Task: "test", Rows: 24, Cols: 80}
 	sess, _, err := mgr1.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
 		return exec.Command("bash", "-c", "sleep 60")
@@ -318,7 +318,7 @@ func TestBuildResumeArgs(t *testing.T) {
 
 func TestForceQuitCleansEverything(t *testing.T) {
 	repo := setupTestRepo(t)
-	mgr := NewManager(repo)
+	mgr := NewManager(repo, defaultTestSettings())
 
 	cfg := Config{Task: "test", Rows: 24, Cols: 80}
 	sess, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
