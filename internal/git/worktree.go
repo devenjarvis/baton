@@ -39,9 +39,40 @@ func BaseBranch(repoPath string) (string, error) {
 	return runGit(repoPath, "rev-parse", "--abbrev-ref", "HEAD")
 }
 
+// UpdateBaseBranch fetches the given branch from origin and attempts to
+// fast-forward the local ref to match. This is best-effort: if the fetch
+// fails (e.g. offline), an error is returned. If the fast-forward fails
+// (e.g. local has diverged), the error is silently ignored since the fetch
+// already updated origin/<branch> which can be used as a start point.
+func UpdateBaseBranch(repoPath, branch string) error {
+	if _, err := runGit(repoPath, "fetch", "origin", branch); err != nil {
+		return fmt.Errorf("fetching origin/%s: %w", branch, err)
+	}
+
+	// Check if local is ancestor of remote (safe to fast-forward).
+	if _, err := runGit(repoPath, "merge-base", "--is-ancestor", branch, "origin/"+branch); err != nil {
+		// Local has diverged — skip fast-forward, but fetch succeeded.
+		return nil
+	}
+
+	// Fast-forward the local branch.
+	current, _ := BaseBranch(repoPath)
+	if current == branch {
+		// Branch is checked out — use merge --ff-only.
+		runGit(repoPath, "merge", "--ff-only", "origin/"+branch)
+	} else {
+		// Branch is not checked out — update ref directly.
+		runGit(repoPath, "branch", "-f", branch, "origin/"+branch)
+	}
+
+	return nil
+}
+
 // CreateWorktree creates a new git worktree for the named agent.
 // The worktree is placed at .baton/worktrees/<name> with branch baton/<name>.
-func CreateWorktree(repoPath, agentName string) (*WorktreeInfo, error) {
+// An optional startPoint specifies the commit to branch from; if omitted,
+// the worktree branches from the current HEAD.
+func CreateWorktree(repoPath, agentName string, startPoint ...string) (*WorktreeInfo, error) {
 	base, err := BaseBranch(repoPath)
 	if err != nil {
 		return nil, fmt.Errorf("getting base branch: %w", err)
@@ -50,7 +81,12 @@ func CreateWorktree(repoPath, agentName string) (*WorktreeInfo, error) {
 	branch := "baton/" + agentName
 	wtPath := filepath.Join(repoPath, ".baton", "worktrees", agentName)
 
-	if _, err := runGit(repoPath, "worktree", "add", "-b", branch, wtPath); err != nil {
+	args := []string{"worktree", "add", "-b", branch, wtPath}
+	if len(startPoint) > 0 && startPoint[0] != "" {
+		args = append(args, startPoint[0])
+	}
+
+	if _, err := runGit(repoPath, args...); err != nil {
 		return nil, fmt.Errorf("creating worktree: %w", err)
 	}
 

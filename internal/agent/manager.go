@@ -129,7 +129,16 @@ func (m *Manager) createSessionWorktree(cfg Config) (*Session, error) {
 
 	cfg.RepoPath = m.repoPath
 
-	wt, err := git.CreateWorktree(m.repoPath, name)
+	// Best-effort: update base branch from remote so the worktree
+	// starts from the latest code. If offline, fall back to local HEAD.
+	startPoint := ""
+	if base, err := git.BaseBranch(m.repoPath); err == nil && base != "" {
+		if err := git.UpdateBaseBranch(m.repoPath, base); err == nil {
+			startPoint = "origin/" + base
+		}
+	}
+
+	wt, err := git.CreateWorktree(m.repoPath, name, startPoint)
 	if err != nil {
 		return nil, fmt.Errorf("creating worktree: %w", err)
 	}
