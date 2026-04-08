@@ -19,6 +19,7 @@ func initTestRepo(t *testing.T) string {
 		{"git", "init"},
 		{"git", "config", "user.email", "test@test.com"},
 		{"git", "config", "user.name", "Test"},
+		{"git", "config", "commit.gpgsign", "false"},
 		{"git", "checkout", "-b", "main"},
 	}
 	for _, args := range cmds {
@@ -228,5 +229,171 @@ func TestRemoveWorktree(t *testing.T) {
 	}
 	if strings.Contains(string(out), "baton/agent1") {
 		t.Errorf("branch baton/agent1 should be deleted but still exists")
+	}
+}
+
+// initTestRepoWithRemote creates a bare "origin" repo and a clone of it,
+// both with an initial commit on main. Returns (clone path, bare path).
+func initTestRepoWithRemote(t *testing.T) (string, string) {
+	t.Helper()
+
+	// Create bare repo to act as origin.
+	bare := t.TempDir()
+	for _, args := range [][]string{
+		{"git", "init", "--bare"},
+		{"git", "symbolic-ref", "HEAD", "refs/heads/main"},
+	} {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = bare
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("setup bare %v failed: %v\n%s", args, err, out)
+		}
+	}
+
+	// Create a working repo, add a commit, push to bare.
+	work := t.TempDir()
+	for _, args := range [][]string{
+		{"git", "clone", bare, "."},
+		{"git", "config", "user.email", "test@test.com"},
+		{"git", "config", "user.name", "Test"},
+		{"git", "config", "commit.gpgsign", "false"},
+		{"git", "checkout", "-b", "main"},
+	} {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = work
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("setup work %v failed: %v\n%s", args, err, out)
+		}
+	}
+
+	if err := os.WriteFile(filepath.Join(work, "README"), []byte("init\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"git", "add", "."},
+		{"git", "commit", "-m", "initial commit"},
+		{"git", "push", "-u", "origin", "main"},
+	} {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = work
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("setup work %v failed: %v\n%s", args, err, out)
+		}
+	}
+
+	return work, bare
+}
+
+func TestUpdateBaseBranch(t *testing.T) {
+	work, bare := initTestRepoWithRemote(t)
+
+	// Push a new commit to origin via a second clone, so work's main is behind.
+	tmp := t.TempDir()
+	for _, args := range [][]string{
+		{"git", "clone", bare, "."},
+		{"git", "config", "user.email", "test@test.com"},
+		{"git", "config", "user.name", "Test"},
+		{"git", "config", "commit.gpgsign", "false"},
+	} {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = tmp
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("setup tmp %v failed: %v\n%s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "new.txt"), []byte("hello\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"git", "add", "."},
+		{"git", "commit", "-m", "remote commit"},
+		{"git", "push", "origin", "main"},
+	} {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = tmp
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("push tmp %v failed: %v\n%s", args, err, out)
+		}
+	}
+
+	// Verify work is behind: new.txt should not exist yet.
+	if _, err := os.Stat(filepath.Join(work, "new.txt")); !os.IsNotExist(err) {
+		t.Fatal("expected new.txt to not exist before update")
+	}
+
+	// UpdateBaseBranch should fetch and fast-forward.
+	if err := git.UpdateBaseBranch(work, "main"); err != nil {
+		t.Fatalf("UpdateBaseBranch: %v", err)
+	}
+
+	// After update, new.txt should exist (local main was fast-forwarded).
+	if _, err := os.Stat(filepath.Join(work, "new.txt")); os.IsNotExist(err) {
+		t.Error("expected new.txt to exist after UpdateBaseBranch fast-forward")
+	}
+}
+
+func TestUpdateBaseBranch_NoRemote(t *testing.T) {
+	// A repo with no remote should return an error (fetch fails).
+	repo := initTestRepo(t)
+
+	err := git.UpdateBaseBranch(repo, "main")
+	if err == nil {
+		t.Error("expected error when no remote configured, got nil")
+	}
+}
+
+func TestCreateWorktreeWithStartPoint(t *testing.T) {
+	work, bare := initTestRepoWithRemote(t)
+
+	// Push a new commit to origin via a second clone.
+	tmp := t.TempDir()
+	for _, args := range [][]string{
+		{"git", "clone", bare, "."},
+		{"git", "config", "user.email", "test@test.com"},
+		{"git", "config", "user.name", "Test"},
+		{"git", "config", "commit.gpgsign", "false"},
+	} {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = tmp
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("setup tmp %v failed: %v\n%s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "remote-only.txt"), []byte("from remote\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"git", "add", "."},
+		{"git", "commit", "-m", "remote-only commit"},
+		{"git", "push", "origin", "main"},
+	} {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = tmp
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("push tmp %v failed: %v\n%s", args, err, out)
+		}
+	}
+
+	// Fetch but don't merge — local main stays behind.
+	cmd := exec.Command("git", "fetch", "origin", "main")
+	cmd.Dir = work
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("fetch failed: %v\n%s", err, out)
+	}
+
+	// Create worktree from origin/main (not local main).
+	wt, err := git.CreateWorktree(work, "start-point-agent", "origin/main")
+	if err != nil {
+		t.Fatalf("CreateWorktree with startPoint: %v", err)
+	}
+
+	// The worktree should have remote-only.txt (from origin/main).
+	if _, err := os.Stat(filepath.Join(wt.Path, "remote-only.txt")); os.IsNotExist(err) {
+		t.Error("expected remote-only.txt in worktree created from origin/main")
+	}
+
+	// Local main should NOT have remote-only.txt (wasn't fast-forwarded).
+	if _, err := os.Stat(filepath.Join(work, "remote-only.txt")); !os.IsNotExist(err) {
+		t.Error("expected remote-only.txt to NOT exist in main worktree")
 	}
 }
