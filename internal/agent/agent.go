@@ -370,6 +370,15 @@ func (a *Agent) SendText(text string) {
 	a.terminal.SendText(text)
 }
 
+// Paste forwards a paste event to the VT terminal.
+func (a *Agent) Paste(text string) {
+	a.mu.Lock()
+	a.lastInput = time.Now()
+	a.composing = true
+	a.mu.Unlock()
+	a.terminal.Paste(text)
+}
+
 // ScrollbackLines returns the scrollback buffer as ANSI-encoded strings, oldest first.
 func (a *Agent) ScrollbackLines() []string {
 	return a.terminal.ScrollbackLines()

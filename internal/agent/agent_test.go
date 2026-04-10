@@ -346,6 +346,35 @@ func TestComposingClearedOnEnter(t *testing.T) {
 	a.mu.RUnlock()
 }
 
+func TestPasteSetsComposing(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	cfg := Config{Name: "test-paste", Task: "test", Rows: 24, Cols: 80}
+	a, err := mgr.CreateWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "echo ready; cat")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(500 * time.Millisecond)
+
+	// Paste sets composing = true and updates lastInput.
+	a.Paste("pasted content")
+	a.mu.RLock()
+	if !a.composing {
+		a.mu.RUnlock()
+		t.Fatal("expected composing to be true after Paste")
+	}
+	if a.lastInput.IsZero() {
+		a.mu.RUnlock()
+		t.Fatal("expected lastInput to be set after Paste")
+	}
+	a.mu.RUnlock()
+}
+
 func TestNewShellAgent(t *testing.T) {
 	dir := t.TempDir()
 
