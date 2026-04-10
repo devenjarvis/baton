@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"fmt"
+
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -13,6 +15,8 @@ type mergeModel struct {
 	width      int
 	height     int
 	errMsg     string
+	viaPR      bool // merge via GitHub API instead of local git
+	prNumber   int  // GitHub PR number when viaPR is true
 }
 
 func newMergeModel(agentName, branchName, baseBranch string) mergeModel {
@@ -49,8 +53,14 @@ func (m mergeModel) View() string {
 
 	title := StyleWarning.Render("Merge Confirmation")
 
-	question := "Merge " + StyleActive.Render(m.branchName) +
-		" into " + StyleActive.Render(m.baseBranch) + "?"
+	var question string
+	if m.viaPR {
+		question = fmt.Sprintf("Merge PR %s via GitHub?",
+			StyleActive.Render(fmt.Sprintf("#%d", m.prNumber)))
+	} else {
+		question = "Merge " + StyleActive.Render(m.branchName) +
+			" into " + StyleActive.Render(m.baseBranch) + "?"
+	}
 
 	hint := StyleSubtle.Render("y: confirm  n/esc: cancel")
 

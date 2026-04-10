@@ -2,8 +2,12 @@ package tui
 
 import (
 	"bufio"
+	"context"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -14,6 +18,7 @@ import (
 	"github.com/devenjarvis/baton/internal/audio"
 	"github.com/devenjarvis/baton/internal/config"
 	"github.com/devenjarvis/baton/internal/git"
+	"github.com/devenjarvis/baton/internal/github"
 	"github.com/devenjarvis/baton/internal/state"
 )
 
@@ -84,8 +89,13 @@ type App struct {
 	lastKnownStatus map[string]agent.Status
 	audioPlayer     *audio.Player
 
-	diffStatsCache    map[string]*diffStatsEntry // keyed by session ID
+	diffStatsCache      map[string]*diffStatsEntry // keyed by session ID
 	diffRefreshInFlight bool
+
+	ghClient         *github.Client
+	prCache          map[string]*prCacheEntry // keyed by session ID
+	prPollInFlight   bool
+	prLastPoll       time.Time
 }
 
 func NewApp() App {
@@ -97,6 +107,7 @@ func NewApp() App {
 		resolvedCache:   make(map[string]config.ResolvedSettings),
 		lastKnownStatus: make(map[string]agent.Status),
 		diffStatsCache:  make(map[string]*diffStatsEntry),
+		prCache:         make(map[string]*prCacheEntry),
 	}
 }
 
@@ -187,6 +198,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if p, err := audio.NewPlayer(); err == nil {
 			a.audioPlayer = p
 		}
+		// Initialize GitHub client (best-effort — nil on failure).
+		if ghc, err := github.NewClient(); err == nil {
+			a.ghClient = ghc
+		}
 		// Create a manager for every registered repo and start event listeners.
 		var cmds []tea.Cmd
 		for _, repo := range msg.cfg.Repos {
@@ -226,6 +241,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Always start on the dashboard — single repo or many.
 		a.view = ViewDashboard
 		a.refreshAgentList()
+		a.updateDashboardPRCache()
 		return a, tea.Batch(cmds...)
 
 	case tickMsg:
@@ -279,7 +295,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				diffCmd = a.refreshDiffStatsCmd()
 			}
 		}
-		return a, tea.Batch(tickCmd(), diffCmd)
+		// Poll PR status every 30s for the selected session.
+		var prCmd tea.Cmd
+		if a.ghClient != nil && !a.prPollInFlight && time.Since(a.prLastPoll) > 30*time.Second {
+			prCmd = a.refreshPRStatusCmd()
+		}
+		return a, tea.Batch(tickCmd(), diffCmd, prCmd)
 
 	case agentEventMsg:
 		// Clean up stale lastKnownStatus entries when a session auto-closes.
@@ -335,6 +356,35 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Update dashboard with current session's stats.
 		if sess := a.dashboard.selectedSession(); sess != nil && sess.ID == msg.sessionID {
 			a.dashboard.diffStats = msg.stats
+		}
+		return a, nil
+
+	case prPollMsg:
+		a.prPollInFlight = false
+		// Only update cache if we got data; preserve existing cache on errors.
+		if msg.pr != nil {
+			a.prCache[msg.sessionID] = &prCacheEntry{
+				pr:     msg.pr,
+				checks: msg.checks,
+			}
+			a.updateDashboardPRCache()
+		}
+		return a, nil
+
+	case prCreateMsg:
+		if msg.err != nil {
+			a.setError(msg.err.Error())
+			return a, nil
+		}
+		if msg.pr != nil {
+			a.prCache[msg.sessionID] = &prCacheEntry{pr: msg.pr}
+			a.updateDashboardPRCache()
+		}
+		return a, nil
+
+	case fixChecksMsg:
+		if msg.err != nil {
+			a.setError(msg.err.Error())
 		}
 		return a, nil
 
@@ -702,6 +752,62 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.updateDashboardDiffStats()
 			return a, nil
 
+		case "p":
+			// Create PR or open existing PR URL.
+			if a.ghClient == nil {
+				a.setError("GitHub not configured (install gh CLI or set GITHUB_TOKEN)")
+				return a, nil
+			}
+			sess := a.dashboard.selectedSession()
+			if sess == nil {
+				a.setError("No session selected")
+				return a, nil
+			}
+			repoPath := a.dashboard.selectedRepoPath()
+			if repoPath == "" {
+				return a, nil
+			}
+			// If session already has a PR, open it in browser.
+			if entry := a.prCache[sess.ID]; entry != nil && entry.pr != nil {
+				url := entry.pr.URL
+				go func() {
+					switch runtime.GOOS {
+					case "darwin":
+						_ = exec.Command("open", url).Run()
+					case "linux":
+						_ = exec.Command("xdg-open", url).Run()
+					default:
+						_ = exec.Command("xdg-open", url).Run()
+					}
+				}()
+				return a, nil
+			}
+			// Otherwise, push branch and create PR.
+			sessionID := sess.ID
+			branch := sess.Worktree.Branch
+			baseBranch := sess.Worktree.BaseBranch
+			title := sess.GetDisplayName()
+			ghClient := a.ghClient
+			return a, func() tea.Msg {
+				// Push branch first.
+				if err := git.PushBranch(repoPath, branch); err != nil {
+					return prCreateMsg{sessionID: sessionID, err: err}
+				}
+				// Parse remote to get owner/repo.
+				rawURL, err := github.GetRemoteURL(repoPath)
+				if err != nil {
+					return prCreateMsg{sessionID: sessionID, err: err}
+				}
+				owner, repo, err := github.ParseRemoteURL(rawURL)
+				if err != nil {
+					return prCreateMsg{sessionID: sessionID, err: err}
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				pr, err := ghClient.CreatePR(ctx, owner, repo, branch, baseBranch, title, "")
+				return prCreateMsg{sessionID: sessionID, pr: pr, err: err}
+			}
+
 		case "m":
 			item := a.dashboard.selectedItem()
 			if item == nil {
@@ -725,9 +831,90 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.activeRepo = item.repoPath
 			a.view = ViewMerge
 			a.merge = newMergeModel(sess.Name, sess.Worktree.Branch, sess.Worktree.BaseBranch)
+			// If session has a PR, merge via GitHub API.
+			if entry := a.prCache[sess.ID]; entry != nil && entry.pr != nil {
+				a.merge.viaPR = true
+				a.merge.prNumber = entry.pr.Number
+			}
 			a.merge.width = a.width
 			a.merge.height = a.height
 			return a, nil
+
+		case "f":
+			// Fix failing checks: fetch logs and send to an idle agent.
+			if a.ghClient == nil {
+				a.setError("GitHub not configured")
+				return a, nil
+			}
+			sess := a.dashboard.selectedSession()
+			if sess == nil {
+				a.setError("No session selected")
+				return a, nil
+			}
+			entry := a.prCache[sess.ID]
+			if entry == nil || entry.pr == nil {
+				a.setError("No PR for this session")
+				return a, nil
+			}
+			if entry.checks == nil || entry.checks.Failed == 0 {
+				a.setError("No failing checks")
+				return a, nil
+			}
+			// Find first idle agent in the session.
+			var targetAgent *agent.Agent
+			for _, ag := range sess.Agents() {
+				if ag.IsShell {
+					continue
+				}
+				if ag.Status() == agent.StatusIdle {
+					targetAgent = ag
+					break
+				}
+			}
+			if targetAgent == nil {
+				a.setError("No idle agent available to fix checks")
+				return a, nil
+			}
+			repoPath := a.dashboard.selectedRepoPath()
+			sessionID := sess.ID
+			prNumber := entry.pr.Number
+			failedChecks := entry.checks.FailedChecks
+			ghClient := a.ghClient
+			ag := targetAgent
+			return a, func() tea.Msg {
+				rawURL, err := github.GetRemoteURL(repoPath)
+				if err != nil {
+					return fixChecksMsg{sessionID: sessionID, err: err}
+				}
+				owner, repo, err := github.ParseRemoteURL(rawURL)
+				if err != nil {
+					return fixChecksMsg{sessionID: sessionID, err: err}
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+
+				var msgBuilder strings.Builder
+				msgBuilder.WriteString(fmt.Sprintf("The following CI checks are failing on PR #%d. Please analyze the failures and fix them:\n\n", prNumber))
+
+				for _, fc := range failedChecks {
+					logs, err := ghClient.GetFailedCheckLogs(ctx, owner, repo, fc.ID)
+					if err != nil {
+						logs = "(failed to fetch logs: " + err.Error() + ")"
+					}
+					// Truncate very long logs.
+					if len(logs) > 4000 {
+						logs = logs[:4000] + "\n...(truncated)"
+					}
+					msgBuilder.WriteString(fmt.Sprintf("## %s\n%s\n\n", fc.Name, logs))
+				}
+
+				message := msgBuilder.String()
+				ag.SendText(message)
+				// Send Enter to submit.
+				ag.SendText("\n")
+
+				return fixChecksMsg{sessionID: sessionID}
+			}
 		}
 	}
 
@@ -849,7 +1036,28 @@ func (a App) updateMerge(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		activeRepo := a.activeRepo
 		wt := sess.Worktree
+		viaPR := a.merge.viaPR
+		prNumber := a.merge.prNumber
+		ghClient := a.ghClient
 		return a, func() tea.Msg {
+			if viaPR && ghClient != nil {
+				// Merge via GitHub API.
+				rawURL, err := github.GetRemoteURL(activeRepo)
+				if err != nil {
+					return mergeCompleteMsg{err: err}
+				}
+				owner, repo, err := github.ParseRemoteURL(rawURL)
+				if err != nil {
+					return mergeCompleteMsg{err: err}
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				if err := ghClient.MergePR(ctx, owner, repo, prNumber); err != nil {
+					return mergeCompleteMsg{err: err}
+				}
+				return mergeCompleteMsg{}
+			}
+			// Local git merge.
 			message := "Merge " + wt.Branch + " into " + wt.BaseBranch
 			err := git.MergeWorktree(activeRepo, wt, message)
 			return mergeCompleteMsg{err: err}
@@ -875,8 +1083,10 @@ func (a App) updateMerge(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			delete(a.diffStatsCache, sessID)
+			delete(a.prCache, sessID)
 			a.refreshAgentList()
 			a.updateDashboardDiffStats()
+			a.updateDashboardPRCache()
 		}
 		a.view = ViewDashboard
 		return a, nil
@@ -1208,6 +1418,11 @@ func (a *App) updateDashboardDiffStats() {
 	}
 }
 
+// updateDashboardPRCache passes the PR cache to the dashboard for rendering.
+func (a *App) updateDashboardPRCache() {
+	a.dashboard.prCache = a.prCache
+}
+
 // cleanDiffStatsCache removes entries for sessions that no longer exist.
 func (a *App) cleanDiffStatsCache() {
 	activeSessions := make(map[string]bool)
@@ -1219,6 +1434,58 @@ func (a *App) cleanDiffStatsCache() {
 	for id := range a.diffStatsCache {
 		if !activeSessions[id] {
 			delete(a.diffStatsCache, id)
+		}
+	}
+	for id := range a.prCache {
+		if !activeSessions[id] {
+			delete(a.prCache, id)
+		}
+	}
+}
+
+// refreshPRStatusCmd returns a Cmd that polls PR and check status for the selected session.
+func (a *App) refreshPRStatusCmd() tea.Cmd {
+	sess := a.dashboard.selectedSession()
+	if sess == nil {
+		return nil
+	}
+	// Skip sessions where agents are still starting/active.
+	st := sess.Status()
+	if st == agent.StatusActive || st == agent.StatusStarting {
+		return nil
+	}
+	repoPath := a.dashboard.selectedRepoPath()
+	if repoPath == "" {
+		return nil
+	}
+	a.prPollInFlight = true
+	a.prLastPoll = time.Now()
+	sessionID := sess.ID
+	branch := sess.Worktree.Branch
+	ghClient := a.ghClient
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		rawURL, err := github.GetRemoteURL(repoPath)
+		if err != nil {
+			return prPollMsg{sessionID: sessionID}
+		}
+		owner, repo, err := github.ParseRemoteURL(rawURL)
+		if err != nil {
+			return prPollMsg{sessionID: sessionID}
+		}
+
+		pr, _ := ghClient.GetPR(ctx, owner, repo, branch)
+		var checks *github.CheckStatus
+		if pr != nil {
+			checks, _ = ghClient.GetChecks(ctx, owner, repo, branch)
+		}
+
+		return prPollMsg{
+			sessionID: sessionID,
+			pr:        pr,
+			checks:    checks,
 		}
 	}
 }

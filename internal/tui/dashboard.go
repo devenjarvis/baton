@@ -64,7 +64,8 @@ type dashboardModel struct {
 	height       int
 	panelFocus   panelFocus
 	scrollOffset int
-	diffStats    *diffSummaryData // nil when no session selected or no data
+	diffStats    *diffSummaryData           // nil when no session selected or no data
+	prCache      map[string]*prCacheEntry  // keyed by session ID, passed from App
 
 	// Repo config form shown in the right panel when focusConfig is active.
 	repoConfigForm *configForm
@@ -225,6 +226,12 @@ func (d dashboardModel) previewTermWidth() int {
 // previewTermHeight returns the terminal row count for the preview panel.
 func (d dashboardModel) previewTermHeight() int {
 	h := d.contentHeight() - 4 // title + session info + task info + blank line
+	// Account for PR info line if present.
+	if sess := d.selectedSession(); sess != nil {
+		if entry := d.prCache[sess.ID]; entry != nil && entry.pr != nil {
+			h-- // extra line for PR info
+		}
+	}
 	if d.panelFocus == focusTerminal {
 		h -= 2 // NormalBorder consumes 1 row top and bottom
 	}
@@ -292,8 +299,21 @@ func (d dashboardModel) renderList(width int) string {
 			}
 
 			displayName := sess.GetDisplayName()
+
+			// Build PR indicator suffix for the session row.
+			var prSuffix string
+			var prSuffixLen int
+			if entry := d.prCache[sess.ID]; entry != nil && entry.pr != nil {
+				prSuffix = " " + prIndicator(entry.pr, entry.checks)
+				// Approximate visible length: space + #N + space + symbol
+				prSuffixLen = 1 + len(fmt.Sprintf("#%d", entry.pr.Number))
+				if entry.checks != nil {
+					prSuffixLen += 2 // space + check symbol
+				}
+			}
+
 			// 4 for "  ──", 3 for " symbol ", 1 trailing space, plus some padding chars
-			maxNameLen := width - 10
+			maxNameLen := width - 10 - prSuffixLen
 			if maxNameLen < 5 {
 				maxNameLen = 5
 			}
@@ -302,12 +322,12 @@ func (d dashboardModel) renderList(width int) string {
 			}
 
 			label := fmt.Sprintf(" %s %s ", symbolStyle.Render(symbol), displayName)
-			labelLen := len(symbol) + 1 + len(displayName) + 2 // approximate visible length
+			labelLen := len(symbol) + 1 + len(displayName) + 2 + prSuffixLen
 			padLen := width - 4 - labelLen
 			if padLen < 0 {
 				padLen = 0
 			}
-			line := StyleSubtle.Render("  ──") + label + StyleSubtle.Render(strings.Repeat("─", padLen))
+			line := StyleSubtle.Render("  ──") + label + prSuffix + StyleSubtle.Render(strings.Repeat("─", padLen))
 			lines = append(lines, line)
 
 		case listItemAgent:
@@ -361,10 +381,16 @@ func (d dashboardModel) renderList(width int) string {
 		}
 	}
 
-	// If we have diff stats, render the diff summary at the bottom.
+	// Render PR summary and diff stats at the bottom of the left panel.
+	var bottomLines []string
+	if sess := d.selectedSession(); sess != nil {
+		if entry := d.prCache[sess.ID]; entry != nil && entry.pr != nil {
+			bottomLines = append(bottomLines, d.renderPRSummary(entry, width))
+		}
+	}
 	if d.diffStats != nil {
 		contentH := d.contentHeight()
-		agentListHeight := len(lines)
+		agentListHeight := len(lines) + len(bottomLines)
 		maxDiffHeight := contentH / 3
 		availHeight := contentH - agentListHeight
 		if availHeight > maxDiffHeight {
@@ -372,13 +398,16 @@ func (d dashboardModel) renderList(width int) string {
 		}
 		if availHeight >= 2 { // need at least separator + one line
 			diffLines := d.renderDiffSummary(width, availHeight)
-			// Pad blank lines between agent list and diff summary.
-			padding := contentH - agentListHeight - len(diffLines)
-			for i := 0; i < padding; i++ {
-				lines = append(lines, "")
-			}
-			lines = append(lines, diffLines...)
+			bottomLines = append(bottomLines, diffLines...)
 		}
+	}
+	if len(bottomLines) > 0 {
+		contentH := d.contentHeight()
+		padding := contentH - len(lines) - len(bottomLines)
+		for i := 0; i < padding; i++ {
+			lines = append(lines, "")
+		}
+		lines = append(lines, bottomLines...)
 	}
 
 	return strings.Join(lines, "\n")
@@ -418,6 +447,24 @@ func (d dashboardModel) renderPreview(width int) string {
 	if item.session != nil {
 		sessionInfo = StyleSubtle.Render(fmt.Sprintf(" Session: %s  Worktree: %s", item.session.GetDisplayName(), item.session.Worktree.Path))
 	}
+	var prInfo string
+	if item.session != nil {
+		if entry := d.prCache[item.session.ID]; entry != nil && entry.pr != nil {
+			pr := entry.pr
+			checkStr := ""
+			if entry.checks != nil {
+				switch entry.checks.State {
+				case "success":
+					checkStr = fmt.Sprintf(" -- %d/%d checks "+StyleSuccess.Render("\u2713"), entry.checks.Passed, entry.checks.Total)
+				case "failure":
+					checkStr = fmt.Sprintf(" -- %d/%d checks "+StyleError.Render("\u2717"), entry.checks.Passed, entry.checks.Total)
+				case "pending":
+					checkStr = fmt.Sprintf(" -- %d/%d checks "+StyleWarning.Render("\u25cb"), entry.checks.Passed, entry.checks.Total)
+				}
+			}
+			prInfo = StyleSubtle.Render(fmt.Sprintf(" PR: #%d (%s)%s  %s", pr.Number, pr.State, checkStr, pr.URL))
+		}
+	}
 	var taskInfo string
 	if ag.IsShell {
 		taskInfo = StyleSubtle.Render(" Shell — " + ag.WorktreePath)
@@ -445,13 +492,12 @@ func (d dashboardModel) renderPreview(width int) string {
 		render = ag.Render()
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left,
-		title,
-		sessionInfo,
-		taskInfo,
-		"",
-		render,
-	)
+	previewParts := []string{title, sessionInfo}
+	if prInfo != "" {
+		previewParts = append(previewParts, prInfo)
+	}
+	previewParts = append(previewParts, taskInfo, "", render)
+	return lipgloss.JoinVertical(lipgloss.Left, previewParts...)
 }
 
 // selectedItem returns the currently selected list item, or nil if the list is empty.
@@ -616,6 +662,42 @@ func (d dashboardModel) renderDiffSummary(width, maxHeight int) []string {
 	}
 
 	return lines
+}
+
+// renderPRSummary renders a compact PR status line for the left panel bottom section.
+func (d dashboardModel) renderPRSummary(entry *prCacheEntry, width int) string {
+	pr := entry.pr
+	checks := entry.checks
+
+	prLabel := fmt.Sprintf("── PR #%d ──", pr.Number)
+	var checkInfo string
+	if checks != nil {
+		checkInfo = fmt.Sprintf(" %d/%d ", checks.Passed, checks.Total)
+		switch checks.State {
+		case "success":
+			checkInfo += StyleSuccess.Render("\u2713")
+		case "failure":
+			checkInfo += StyleError.Render("\u2717")
+		case "pending":
+			checkInfo += StyleWarning.Render("\u25cb")
+		}
+	}
+
+	sepWidth := width - 2
+	if sepWidth < 0 {
+		sepWidth = 0
+	}
+	// Visible length of label + checkInfo (approximate).
+	visLen := len(prLabel)
+	if checks != nil {
+		visLen += 1 + len(fmt.Sprintf("%d/%d", checks.Passed, checks.Total)) + 2
+	}
+	padLen := sepWidth - visLen
+	if padLen < 0 {
+		padLen = 0
+	}
+
+	return StyleSubtle.Render(prLabel) + checkInfo + StyleSubtle.Render(strings.Repeat("─", padLen))
 }
 
 // humanizeElapsed formats a duration for display.
