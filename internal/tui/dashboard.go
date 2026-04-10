@@ -77,6 +77,13 @@ func newDashboardModel() dashboardModel {
 
 func (d dashboardModel) Update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.PasteMsg:
+		if d.panelFocus == focusTerminal {
+			if ag := d.selectedAgent(); ag != nil {
+				ag.Paste(msg.Content)
+			}
+		}
+		return d, nil
 	case tea.KeyPressMsg:
 		// Config panel focus: delegate to form.
 		if d.panelFocus == focusConfig && d.repoConfigForm != nil {

@@ -101,6 +101,44 @@ func TestSendTextAndRead(t *testing.T) {
 	}
 }
 
+func TestPasteAndRead(t *testing.T) {
+	term := New(80, 24)
+	defer term.Close()
+
+	type readResult struct {
+		n   int
+		err error
+		buf []byte
+	}
+
+	ch := make(chan readResult, 1)
+	go func() {
+		buf := make([]byte, 1024)
+		n, err := term.Read(buf)
+		ch <- readResult{n, err, buf}
+	}()
+
+	time.Sleep(10 * time.Millisecond)
+	term.Paste("pasted text")
+
+	select {
+	case res := <-ch:
+		if res.err != nil {
+			t.Fatalf("Read failed: %v", res.err)
+		}
+		if res.n == 0 {
+			t.Error("expected Read to return bytes after Paste, got 0")
+		}
+		got := string(res.buf[:res.n])
+		// Paste wraps content in bracketed paste sequences (\x1b[200~ ... \x1b[201~)
+		if !strings.Contains(got, "pasted text") {
+			t.Errorf("expected Read output to contain 'pasted text', got %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Read timed out after 2 seconds")
+	}
+}
+
 func TestRenderRegion(t *testing.T) {
 	term := New(80, 5)
 	defer term.Close()
