@@ -53,6 +53,15 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		allOk = false
 	}
 
+	// Check github auth (advisory only)
+	if err := exec.Command("gh", "auth", "status").Run(); err == nil {
+		fmt.Println("  [OK]   github: gh CLI authenticated")
+	} else if os.Getenv("GITHUB_TOKEN") != "" {
+		fmt.Println("  [OK]   github: GITHUB_TOKEN set")
+	} else {
+		fmt.Println("  [WARN] github: not configured (install gh CLI or set GITHUB_TOKEN)")
+	}
+
 	if !allOk {
 		fmt.Println("\nSome checks failed.")
 		os.Exit(1)
