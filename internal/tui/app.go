@@ -14,6 +14,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/lipgloss"
+	xvt "github.com/charmbracelet/x/vt"
 	"github.com/devenjarvis/baton/internal/agent"
 	"github.com/devenjarvis/baton/internal/audio"
 	"github.com/devenjarvis/baton/internal/config"
@@ -285,7 +286,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		// Clean stale diff cache entries periodically.
-		a.cleanDiffStatsCache()
+		a.cleanStaleCaches()
 		// Refresh diff stats periodically or on idle transition.
 		var diffCmd tea.Cmd
 		if sess := a.dashboard.selectedSession(); sess != nil {
@@ -298,6 +299,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Poll PR status every 30s for the selected session.
 		var prCmd tea.Cmd
 		if a.ghClient != nil && !a.prPollInFlight && time.Since(a.prLastPoll) > 30*time.Second {
+			a.prLastPoll = time.Now() // Update unconditionally to avoid 100ms re-checks.
 			prCmd = a.refreshPRStatusCmd()
 		}
 		return a, tea.Batch(tickCmd(), diffCmd, prCmd)
@@ -794,7 +796,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return prCreateMsg{sessionID: sessionID, err: err}
 				}
 				// Parse remote to get owner/repo.
-				rawURL, err := github.GetRemoteURL(repoPath)
+				rawURL, err := git.GetRemoteURL(repoPath)
 				if err != nil {
 					return prCreateMsg{sessionID: sessionID, err: err}
 				}
@@ -882,7 +884,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			ghClient := a.ghClient
 			ag := targetAgent
 			return a, func() tea.Msg {
-				rawURL, err := github.GetRemoteURL(repoPath)
+				rawURL, err := git.GetRemoteURL(repoPath)
 				if err != nil {
 					return fixChecksMsg{sessionID: sessionID, err: err}
 				}
@@ -910,8 +912,8 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 				message := msgBuilder.String()
 				ag.SendText(message)
-				// Send Enter to submit.
-				ag.SendText("\n")
+				// Send Enter key to submit.
+				ag.SendKey(xvt.KeyPressEvent{Code: tea.KeyEnter})
 
 				return fixChecksMsg{sessionID: sessionID}
 			}
@@ -1042,7 +1044,7 @@ func (a App) updateMerge(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, func() tea.Msg {
 			if viaPR && ghClient != nil {
 				// Merge via GitHub API.
-				rawURL, err := github.GetRemoteURL(activeRepo)
+				rawURL, err := git.GetRemoteURL(activeRepo)
 				if err != nil {
 					return mergeCompleteMsg{err: err}
 				}
@@ -1423,8 +1425,8 @@ func (a *App) updateDashboardPRCache() {
 	a.dashboard.prCache = a.prCache
 }
 
-// cleanDiffStatsCache removes entries for sessions that no longer exist.
-func (a *App) cleanDiffStatsCache() {
+// cleanStaleCaches removes diff stats and PR cache entries for sessions that no longer exist.
+func (a *App) cleanStaleCaches() {
 	activeSessions := make(map[string]bool)
 	for _, mgr := range a.managers {
 		for _, sess := range mgr.ListSessions() {
@@ -1459,7 +1461,6 @@ func (a *App) refreshPRStatusCmd() tea.Cmd {
 		return nil
 	}
 	a.prPollInFlight = true
-	a.prLastPoll = time.Now()
 	sessionID := sess.ID
 	branch := sess.Worktree.Branch
 	ghClient := a.ghClient
@@ -1467,7 +1468,7 @@ func (a *App) refreshPRStatusCmd() tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		rawURL, err := github.GetRemoteURL(repoPath)
+		rawURL, err := git.GetRemoteURL(repoPath)
 		if err != nil {
 			return prPollMsg{sessionID: sessionID}
 		}

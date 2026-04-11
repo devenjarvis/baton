@@ -172,3 +172,8 @@ func PushBranch(repoPath, branch string) error {
 	_, err := runGit(repoPath, "push", "-u", "origin", branch)
 	return err
 }
+
+// GetRemoteURL returns the URL for the "origin" remote of the repo at repoPath.
+func GetRemoteURL(repoPath string) (string, error) {
+	return runGit(repoPath, "remote", "get-url", "origin")
+}

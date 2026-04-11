@@ -2,26 +2,8 @@ package github
 
 import (
 	"fmt"
-	"os/exec"
 	"strings"
 )
-
-// runGit executes a git command in the given directory and returns its output.
-// On error, the returned error includes stderr for debugging.
-func runGit(dir string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
-	}
-	return strings.TrimSpace(string(out)), nil
-}
-
-// GetRemoteURL returns the URL for the "origin" remote of the repo at repoPath.
-func GetRemoteURL(repoPath string) (string, error) {
-	return runGit(repoPath, "remote", "get-url", "origin")
-}
 
 // ParseRemoteURL extracts the owner and repo name from a GitHub remote URL.
 // Supported formats:
