@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -55,6 +56,11 @@ type diffStatsMsg struct {
 type initAppMsg struct {
 	cfg *config.Config
 	err error
+}
+
+// resumeDoneMsg signals that background session resume has completed.
+type resumeDoneMsg struct {
+	repoPaths []string // repos whose state files should be cleaned up
 }
 
 // diffStatsEntry holds cached diff stats for a single session.
@@ -213,7 +219,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, listenEvents(mgr))
 			}
 		}
-		// Auto-resume saved sessions for each repo.
+		// Build resume work to run in the background so the TUI renders immediately.
+		type resumeItem struct {
+			repoPath    string
+			mgr         *agent.Manager
+			resumeCfg   agent.Config
+			sessions    []state.SessionState
+		}
+		var resumeItems []resumeItem
 		for _, repo := range msg.cfg.Repos {
 			bs, err := state.Load(repo.Path)
 			if err != nil || bs == nil {
@@ -224,20 +237,37 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				continue
 			}
 			resolved := a.resolvedCache[repo.Path]
-			resumeCfg := agent.Config{
-				Rows:              24,
-				Cols:              80,
-				BypassPermissions: resolved.BypassPermissions,
-				AgentProgram:      resolved.AgentProgram,
-			}
-			for _, ss := range bs.Sessions {
-				if err := mgr.ResumeSession(ss, resumeCfg); err != nil {
-					// Skip sessions whose worktrees are missing — don't crash.
-					continue
+			resumeItems = append(resumeItems, resumeItem{
+				repoPath: repo.Path,
+				mgr:      mgr,
+				resumeCfg: agent.Config{
+					Rows:              24,
+					Cols:              80,
+					BypassPermissions: resolved.BypassPermissions,
+					AgentProgram:      resolved.AgentProgram,
+				},
+				sessions: bs.Sessions,
+			})
+		}
+		if len(resumeItems) > 0 {
+			cmds = append(cmds, func() tea.Msg {
+				var wg sync.WaitGroup
+				for _, ri := range resumeItems {
+					for _, ss := range ri.sessions {
+						wg.Add(1)
+						go func(mgr *agent.Manager, ss state.SessionState, cfg agent.Config) {
+							defer wg.Done()
+							_ = mgr.ResumeSession(ss, cfg)
+						}(ri.mgr, ss, ri.resumeCfg)
+					}
 				}
-			}
-			// Clean up state file after successful resume.
-			_ = state.Remove(repo.Path)
+				wg.Wait()
+				repoPaths := make([]string, len(resumeItems))
+				for i, ri := range resumeItems {
+					repoPaths[i] = ri.repoPath
+				}
+				return resumeDoneMsg{repoPaths: repoPaths}
+			})
 		}
 		// Always start on the dashboard — single repo or many.
 		a.view = ViewDashboard
@@ -382,6 +412,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.prCache[msg.sessionID] = &prCacheEntry{pr: msg.pr}
 			a.updateDashboardPRCache()
 		}
+		return a, nil
+
+	case resumeDoneMsg:
+		for _, repoPath := range msg.repoPaths {
+			_ = state.Remove(repoPath)
+		}
+		a.refreshAgentList()
 		return a, nil
 
 	case fixChecksMsg:

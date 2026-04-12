@@ -258,10 +258,16 @@ func (s *Session) KillAll() {
 	}
 	s.mu.RUnlock()
 
+	var wg sync.WaitGroup
+	wg.Add(len(agents))
 	for _, a := range agents {
-		a.Kill()
-		<-a.Done()
+		go func() {
+			defer wg.Done()
+			a.Kill()
+			<-a.Done()
+		}()
 	}
+	wg.Wait()
 
 	s.mu.Lock()
 	s.agents = make(map[string]*Agent)

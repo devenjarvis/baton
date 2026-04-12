@@ -168,7 +168,7 @@ func (m *Manager) createSessionWorktree(cfg Config) (*Session, error) {
 		}
 	}
 
-	wt, err := git.CreateWorktree(m.repoPath, name, settings.BranchPrefix, settings.WorktreeDir, startPoint)
+	wt, err := git.CreateWorktree(m.repoPath, name, settings.BranchPrefix, settings.WorktreeDir, baseBranch, startPoint)
 	if err != nil {
 		return nil, fmt.Errorf("creating worktree: %w", err)
 	}
@@ -402,10 +402,16 @@ func (m *Manager) Shutdown() {
 	}
 	m.mu.RUnlock()
 
+	var wg sync.WaitGroup
+	wg.Add(len(sessions))
 	for _, s := range sessions {
-		s.KillAll()
-		s.Cleanup(m.repoPath)
+		go func() {
+			defer wg.Done()
+			s.KillAll()
+			s.Cleanup(m.repoPath)
+		}()
 	}
+	wg.Wait()
 
 	m.watchers.Wait()
 
@@ -469,9 +475,15 @@ func (m *Manager) Detach() *state.BatonState {
 	}
 
 	// Kill all agents but do NOT call Cleanup (preserve worktrees).
+	var wg sync.WaitGroup
+	wg.Add(len(sessions))
 	for _, s := range sessions {
-		s.KillAll()
+		go func() {
+			defer wg.Done()
+			s.KillAll()
+		}()
 	}
+	wg.Wait()
 
 	m.watchers.Wait()
 

@@ -73,7 +73,7 @@ func UpdateBaseBranch(repoPath, branch string) error {
 // strings to use defaults ("baton/" and ".baton/worktrees").
 // An optional startPoint specifies the commit to branch from; if omitted,
 // the worktree branches from the current HEAD.
-func CreateWorktree(repoPath, agentName, branchPrefix, worktreeDir string, startPoint ...string) (*WorktreeInfo, error) {
+func CreateWorktree(repoPath, agentName, branchPrefix, worktreeDir, baseBranch string, startPoint ...string) (*WorktreeInfo, error) {
 	if branchPrefix == "" {
 		branchPrefix = "baton/"
 	}
@@ -81,9 +81,12 @@ func CreateWorktree(repoPath, agentName, branchPrefix, worktreeDir string, start
 		worktreeDir = ".baton/worktrees"
 	}
 
-	base, err := BaseBranch(repoPath)
-	if err != nil {
-		return nil, fmt.Errorf("getting base branch: %w", err)
+	if baseBranch == "" {
+		var err error
+		baseBranch, err = BaseBranch(repoPath)
+		if err != nil {
+			return nil, fmt.Errorf("getting base branch: %w", err)
+		}
 	}
 
 	branch := branchPrefix + agentName
@@ -107,7 +110,7 @@ func CreateWorktree(repoPath, agentName, branchPrefix, worktreeDir string, start
 		Name:       agentName,
 		Path:       absPath,
 		Branch:     branch,
-		BaseBranch: base,
+		BaseBranch: baseBranch,
 	}, nil
 }
 
