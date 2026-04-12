@@ -45,7 +45,7 @@ func (c *Client) GetPR(ctx context.Context, owner, repo, branch string) (*PRStat
 	return prToState(prs[0]), nil
 }
 
-// ListPRs returns all open pull requests for the given repository.
+// ListPRs returns open pull requests for the given repository (up to 100).
 func (c *Client) ListPRs(ctx context.Context, owner, repo string) ([]*PRState, error) {
 	prs, _, err := c.gh.PullRequests.List(ctx, owner, repo, &gh.PullRequestListOptions{
 		State: "open",
