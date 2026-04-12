@@ -78,7 +78,7 @@ func TestBaseBranch(t *testing.T) {
 func TestCreateWorktree(t *testing.T) {
 	repo := initTestRepo(t)
 
-	wt, err := git.CreateWorktree(repo, "agent1", "", "")
+	wt, err := git.CreateWorktree(repo, "agent1", "", "", "")
 	if err != nil {
 		t.Fatalf("CreateWorktree: %v", err)
 	}
@@ -113,11 +113,11 @@ func TestCreateWorktree(t *testing.T) {
 func TestListWorktrees(t *testing.T) {
 	repo := initTestRepo(t)
 
-	_, err := git.CreateWorktree(repo, "agent1", "", "")
+	_, err := git.CreateWorktree(repo, "agent1", "", "", "")
 	if err != nil {
 		t.Fatalf("CreateWorktree agent1: %v", err)
 	}
-	_, err = git.CreateWorktree(repo, "agent2", "", "")
+	_, err = git.CreateWorktree(repo, "agent2", "", "", "")
 	if err != nil {
 		t.Fatalf("CreateWorktree agent2: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestListWorktrees(t *testing.T) {
 func TestDiffAndMerge(t *testing.T) {
 	repo := initTestRepo(t)
 
-	wt, err := git.CreateWorktree(repo, "agent1", "", "")
+	wt, err := git.CreateWorktree(repo, "agent1", "", "", "")
 	if err != nil {
 		t.Fatalf("CreateWorktree: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestDiffAndMerge(t *testing.T) {
 func TestRemoveWorktree(t *testing.T) {
 	repo := initTestRepo(t)
 
-	wt, err := git.CreateWorktree(repo, "agent1", "", "")
+	wt, err := git.CreateWorktree(repo, "agent1", "", "", "")
 	if err != nil {
 		t.Fatalf("CreateWorktree: %v", err)
 	}
@@ -382,7 +382,7 @@ func TestCreateWorktreeWithStartPoint(t *testing.T) {
 	}
 
 	// Create worktree from origin/main (not local main).
-	wt, err := git.CreateWorktree(work, "start-point-agent", "", "", "origin/main")
+	wt, err := git.CreateWorktree(work, "start-point-agent", "", "", "", "origin/main")
 	if err != nil {
 		t.Fatalf("CreateWorktree with startPoint: %v", err)
 	}
