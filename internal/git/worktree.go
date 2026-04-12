@@ -52,17 +52,17 @@ func UpdateBaseBranch(repoPath, branch string) error {
 	// Check if local is ancestor of remote (safe to fast-forward).
 	if _, err := runGit(repoPath, "merge-base", "--is-ancestor", branch, "origin/"+branch); err != nil {
 		// Local has diverged — skip fast-forward, but fetch succeeded.
-		return nil
+		return nil //nolint:nilerr // intentional: fetch updated origin/<branch> for use as start point
 	}
 
 	// Fast-forward the local branch.
 	current, _ := BaseBranch(repoPath)
 	if current == branch {
 		// Branch is checked out — use merge --ff-only.
-		runGit(repoPath, "merge", "--ff-only", "origin/"+branch)
+		_, _ = runGit(repoPath, "merge", "--ff-only", "origin/"+branch)
 	} else {
 		// Branch is not checked out — update ref directly.
-		runGit(repoPath, "branch", "-f", branch, "origin/"+branch)
+		_, _ = runGit(repoPath, "branch", "-f", branch, "origin/"+branch)
 	}
 
 	return nil

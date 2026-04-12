@@ -31,7 +31,7 @@ func setupTestRepo(t *testing.T) string {
 	}
 
 	// Create initial file and commit.
-	if err := os.WriteFile(dir+"/README.md", []byte("# Test\n"), 0644); err != nil {
+	if err := os.WriteFile(dir+"/README.md", []byte("# Test\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	for _, args := range [][]string{

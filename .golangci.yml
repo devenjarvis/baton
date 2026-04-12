@@ -1,0 +1,55 @@
+version: "2"
+
+run:
+  go: "1.25"
+
+output:
+  show-stats: true
+
+linters:
+  enable:
+    - govet
+    - staticcheck
+    - errcheck
+    - ineffassign
+    - unused
+    - revive
+    - gosec
+    - prealloc
+    - bodyclose
+    - copyloopvar
+    - nilerr
+
+  settings:
+    gosec:
+      excludes:
+        - G115
+        - G204
+        - G301
+        - G302
+        - G304
+        - G306
+        - G404
+
+    revive:
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: error-naming
+        - name: error-return
+        - name: increment-decrement
+        - name: var-declaration
+        - name: range
+
+formatters:
+  enable:
+    - gofumpt
+
+  settings:
+    gofumpt:
+      extra-rules: true
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+

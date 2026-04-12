@@ -211,7 +211,7 @@ func (t *Terminal) Close() {
 	t.closeOnce.Do(func() {
 		// Close our pipe to unblock any Read callers.
 		// The bridgeRead goroutine will exit on next pw.Write error.
-		t.pr.Close()
+		_ = t.pr.Close()
 		t.pw.CloseWithError(io.ErrClosedPipe)
 	})
 }

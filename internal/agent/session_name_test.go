@@ -28,7 +28,7 @@ func TestPollClaudeSessionName_NoNameField(t *testing.T) {
 
 	// Write a JSON file without a "name" field.
 	data, _ := json.Marshal(map[string]any{"id": "abc123"})
-	if err := os.WriteFile(filepath.Join(dir, "12345.json"), data, 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "12345.json"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -45,7 +45,7 @@ func TestPollClaudeSessionName_WithName(t *testing.T) {
 	defer func() { ClaudeSessionDir = old }()
 
 	data, _ := json.Marshal(map[string]any{"name": "fix-auth-bug", "id": "abc123"})
-	if err := os.WriteFile(filepath.Join(dir, "42.json"), data, 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "42.json"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -98,7 +98,7 @@ func TestPollClaudeSessionName_CapturesSessionID(t *testing.T) {
 		"sessionId": "test-uuid-123",
 		"name":      "test-session",
 	})
-	os.WriteFile(filepath.Join(dir, fmt.Sprintf("%d.json", pid)), data, 0644)
+	_ = os.WriteFile(filepath.Join(dir, fmt.Sprintf("%d.json", pid)), data, 0o644)
 
 	a := &Agent{
 		claudePid: pid,

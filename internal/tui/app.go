@@ -65,14 +65,14 @@ type diffStatsEntry struct {
 
 // App is the root Bubble Tea model.
 type App struct {
-	managers   map[string]*agent.Manager
-	activeRepo string
-	cfg        *config.Config
+	managers    map[string]*agent.Manager
+	activeRepo  string
+	cfg         *config.Config
 	repoBrowser fileBrowserModel
 
 	// Settings
 	globalSettings *config.GlobalSettings
-	repoSettings   map[string]*config.RepoSettings   // keyed by repo path
+	repoSettings   map[string]*config.RepoSettings    // keyed by repo path
 	resolvedCache  map[string]config.ResolvedSettings // keyed by repo path
 
 	view         ViewMode
@@ -93,10 +93,10 @@ type App struct {
 	diffStatsCache      map[string]*diffStatsEntry // keyed by session ID
 	diffRefreshInFlight bool
 
-	ghClient         *github.Client
-	prCache          map[string]*prCacheEntry // keyed by session ID
-	prPollInFlight   bool
-	prLastPoll       time.Time
+	ghClient       *github.Client
+	prCache        map[string]*prCacheEntry // keyed by session ID
+	prPollInFlight bool
+	prLastPoll     time.Time
 }
 
 func NewApp() App {
@@ -707,7 +707,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// Repo header selected — remove the repo.
 			if a.cfg != nil {
-				config.RemoveRepo(a.cfg, item.repoPath)
+				_ = config.RemoveRepo(a.cfg, item.repoPath)
 				if err := config.Save(a.cfg); err != nil {
 					a.setError(err.Error())
 				}
@@ -1024,7 +1024,6 @@ func (a App) updateDiff(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return a, cmd
 }
 
-
 func (a App) updateMerge(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case mergeCancelMsg:
@@ -1255,7 +1254,7 @@ func (a *App) refreshAgentList() {
 			}
 			a.dashboard.items = items
 			a.dashboard.clampToAgent()
-			}
+		}
 		return
 	}
 
@@ -1266,7 +1265,7 @@ func (a *App) refreshAgentList() {
 	}
 
 	// Build hierarchical list: repo > session > agent.
-	var items []listItem
+	items := make([]listItem, 0, len(a.cfg.Repos))
 	for _, repo := range a.cfg.Repos {
 		items = append(items, listItem{
 			kind:     listItemRepo,
@@ -1323,9 +1322,10 @@ func (a App) View() tea.View {
 	case ViewDashboard:
 		body := a.dashboard.View()
 		hints := dashboardHints
-		if a.dashboard.panelFocus == focusTerminal {
+		switch a.dashboard.panelFocus {
+		case focusTerminal:
 			hints = focusTerminalHints
-		} else if a.dashboard.panelFocus == focusConfig {
+		case focusConfig:
 			hints = repoConfigHints
 		}
 		statusbar := renderStatusBar(hints, a.width)
@@ -1508,15 +1508,15 @@ func ensureGitignore(path string) {
 	}
 
 	// Append .baton/ to .gitignore.
-	f, err := os.OpenFile(gitignorePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(gitignorePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return // best-effort
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	// Add newline before entry if file doesn't end with one.
 	if len(data) > 0 && data[len(data)-1] != '\n' {
-		f.WriteString("\n")
+		_, _ = f.WriteString("\n")
 	}
-	f.WriteString(entry + "\n")
+	_, _ = f.WriteString(entry + "\n")
 }

@@ -48,5 +48,7 @@ func (s Status) Symbol() string {
 	}
 }
 
-const idleTimeout = 3 * time.Second
-const composingIdleTimeout = 30 * time.Second
+const (
+	idleTimeout          = 3 * time.Second
+	composingIdleTimeout = 30 * time.Second
+)

@@ -73,7 +73,7 @@ func Load() (*Config, error) {
 				data = legacyData
 				// Migrate: write to new location, best-effort.
 				if writeErr := atomicWriteJSON(path, json.RawMessage(data)); writeErr == nil {
-					os.Remove(legacyPath)
+					_ = os.Remove(legacyPath)
 				}
 			}
 		}
@@ -122,7 +122,7 @@ func Save(cfg *Config) error {
 // partial write.
 func atomicWriteJSON(path string, v any) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("config: creating dir %s: %w", dir, err)
 	}
 
@@ -139,12 +139,12 @@ func atomicWriteJSON(path string, v any) error {
 
 	defer func() {
 		if err != nil {
-			os.Remove(tmpName)
+			_ = os.Remove(tmpName)
 		}
 	}()
 
 	if _, writeErr := tmp.Write(data); writeErr != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		err = fmt.Errorf("config: writing temp file: %w", writeErr)
 		return err
 	}

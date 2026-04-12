@@ -68,7 +68,7 @@ func TestCreateAgentViaN(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 
 	run := func(args ...string) {
 		cmd := exec.Command(args[0], args[1:]...)
@@ -126,7 +126,7 @@ func TestCreateMultipleAgentsViaTUI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 
 	run := func(args ...string) {
 		cmd := exec.Command(args[0], args[1:]...)
@@ -210,7 +210,7 @@ func TestAddAgentToSessionViaC(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 
 	run := func(args ...string) {
 		cmd := exec.Command(args[0], args[1:]...)
@@ -276,7 +276,7 @@ func TestPanelFocusSwitching(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 
 	run := func(args ...string) {
 		cmd := exec.Command(args[0], args[1:]...)
@@ -352,7 +352,7 @@ func TestActionKeysBlockedInFocusTerminal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 
 	run := func(args ...string) {
 		cmd := exec.Command(args[0], args[1:]...)
@@ -401,7 +401,7 @@ func TestShiftEscForwardsEscapeToAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 
 	run := func(args ...string) {
 		cmd := exec.Command(args[0], args[1:]...)
@@ -533,7 +533,7 @@ func TestMouseClickPreviewEntersFocus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 
 	run := func(args ...string) {
 		cmd := exec.Command(args[0], args[1:]...)
@@ -590,7 +590,7 @@ func TestMouseWheelScrollInFocusTerminal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 
 	run := func(args ...string) {
 		cmd := exec.Command(args[0], args[1:]...)
@@ -771,7 +771,7 @@ func TestMouseClickSessionSnapsToAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 
 	run := func(args ...string) {
 		cmd := exec.Command(args[0], args[1:]...)
@@ -837,12 +837,12 @@ func TestRefreshAgentListRepoAffinity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(dir1)
+	defer func() { _ = os.RemoveAll(dir1) }()
 	dir2, err := os.MkdirTemp("", "baton-repo2-*")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(dir2)
+	defer func() { _ = os.RemoveAll(dir2) }()
 
 	initRepo := func(dir string) {
 		for _, args := range [][]string{
@@ -904,7 +904,7 @@ func TestRefreshAgentListRepoAffinity(t *testing.T) {
 	}
 
 	// Now kill the session, simulating what happens when 'X' is pressed.
-	mgr1.KillSession(sess1.ID)
+	_ = mgr1.KillSession(sess1.ID)
 	// Give the agent time to exit.
 	time.Sleep(200 * time.Millisecond)
 	// Refresh the list — list becomes [repo1, repo2].

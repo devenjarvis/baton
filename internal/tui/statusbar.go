@@ -44,26 +44,10 @@ var (
 		{"q/esc", "back"},
 	}
 
-	reposHints = []keyHint{
-		{"j/k", "navigate"},
-		{"enter", "select"},
-		{"a", "add"},
-		{"d", "remove"},
-		{"r/esc", "back"},
-		{"q", "quit"},
-	}
-
 	repoBrowsingHints = []keyHint{
 		{"j/k", "navigate"},
 		{"enter", "open/select"},
 		{"backspace", "up"},
-		{"esc", "cancel"},
-	}
-
-	globalConfigHints = []keyHint{
-		{"j/k", "navigate"},
-		{"enter", "edit/toggle"},
-		{"ctrl+s", "save"},
 		{"esc", "cancel"},
 	}
 
@@ -83,7 +67,7 @@ func renderStatusBar(hints []keyHint, width int) string {
 	descStyle := lipgloss.NewStyle().
 		Foreground(ColorMuted)
 
-	var parts []string
+	parts := make([]string, 0, len(hints))
 	for _, h := range hints {
 		parts = append(parts, keyStyle.Render(h.key)+" "+descStyle.Render(h.desc))
 	}

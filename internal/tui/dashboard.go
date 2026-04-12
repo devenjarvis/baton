@@ -10,7 +10,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	xvt "github.com/charmbracelet/x/vt"
 	"github.com/devenjarvis/baton/internal/agent"
-	"github.com/devenjarvis/baton/internal/config"
 )
 
 // listItemKind distinguishes repo headers, session rows, and agent rows in the dashboard list.
@@ -26,9 +25,9 @@ const (
 type listItem struct {
 	kind     listItemKind
 	repoPath string
-	repoName string          // set for repo header items
-	session  *agent.Session  // set for session and agent items
-	agent    *agent.Agent    // set for agent items
+	repoName string         // set for repo header items
+	session  *agent.Session // set for session and agent items
+	agent    *agent.Agent   // set for agent items
 }
 
 // diffSummaryData holds cached diff stats for rendering in the dashboard.
@@ -50,12 +49,6 @@ type diffAggregateStats struct {
 	Deletions  int
 }
 
-// repoConfigSaveMsg is emitted when the repo config form is saved (ctrl+s).
-type repoConfigSaveMsg struct {
-	repoPath string
-	settings *config.RepoSettings
-}
-
 // dashboardModel shows the hierarchical repo/session/agent list and terminal preview.
 type dashboardModel struct {
 	items        []listItem
@@ -64,8 +57,8 @@ type dashboardModel struct {
 	height       int
 	panelFocus   panelFocus
 	scrollOffset int
-	diffStats    *diffSummaryData           // nil when no session selected or no data
-	prCache      map[string]*prCacheEntry  // keyed by session ID, passed from App
+	diffStats    *diffSummaryData         // nil when no session selected or no data
+	prCache      map[string]*prCacheEntry // keyed by session ID, passed from App
 
 	// Repo config form shown in the right panel when focusConfig is active.
 	repoConfigForm *configForm

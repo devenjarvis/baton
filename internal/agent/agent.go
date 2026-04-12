@@ -28,20 +28,20 @@ type Agent struct {
 	pty      *bpty.PTY
 	terminal *vt.Terminal
 
-	mu             sync.RWMutex
-	displayName    string
+	mu              sync.RWMutex
+	displayName     string
 	claudePid       int
 	claudeSessionID string
 	hasClaudeName   bool
-	status         Status
-	lastOutput  time.Time
-	lastInput   time.Time
-	composing   bool
-	exitErr     error
+	status          Status
+	lastOutput      time.Time
+	lastInput       time.Time
+	composing       bool
+	exitErr         error
 
-	done         chan struct{}
-	stop         chan struct{}
-	stopOnce     sync.Once
+	done          chan struct{}
+	stop          chan struct{}
+	stopOnce      sync.Once
 	writeLoopDone chan struct{}
 }
 
@@ -95,15 +95,15 @@ func newAgent(id string, cfg Config, worktreePath string) (*Agent, error) {
 	claudePid := p.Pid()
 
 	a := &Agent{
-		ID:           id,
-		Name:         cfg.Name,
-		Task:         cfg.Task,
-		WorktreePath: worktreePath,
-		CreatedAt:    time.Now(),
-		pty:          p,
-		terminal:     term,
-		claudePid:    claudePid,
-		status:       StatusStarting,
+		ID:            id,
+		Name:          cfg.Name,
+		Task:          cfg.Task,
+		WorktreePath:  worktreePath,
+		CreatedAt:     time.Now(),
+		pty:           p,
+		terminal:      term,
+		claudePid:     claudePid,
+		status:        StatusStarting,
 		done:          make(chan struct{}),
 		stop:          make(chan struct{}),
 		writeLoopDone: make(chan struct{}),
@@ -123,7 +123,12 @@ func newAgent(id string, cfg Config, worktreePath string) (*Agent, error) {
 // newResumedAgent creates and starts an agent that resumes a previous Claude session.
 // It uses `claude --resume <sessionId>` if claudeSessionID is provided, falls back to
 // `claude --continue` if empty, then plain `claude` as last resort.
-func newResumedAgent(id string, cfg Config, worktreePath string, claudeSessionID string) (*Agent, error) {
+func newResumedAgent(
+	id string,
+	cfg Config,
+	worktreePath string,
+	claudeSessionID string,
+) (*Agent, error) {
 	term := vt.New(cfg.Cols, cfg.Rows)
 
 	args := buildResumeArgs(cfg, claudeSessionID)
@@ -194,15 +199,15 @@ func newAgentWithCommand(id string, cfg Config, worktreePath string, cmd *exec.C
 	}
 
 	a := &Agent{
-		ID:           id,
-		Name:         cfg.Name,
-		Task:         cfg.Task,
-		WorktreePath: worktreePath,
-		CreatedAt:    time.Now(),
-		pty:          p,
-		terminal:     term,
-		claudePid:    p.Pid(),
-		status:       StatusStarting,
+		ID:            id,
+		Name:          cfg.Name,
+		Task:          cfg.Task,
+		WorktreePath:  worktreePath,
+		CreatedAt:     time.Now(),
+		pty:           p,
+		terminal:      term,
+		claudePid:     p.Pid(),
+		status:        StatusStarting,
 		done:          make(chan struct{}),
 		stop:          make(chan struct{}),
 		writeLoopDone: make(chan struct{}),
@@ -235,17 +240,17 @@ func newShellAgent(id string, cfg Config, worktreePath string) (*Agent, error) {
 	}
 
 	a := &Agent{
-		ID:           id,
-		Name:         "shell",
-		IsShell:      true,
-		WorktreePath: worktreePath,
-		CreatedAt:    time.Now(),
-		pty:          p,
-		terminal:     term,
-		displayName:  "shell",
-		status:       StatusStarting,
-		done:         make(chan struct{}),
-		stop:         make(chan struct{}),
+		ID:            id,
+		Name:          "shell",
+		IsShell:       true,
+		WorktreePath:  worktreePath,
+		CreatedAt:     time.Now(),
+		pty:           p,
+		terminal:      term,
+		displayName:   "shell",
+		status:        StatusStarting,
+		done:          make(chan struct{}),
+		stop:          make(chan struct{}),
 		writeLoopDone: make(chan struct{}),
 	}
 
@@ -262,7 +267,7 @@ func (a *Agent) readLoop() {
 	for {
 		n, err := a.pty.Read(buf)
 		if n > 0 {
-			a.terminal.Write(buf[:n])
+			_, _ = a.terminal.Write(buf[:n])
 			a.mu.Lock()
 			a.lastOutput = time.Now()
 			if a.status == StatusStarting {
@@ -302,7 +307,7 @@ func (a *Agent) writeLoop() {
 	for {
 		n, err := a.terminal.Read(buf)
 		if n > 0 {
-			a.pty.Write(buf[:n])
+			_, _ = a.pty.Write(buf[:n])
 		}
 		if err != nil {
 			return
@@ -387,7 +392,7 @@ func (a *Agent) ScrollbackLines() []string {
 // Resize updates both the VT terminal and PTY dimensions.
 func (a *Agent) Resize(rows, cols int) {
 	a.terminal.Resize(cols, rows)
-	a.pty.Resize(uint16(rows), uint16(cols))
+	_ = a.pty.Resize(uint16(rows), uint16(cols))
 }
 
 // Status returns the current agent status.
@@ -449,7 +454,7 @@ func (a *Agent) ExitErr() error {
 // Safe to call multiple times — subsequent calls are no-ops.
 func (a *Agent) Kill() {
 	a.closeStop()
-	a.pty.Close()
+	_ = a.pty.Close()
 	// Close terminal to unblock writeLoop's Read call.
 	a.terminal.Close()
 	// Wait for writeLoop to finish before returning.
@@ -541,4 +546,3 @@ func (a *Agent) SetClaudeName(v bool) {
 	defer a.mu.Unlock()
 	a.hasClaudeName = v
 }
-

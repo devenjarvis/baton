@@ -11,6 +11,8 @@ go build -o baton .         # build
 go test ./...               # run all tests
 go test -race ./...         # run with race detector
 go vet ./...                # static analysis
+golangci-lint run           # lint (uses .golangci.yml)
+gofumpt -w .                # format all Go files
 ./baton doctor              # validate environment
 ```
 
