@@ -23,6 +23,7 @@ type SessionState struct {
 	WorktreePath string       `json:"worktreePath"`
 	Branch       string       `json:"branch"`
 	BaseBranch   string       `json:"baseBranch"`
+	OwnsBranch   bool         `json:"ownsBranch"`
 	Agents       []AgentState `json:"agents"`
 }
 

@@ -111,6 +111,95 @@ func CreateWorktree(repoPath, agentName, branchPrefix, worktreeDir string, start
 	}, nil
 }
 
+// AttachWorktree creates a new git worktree that checks out an existing branch.
+// Unlike CreateWorktree, it does NOT create a new branch (no -b flag).
+// For remote-only branches, it fetches from origin first so git can
+// auto-create the local tracking branch.
+// worktreeDir defaults to ".baton/worktrees" if empty.
+func AttachWorktree(repoPath, name, worktreeDir, branch string) (*WorktreeInfo, error) {
+	if worktreeDir == "" {
+		worktreeDir = ".baton/worktrees"
+	}
+
+	// Check if the branch exists locally.
+	_, localErr := runGit(repoPath, "rev-parse", "--verify", branch)
+
+	if localErr != nil {
+		// Local branch doesn't exist — try fetching from origin.
+		// This handles the case where the remote knows about the branch
+		// but we haven't fetched it yet.
+		if _, err := runGit(repoPath, "fetch", "origin", branch); err != nil {
+			// Fetch failed — branch doesn't exist on origin either.
+			return nil, fmt.Errorf("branch %q not found locally or on origin", branch)
+		}
+	}
+
+	base, err := BaseBranch(repoPath)
+	if err != nil {
+		return nil, fmt.Errorf("getting base branch: %w", err)
+	}
+
+	wtPath := filepath.Join(repoPath, worktreeDir, name)
+
+	if _, err := runGit(repoPath, "worktree", "add", wtPath, branch); err != nil {
+		return nil, fmt.Errorf("attaching worktree: %w", err)
+	}
+
+	absPath, err := filepath.Abs(wtPath)
+	if err != nil {
+		return nil, err
+	}
+
+	return &WorktreeInfo{
+		Name:       name,
+		Path:       absPath,
+		Branch:     branch,
+		BaseBranch: base,
+	}, nil
+}
+
+// ListLocalBranches returns the names of all local branches in the repo.
+func ListLocalBranches(repoPath string) ([]string, error) {
+	out, err := runGit(repoPath, "branch", "--format", "%(refname:short)")
+	if err != nil {
+		return nil, fmt.Errorf("listing local branches: %w", err)
+	}
+
+	var branches []string
+	for _, line := range strings.Split(out, "\n") {
+		name := strings.TrimSpace(line)
+		if name == "" || name == "HEAD" {
+			continue
+		}
+		branches = append(branches, name)
+	}
+	return branches, nil
+}
+
+// ListRemoteBranches returns the names of all remote branches, with the
+// "origin/" prefix stripped and HEAD entries filtered out.
+func ListRemoteBranches(repoPath string) ([]string, error) {
+	out, err := runGit(repoPath, "branch", "-r", "--format", "%(refname:short)")
+	if err != nil {
+		return nil, fmt.Errorf("listing remote branches: %w", err)
+	}
+
+	var branches []string
+	for _, line := range strings.Split(out, "\n") {
+		name := strings.TrimSpace(line)
+		if name == "" {
+			continue
+		}
+		// Strip origin/ prefix.
+		short := strings.TrimPrefix(name, "origin/")
+		if short == "HEAD" {
+			continue
+		}
+		branches = append(branches, short)
+	}
+	return branches, nil
+}
+
 // RemoveWorktree removes a worktree and optionally deletes its branch.
 func RemoveWorktree(repoPath string, wt *WorktreeInfo, deleteBranch bool) error {
 	if _, err := runGit(repoPath, "worktree", "remove", "--force", wt.Path); err != nil {

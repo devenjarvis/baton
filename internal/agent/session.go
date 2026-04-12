@@ -21,6 +21,7 @@ type Session struct {
 	agents       map[string]*Agent
 	nextAgentNum int
 	displayName  string
+	ownsBranch   bool // true if this session created the branch (cleanup should delete it)
 }
 
 // newSession creates a session with the given worktree.
@@ -268,9 +269,10 @@ func (s *Session) KillAll() {
 	s.mu.Unlock()
 }
 
-// Cleanup removes the session's worktree and branch.
+// Cleanup removes the session's worktree. If the session owns its branch
+// (created it), the branch is also deleted. Attached sessions preserve the branch.
 func (s *Session) Cleanup(repoPath string) error {
-	return git.RemoveWorktree(repoPath, s.Worktree, true)
+	return git.RemoveWorktree(repoPath, s.Worktree, s.ownsBranch)
 }
 
 // existingNames returns the session name and all current agent names.
