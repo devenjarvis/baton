@@ -45,6 +45,25 @@ func (c *Client) GetPR(ctx context.Context, owner, repo, branch string) (*PRStat
 	return prToState(prs[0]), nil
 }
 
+// ListPRs returns open pull requests for the given repository (up to 100).
+func (c *Client) ListPRs(ctx context.Context, owner, repo string) ([]*PRState, error) {
+	prs, _, err := c.gh.PullRequests.List(ctx, owner, repo, &gh.PullRequestListOptions{
+		State: "open",
+		ListOptions: gh.ListOptions{
+			PerPage: 100,
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing PRs: %w", err)
+	}
+
+	states := make([]*PRState, len(prs))
+	for i, pr := range prs {
+		states[i] = prToState(pr)
+	}
+	return states, nil
+}
+
 // CreatePR creates a new pull request and returns its state.
 func (c *Client) CreatePR(ctx context.Context, owner, repo, head, base, title, body string) (*PRState, error) {
 	pr, _, err := c.gh.PullRequests.Create(ctx, owner, repo, &gh.NewPullRequest{
@@ -152,11 +171,13 @@ func prToState(pr *gh.PullRequest) *PRState {
 	}
 
 	return &PRState{
-		Number:    pr.GetNumber(),
-		Title:     pr.GetTitle(),
-		URL:       pr.GetHTMLURL(),
-		State:     state,
-		Mergeable: mergeable,
-		Draft:     pr.GetDraft(),
+		Number:     pr.GetNumber(),
+		Title:      pr.GetTitle(),
+		URL:        pr.GetHTMLURL(),
+		State:      state,
+		Mergeable:  mergeable,
+		Draft:      pr.GetDraft(),
+		HeadBranch: pr.GetHead().GetRef(),
+		BaseBranch: pr.GetBase().GetRef(),
 	}
 }

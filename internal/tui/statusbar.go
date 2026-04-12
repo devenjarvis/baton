@@ -20,6 +20,7 @@ var (
 		{"t", "shell"},
 		{"s", "settings"},
 		{"a", "add repo"},
+		{"o", "open branch"},
 		{"d", "diff/remove"},
 		{"x", "kill agent"},
 		{"X", "kill session"},
@@ -72,6 +73,14 @@ var (
 		{"enter", "edit/toggle"},
 		{"ctrl+s", "save"},
 		{"esc", "back"},
+	}
+
+	branchPickerHints = []keyHint{
+		{"j/k", "navigate"},
+		{"enter", "select"},
+		{"type", "filter"},
+		{"backspace", "clear filter"},
+		{"esc", "cancel"},
 	}
 )
 

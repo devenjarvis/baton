@@ -350,6 +350,70 @@ func TestForceQuitCleansEverything(t *testing.T) {
 	}
 }
 
+func TestDetachResumePreservesOwnsBranch(t *testing.T) {
+	repo := setupTestRepo(t)
+
+	// Create a branch to attach to.
+	cmd := exec.Command("git", "branch", "feature/test-detach")
+	cmd.Dir = repo
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("creating branch: %v\n%s", err, out)
+	}
+
+	mgr1 := NewManager(repo, defaultTestSettings())
+	cfg := Config{Task: "test", Rows: 24, Cols: 80}
+
+	// Create an attached session (ownsBranch=false).
+	sess, _, err := mgr1.CreateSessionOnBranchWithCommand("feature/test-detach", "main", cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 60")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wtPath := sess.Worktree.Path
+
+	bs := mgr1.Detach()
+	if bs == nil {
+		t.Fatal("expected non-nil BatonState")
+	}
+
+	// OwnsBranch should be false in saved state.
+	if bs.Sessions[0].OwnsBranch {
+		t.Error("expected OwnsBranch=false for attached session")
+	}
+
+	// Resume and verify.
+	mgr2 := NewManager(repo, defaultTestSettings())
+	defer mgr2.Shutdown()
+
+	if err := mgr2.ResumeSession(bs.Sessions[0], Config{Rows: 24, Cols: 80}); err != nil {
+		t.Fatal(err)
+	}
+
+	resumedSess := mgr2.GetSession(sess.ID)
+	if resumedSess == nil {
+		t.Fatal("resumed session not found")
+	}
+	if resumedSess.Worktree.Path != wtPath {
+		t.Errorf("expected worktree path %s, got %s", wtPath, resumedSess.Worktree.Path)
+	}
+
+	// Kill the resumed session — branch should be preserved (ownsBranch=false).
+	if err := mgr2.KillSession(sess.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	branchCmd := exec.Command("git", "branch", "--list", "feature/test-detach")
+	branchCmd.Dir = repo
+	out, err := branchCmd.Output()
+	if err != nil {
+		t.Fatalf("git branch --list: %v", err)
+	}
+	if !strings.Contains(string(out), "feature/test-detach") {
+		t.Error("branch should be preserved after killing resumed attached session")
+	}
+}
+
 func TestParseSessionNum(t *testing.T) {
 	tests := []struct {
 		input string

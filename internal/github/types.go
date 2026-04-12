@@ -2,12 +2,14 @@ package github
 
 // PRState holds the state of a GitHub pull request.
 type PRState struct {
-	Number    int
-	Title     string
-	URL       string
-	State     string // "open", "closed", "merged"
-	Mergeable bool
-	Draft     bool
+	Number     int
+	Title      string
+	URL        string
+	State      string // "open", "closed", "merged"
+	Mergeable  bool
+	Draft      bool
+	HeadBranch string // branch the PR is from
+	BaseBranch string // branch the PR targets
 }
 
 // CheckStatus holds the combined check/CI status for a git ref.

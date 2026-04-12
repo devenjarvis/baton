@@ -132,6 +132,122 @@ func (m *Manager) CreateSessionWithCommand(cfg Config, cmd func(name string) *ex
 	return sess, a, nil
 }
 
+// CreateSessionOnBranch starts a new session on an existing branch using the default claude command.
+func (m *Manager) CreateSessionOnBranch(branch, baseBranch string, cfg Config) (*Session, *Agent, error) {
+	sess, err := m.createSessionOnBranchWorktree(branch, baseBranch, cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	a, err := sess.AddAgentDefault(cfg)
+	if err != nil {
+		_ = sess.Cleanup(m.repoPath)
+		m.mu.Lock()
+		delete(m.sessions, sess.ID)
+		m.mu.Unlock()
+		return nil, nil, err
+	}
+
+	m.emit(Event{Type: EventCreated, AgentID: a.ID, SessionID: sess.ID, Status: StatusStarting})
+
+	m.watchers.Add(1)
+	go func() {
+		defer m.watchers.Done()
+		m.watchAgent(a, sess.ID)
+	}()
+
+	return sess, a, nil
+}
+
+// CreateSessionOnBranchWithCommand starts a new session on an existing branch using a custom command.
+func (m *Manager) CreateSessionOnBranchWithCommand(branch, baseBranch string, cfg Config, cmd func(name string) *exec.Cmd) (*Session, *Agent, error) {
+	sess, err := m.createSessionOnBranchWorktree(branch, baseBranch, cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	a, err := sess.AddAgent(cfg, cmd(cfg.Name))
+	if err != nil {
+		_ = sess.Cleanup(m.repoPath)
+		m.mu.Lock()
+		delete(m.sessions, sess.ID)
+		m.mu.Unlock()
+		return nil, nil, err
+	}
+
+	m.emit(Event{Type: EventCreated, AgentID: a.ID, SessionID: sess.ID, Status: StatusStarting})
+
+	m.watchers.Add(1)
+	go func() {
+		defer m.watchers.Done()
+		m.watchAgent(a, sess.ID)
+	}()
+
+	return sess, a, nil
+}
+
+// createSessionOnBranchWorktree creates a session attached to an existing branch.
+// The session does NOT own the branch — cleanup removes the worktree but preserves it.
+// If baseBranch is non-empty, it overrides the default base on the returned WorktreeInfo.
+func (m *Manager) createSessionOnBranchWorktree(branch, baseBranch string, cfg Config) (*Session, error) {
+	m.mu.Lock()
+	existing := make([]string, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		existing = append(existing, s.Name)
+	}
+	name := slugifyBranchName(branch, existing)
+	m.nextID++
+	id := fmt.Sprintf("session-%d", m.nextID)
+	settings := m.settings
+	m.mu.Unlock()
+
+	cfg.RepoPath = m.repoPath
+	if cfg.AgentProgram == "" {
+		cfg.AgentProgram = settings.AgentProgram
+	}
+
+	wt, err := git.AttachWorktree(m.repoPath, name, settings.WorktreeDir, branch)
+	if err != nil {
+		return nil, fmt.Errorf("attaching worktree: %w", err)
+	}
+
+	// Override base branch if caller provided one (e.g. from PR data).
+	if baseBranch != "" {
+		wt.BaseBranch = baseBranch
+	}
+
+	sess := newSession(id, name, wt)
+	// ownsBranch stays false — we didn't create this branch.
+
+	m.mu.Lock()
+	m.sessions[id] = sess
+	m.mu.Unlock()
+
+	return sess, nil
+}
+
+// slugifyBranchName derives a session name from a branch name.
+// Takes the last path segment (e.g. "feature/add-auth" → "add-auth"), slugifies it,
+// and falls back to RandomName if the result is empty or collides.
+func slugifyBranchName(branch string, existing []string) string {
+	parts := strings.Split(branch, "/")
+	last := parts[len(parts)-1]
+	name := slugify(last)
+
+	if name == "" {
+		return RandomName(existing)
+	}
+
+	// Check for collision.
+	for _, e := range existing {
+		if e == name {
+			return RandomName(existing)
+		}
+	}
+
+	return name
+}
+
 // createSessionWorktree creates a session with its worktree, adds it to the map.
 func (m *Manager) createSessionWorktree(cfg Config) (*Session, error) {
 	// Generate session name.
@@ -174,6 +290,7 @@ func (m *Manager) createSessionWorktree(cfg Config) (*Session, error) {
 	}
 
 	sess := newSession(id, name, wt)
+	sess.ownsBranch = true
 
 	m.mu.Lock()
 	m.sessions[id] = sess
@@ -460,6 +577,7 @@ func (m *Manager) Detach() *state.BatonState {
 			WorktreePath: s.Worktree.Path,
 			Branch:       s.Worktree.Branch,
 			BaseBranch:   s.Worktree.BaseBranch,
+			OwnsBranch:   s.ownsBranch,
 		}
 		for _, a := range s.Agents() {
 			as := state.AgentState{
@@ -521,6 +639,7 @@ func (m *Manager) ResumeSession(ss state.SessionState, cfg Config) error {
 	}
 
 	sess := newSession(ss.ID, ss.Name, wt)
+	sess.ownsBranch = ss.OwnsBranch
 	if ss.DisplayName != "" && ss.DisplayName != ss.Name {
 		sess.SetDisplayName(ss.DisplayName)
 	}

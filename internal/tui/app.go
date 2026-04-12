@@ -74,7 +74,8 @@ type App struct {
 	managers   map[string]*agent.Manager
 	activeRepo string
 	cfg        *config.Config
-	repoBrowser fileBrowserModel
+	repoBrowser   fileBrowserModel
+	branchPicker  branchPickerModel
 
 	// Settings
 	globalSettings *config.GlobalSettings
@@ -172,6 +173,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.diff.height = msg.Height - 1
 		a.repoBrowser.width = msg.Width
 		a.repoBrowser.height = msg.Height - 1
+		a.branchPicker.width = msg.Width
+		a.branchPicker.height = msg.Height - 1
 
 		// Resize agent terminals to match their current display container.
 		if a.view == ViewDashboard {
@@ -452,6 +455,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a.updateFileBrowser(msg)
 	case ViewGlobalConfig:
 		return a.updateGlobalConfig(msg)
+	case ViewBranchPicker:
+		return a.updateBranchPicker(msg)
 	}
 
 	return a, nil
@@ -664,6 +669,31 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.repoBrowser.height = a.height - 1
 			a.view = ViewFileBrowser
 			return a, nil
+
+		case "o":
+			// Open branch picker to create session on existing branch/PR.
+			repoPath := a.dashboard.selectedRepoPath()
+			if repoPath == "" {
+				repoPath = a.activeRepo
+			}
+			if repoPath == "" {
+				a.setError("No repo available")
+				return a, nil
+			}
+			// Build set of branches that already have active sessions.
+			mgr := a.managers[repoPath]
+			activeBranches := make(map[string]bool)
+			if mgr != nil {
+				for _, sess := range mgr.ListSessions() {
+					activeBranches[sess.Worktree.Branch] = true
+				}
+			}
+			a.branchPicker = newBranchPickerModel()
+			a.branchPicker.width = a.width
+			a.branchPicker.height = a.height - 1
+			a.activeRepo = repoPath
+			a.view = ViewBranchPicker
+			return a, loadBranchPickerData(repoPath, a.ghClient, activeBranches)
 
 		case "t":
 			// Open or focus a shell terminal in the selected session.
@@ -1049,6 +1079,54 @@ func (a App) updateFileBrowser(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return a, cmd
 }
 
+func (a App) updateBranchPicker(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case branchPickerSelectMsg:
+		a.view = ViewDashboard
+		item := msg.item
+
+		repoPath := a.activeRepo
+		mgr := a.managers[repoPath]
+		if mgr == nil {
+			a.setError("No manager for repo")
+			return a, nil
+		}
+
+		previewW := a.dashboard.previewTermWidth()
+		previewH := a.dashboard.previewTermHeight()
+		if previewW <= 0 || previewH <= 0 {
+			a.setError("Terminal size not yet known; try again")
+			return a, nil
+		}
+
+		resolved := a.resolvedCache[repoPath]
+		cfg := agent.Config{
+			Rows:              previewH,
+			Cols:              previewW,
+			BypassPermissions: resolved.BypassPermissions,
+			AgentProgram:      resolved.AgentProgram,
+		}
+
+		branch := item.branch
+		baseBranch := item.baseBranch
+		return a, func() tea.Msg {
+			sess, ag, err := mgr.CreateSessionOnBranch(branch, baseBranch, cfg)
+			if err != nil {
+				return createResultMsg{err: err}
+			}
+			return createResultMsg{sessionID: sess.ID, agentID: ag.ID}
+		}
+
+	case branchPickerCancelMsg:
+		a.view = ViewDashboard
+		return a, nil
+	}
+
+	var cmd tea.Cmd
+	a.branchPicker, cmd = a.branchPicker.Update(msg)
+	return a, cmd
+}
+
 func (a App) updateDiff(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg.(type) {
 	case diffCloseMsg:
@@ -1379,6 +1457,10 @@ func (a App) View() tea.View {
 		content = lipgloss.JoinVertical(lipgloss.Left, body, statusbar)
 	case ViewGlobalConfig:
 		content = a.globalConfig.View()
+	case ViewBranchPicker:
+		body := a.branchPicker.View()
+		statusbar := renderStatusBar(branchPickerHints, a.width)
+		content = lipgloss.JoinVertical(lipgloss.Left, body, statusbar)
 	}
 
 	// Show quit confirmation.
