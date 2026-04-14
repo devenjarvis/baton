@@ -124,6 +124,9 @@ func TestDetachSaveLoadRoundTrip(t *testing.T) {
 }
 
 func TestResumeSessionCreatesAgentWithResume(t *testing.T) {
+	if _, err := exec.LookPath("claude"); err != nil {
+		t.Skip("claude not in PATH")
+	}
 	repo := setupTestRepo(t)
 
 	// First manager: create a session and detach.
@@ -217,6 +220,9 @@ func TestResumeSessionMissingWorktreeReturnsError(t *testing.T) {
 }
 
 func TestResumeNextIDNoCollision(t *testing.T) {
+	if _, err := exec.LookPath("claude"); err != nil {
+		t.Skip("claude not in PATH")
+	}
 	repo := setupTestRepo(t)
 	mgr := NewManager(repo, defaultTestSettings())
 	defer mgr.Shutdown()
@@ -351,6 +357,9 @@ func TestForceQuitCleansEverything(t *testing.T) {
 }
 
 func TestDetachResumePreservesOwnsBranch(t *testing.T) {
+	if _, err := exec.LookPath("claude"); err != nil {
+		t.Skip("claude not in PATH")
+	}
 	repo := setupTestRepo(t)
 
 	// Create a branch to attach to.
