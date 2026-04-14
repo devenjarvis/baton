@@ -206,6 +206,23 @@ func (d dashboardModel) contentHeight() int {
 	return d.height - 2 // statusbar + title
 }
 
+// fixedTermWidth returns the terminal column count that all agents should use.
+// This is always the focusTerminal width (deducting the border) regardless of
+// the current panelFocus, so that focus switches never trigger a resize.
+func (d dashboardModel) fixedTermWidth() int {
+	listWidth := 30
+	return d.width - listWidth - 1 - 2 // list border + focusTerminal border
+}
+
+// fixedTermHeight returns the terminal row count that all agents should use.
+// This is always the focusTerminal height (deducting the border) regardless of
+// the current panelFocus. It intentionally does NOT deduct the PR line —
+// accepting 1 row of clipping when PR is visible is better than per-session
+// resize churn.
+func (d dashboardModel) fixedTermHeight() int {
+	return d.contentHeight() - 4 - 2 // metadata rows + focusTerminal border
+}
+
 // previewTermWidth returns the terminal column count for the preview panel.
 func (d dashboardModel) previewTermWidth() int {
 	listWidth := 30
