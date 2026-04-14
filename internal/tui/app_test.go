@@ -11,6 +11,13 @@ import (
 	"github.com/devenjarvis/baton/internal/config"
 )
 
+func requireClaude(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("claude"); err != nil {
+		t.Skip("claude not in PATH")
+	}
+}
+
 // createAgent presses 'n' and executes the async create cmd, returning the updated app.
 // If the terminal panel is already focused it presses Ctrl+E first so the 'n' key isn't
 // forwarded to the agent.
@@ -64,6 +71,7 @@ func addAgentToSession(t *testing.T, app App) App {
 }
 
 func TestCreateAgentViaN(t *testing.T) {
+	requireClaude(t)
 	dir, err := os.MkdirTemp("", "baton-tui-*")
 	if err != nil {
 		t.Fatal(err)
@@ -122,6 +130,7 @@ func TestCreateAgentViaN(t *testing.T) {
 }
 
 func TestCreateMultipleAgentsViaTUI(t *testing.T) {
+	requireClaude(t)
 	dir, err := os.MkdirTemp("", "baton-tui-multi-*")
 	if err != nil {
 		t.Fatal(err)
@@ -206,6 +215,7 @@ func TestCreateMultipleAgentsViaTUI(t *testing.T) {
 }
 
 func TestAddAgentToSessionViaC(t *testing.T) {
+	requireClaude(t)
 	dir, err := os.MkdirTemp("", "baton-tui-addagent-*")
 	if err != nil {
 		t.Fatal(err)
@@ -272,6 +282,7 @@ func TestAddAgentToSessionViaC(t *testing.T) {
 }
 
 func TestPanelFocusSwitching(t *testing.T) {
+	requireClaude(t)
 	dir, err := os.MkdirTemp("", "baton-focus-*")
 	if err != nil {
 		t.Fatal(err)
@@ -348,6 +359,7 @@ func TestPanelFocusSwitching(t *testing.T) {
 }
 
 func TestActionKeysBlockedInFocusTerminal(t *testing.T) {
+	requireClaude(t)
 	dir, err := os.MkdirTemp("", "baton-block-*")
 	if err != nil {
 		t.Fatal(err)
@@ -397,6 +409,7 @@ func TestActionKeysBlockedInFocusTerminal(t *testing.T) {
 }
 
 func TestShiftEscForwardsEscapeToAgent(t *testing.T) {
+	requireClaude(t)
 	dir, err := os.MkdirTemp("", "baton-shiftesc-*")
 	if err != nil {
 		t.Fatal(err)
@@ -529,6 +542,7 @@ func TestMouseClickSelectsListItem(t *testing.T) {
 }
 
 func TestMouseClickPreviewEntersFocus(t *testing.T) {
+	requireClaude(t)
 	dir, err := os.MkdirTemp("", "baton-mouse-*")
 	if err != nil {
 		t.Fatal(err)
@@ -586,6 +600,7 @@ func TestMouseClickPreviewEntersFocus(t *testing.T) {
 }
 
 func TestMouseWheelScrollInFocusTerminal(t *testing.T) {
+	requireClaude(t)
 	dir, err := os.MkdirTemp("", "baton-wheel-*")
 	if err != nil {
 		t.Fatal(err)
@@ -767,6 +782,7 @@ func TestNavigationSkipsSessionRows(t *testing.T) {
 }
 
 func TestMouseClickSessionSnapsToAgent(t *testing.T) {
+	requireClaude(t)
 	dir, err := os.MkdirTemp("", "baton-snap-*")
 	if err != nil {
 		t.Fatal(err)
@@ -832,6 +848,7 @@ func TestMouseClickSessionSnapsToAgent(t *testing.T) {
 // in a repo's session, the cursor lands on that repo's header — not on an item
 // in a different repo.
 func TestRefreshAgentListRepoAffinity(t *testing.T) {
+	requireClaude(t)
 	// Set up two temp repos with git init.
 	dir1, err := os.MkdirTemp("", "baton-repo1-*")
 	if err != nil {
