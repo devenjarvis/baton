@@ -240,12 +240,20 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				continue
 			}
 			resolved := a.resolvedCache[repo.Path]
+			fixedW := a.dashboard.fixedTermWidth()
+			fixedH := a.dashboard.fixedTermHeight()
+			if fixedW <= 0 {
+				fixedW = 80
+			}
+			if fixedH <= 0 {
+				fixedH = 24
+			}
 			resumeItems = append(resumeItems, resumeItem{
 				repoPath: repo.Path,
 				mgr:      mgr,
 				resumeCfg: agent.Config{
-					Rows:              24,
-					Cols:              80,
+					Rows:              fixedH,
+					Cols:              fixedW,
 					BypassPermissions: resolved.BypassPermissions,
 					AgentProgram:      resolved.AgentProgram,
 				},
@@ -600,9 +608,9 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, nil
 			}
 			a.activeRepo = repoPath
-			previewW := a.dashboard.previewTermWidth()
-			previewH := a.dashboard.previewTermHeight()
-			if previewW <= 0 || previewH <= 0 {
+			fixedW := a.dashboard.fixedTermWidth()
+			fixedH := a.dashboard.fixedTermHeight()
+			if fixedW <= 0 || fixedH <= 0 {
 				a.setError("Terminal size not yet known; try again")
 				return a, nil
 			}
@@ -612,8 +620,8 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, nil
 			}
 			cfg := agent.Config{
-				Rows:              previewH,
-				Cols:              previewW,
+				Rows:              fixedH,
+				Cols:              fixedW,
 				BypassPermissions: resolved.BypassPermissions,
 				AgentProgram:      resolved.AgentProgram,
 			}
@@ -640,16 +648,16 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if mgr == nil {
 				return a, nil
 			}
-			previewW := a.dashboard.previewTermWidth()
-			previewH := a.dashboard.previewTermHeight()
-			if previewW <= 0 || previewH <= 0 {
+			fixedW := a.dashboard.fixedTermWidth()
+			fixedH := a.dashboard.fixedTermHeight()
+			if fixedW <= 0 || fixedH <= 0 {
 				a.setError("Terminal size not yet known; try again")
 				return a, nil
 			}
 			resolved := a.resolvedCache[repoPath]
 			cfg := agent.Config{
-				Rows:              previewH,
-				Cols:              previewW,
+				Rows:              fixedH,
+				Cols:              fixedW,
 				BypassPermissions: resolved.BypassPermissions,
 				AgentProgram:      resolved.AgentProgram,
 			}
@@ -708,7 +716,6 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if item.kind == listItemAgent && item.agent != nil && item.agent.IsShell && item.session == sess {
 						a.dashboard.selected = i
 						a.dashboard.panelFocus = focusTerminal
-						a.resizeSelectedForDashboard()
 						break
 					}
 				}
@@ -722,15 +729,15 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if mgr == nil {
 				return a, nil
 			}
-			previewW := a.dashboard.previewTermWidth()
-			previewH := a.dashboard.previewTermHeight()
-			if previewW <= 0 || previewH <= 0 {
+			fixedW := a.dashboard.fixedTermWidth()
+			fixedH := a.dashboard.fixedTermHeight()
+			if fixedW <= 0 || fixedH <= 0 {
 				a.setError("Terminal size not yet known; try again")
 				return a, nil
 			}
 			cfg := agent.Config{
-				Rows: previewH,
-				Cols: previewW,
+				Rows: fixedH,
+				Cols: fixedW,
 			}
 			sessionID := sess.ID
 			return a, func() tea.Msg {
@@ -1007,14 +1014,12 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.dashboard.clampToAgent()
 					a.dashboard.panelFocus = focusList
 					a.dashboard.scrollOffset = 0
-					a.resizeSelectedForDashboard()
 				}
 			} else if msg.X >= 32 {
 				// Preview panel click — enter focusTerminal if an agent is selected.
 				// X==31 is the list panel's right border and is intentionally ignored.
 				if a.dashboard.panelFocus == focusList && a.dashboard.selectedAgent() != nil {
 					a.dashboard.panelFocus = focusTerminal
-					a.resizeSelectedForDashboard()
 				}
 			}
 		}
@@ -1044,12 +1049,8 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	prevSelected := a.dashboard.selected
-	prevPanelFocus := a.dashboard.panelFocus
 	var cmd tea.Cmd
 	a.dashboard, cmd = a.dashboard.Update(msg)
-	if a.dashboard.selected != prevSelected || a.dashboard.panelFocus != prevPanelFocus {
-		a.resizeSelectedForDashboard()
-	}
 	// On selection change, update diff stats from cache (or trigger refresh).
 	if a.dashboard.selected != prevSelected {
 		a.updateDashboardDiffStats()
@@ -1092,17 +1093,17 @@ func (a App) updateBranchPicker(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 
-		previewW := a.dashboard.previewTermWidth()
-		previewH := a.dashboard.previewTermHeight()
-		if previewW <= 0 || previewH <= 0 {
+		fixedW := a.dashboard.fixedTermWidth()
+		fixedH := a.dashboard.fixedTermHeight()
+		if fixedW <= 0 || fixedH <= 0 {
 			a.setError("Terminal size not yet known; try again")
 			return a, nil
 		}
 
 		resolved := a.resolvedCache[repoPath]
 		cfg := agent.Config{
-			Rows:              previewH,
-			Cols:              previewW,
+			Rows:              fixedH,
+			Cols:              fixedW,
 			BypassPermissions: resolved.BypassPermissions,
 			AgentProgram:      resolved.AgentProgram,
 		}
@@ -1317,8 +1318,8 @@ func (a *App) resizeSelectedForDashboard() {
 	if ag == nil {
 		return
 	}
-	w := a.dashboard.previewTermWidth()
-	h := a.dashboard.previewTermHeight()
+	w := a.dashboard.fixedTermWidth()
+	h := a.dashboard.fixedTermHeight()
 	if w > 0 && h > 0 {
 		ag.Resize(h, w)
 	}
@@ -1327,8 +1328,8 @@ func (a *App) resizeSelectedForDashboard() {
 // resizeAllForDashboard resizes every agent to the dashboard preview dimensions.
 // Called on WindowSizeMsg so all agents match the new terminal size.
 func (a *App) resizeAllForDashboard() {
-	w := a.dashboard.previewTermWidth()
-	h := a.dashboard.previewTermHeight()
+	w := a.dashboard.fixedTermWidth()
+	h := a.dashboard.fixedTermHeight()
 	if w <= 0 || h <= 0 {
 		return
 	}
