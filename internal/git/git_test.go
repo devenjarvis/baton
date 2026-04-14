@@ -78,7 +78,7 @@ func TestBaseBranch(t *testing.T) {
 func TestCreateWorktree(t *testing.T) {
 	repo := initTestRepo(t)
 
-	wt, err := git.CreateWorktree(repo, "agent1", "", "")
+	wt, err := git.CreateWorktree(repo, "agent1", "", "", "")
 	if err != nil {
 		t.Fatalf("CreateWorktree: %v", err)
 	}
@@ -113,11 +113,11 @@ func TestCreateWorktree(t *testing.T) {
 func TestListWorktrees(t *testing.T) {
 	repo := initTestRepo(t)
 
-	_, err := git.CreateWorktree(repo, "agent1", "", "")
+	_, err := git.CreateWorktree(repo, "agent1", "", "", "")
 	if err != nil {
 		t.Fatalf("CreateWorktree agent1: %v", err)
 	}
-	_, err = git.CreateWorktree(repo, "agent2", "", "")
+	_, err = git.CreateWorktree(repo, "agent2", "", "", "")
 	if err != nil {
 		t.Fatalf("CreateWorktree agent2: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestListWorktrees(t *testing.T) {
 func TestDiffAndMerge(t *testing.T) {
 	repo := initTestRepo(t)
 
-	wt, err := git.CreateWorktree(repo, "agent1", "", "")
+	wt, err := git.CreateWorktree(repo, "agent1", "", "", "")
 	if err != nil {
 		t.Fatalf("CreateWorktree: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestDiffAndMerge(t *testing.T) {
 func TestRemoveWorktree(t *testing.T) {
 	repo := initTestRepo(t)
 
-	wt, err := git.CreateWorktree(repo, "agent1", "", "")
+	wt, err := git.CreateWorktree(repo, "agent1", "", "", "")
 	if err != nil {
 		t.Fatalf("CreateWorktree: %v", err)
 	}
@@ -342,6 +342,222 @@ func TestUpdateBaseBranch_NoRemote(t *testing.T) {
 	}
 }
 
+func TestAttachWorktree(t *testing.T) {
+	repo := initTestRepo(t)
+
+	// Create a branch to attach to.
+	cmd := exec.Command("git", "branch", "feature-x")
+	cmd.Dir = repo
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git branch feature-x: %v\n%s", err, out)
+	}
+
+	wt, err := git.AttachWorktree(repo, "my-agent", "", "feature-x")
+	if err != nil {
+		t.Fatalf("AttachWorktree: %v", err)
+	}
+
+	// Worktree directory should exist.
+	if _, err := os.Stat(wt.Path); os.IsNotExist(err) {
+		t.Errorf("worktree path %s does not exist", wt.Path)
+	}
+
+	// Name should be the agent name we passed.
+	if wt.Name != "my-agent" {
+		t.Errorf("expected Name 'my-agent', got %q", wt.Name)
+	}
+
+	// Branch should be the actual branch name, not prefixed.
+	if wt.Branch != "feature-x" {
+		t.Errorf("expected Branch 'feature-x', got %q", wt.Branch)
+	}
+
+	// BaseBranch should be main (current HEAD of repo).
+	if wt.BaseBranch != "main" {
+		t.Errorf("expected BaseBranch 'main', got %q", wt.BaseBranch)
+	}
+
+	// The worktree should be on the correct branch.
+	cmd = exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	cmd.Dir = wt.Path
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("rev-parse HEAD in worktree: %v\n%s", err, out)
+	}
+	if strings.TrimSpace(string(out)) != "feature-x" {
+		t.Errorf("worktree HEAD should be feature-x, got %q", strings.TrimSpace(string(out)))
+	}
+}
+
+func TestAttachWorktreeRemoteBranch(t *testing.T) {
+	work, bare := initTestRepoWithRemote(t)
+
+	// Create a branch on origin only via a second clone.
+	tmp := t.TempDir()
+	for _, args := range [][]string{
+		{"git", "clone", bare, "."},
+		{"git", "config", "user.email", "test@test.com"},
+		{"git", "config", "user.name", "Test"},
+		{"git", "config", "commit.gpgsign", "false"},
+		{"git", "checkout", "-b", "remote-feature"},
+	} {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = tmp
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("setup tmp %v failed: %v\n%s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "remote-feat.txt"), []byte("remote feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"git", "add", "."},
+		{"git", "commit", "-m", "add remote feature"},
+		{"git", "push", "origin", "remote-feature"},
+	} {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = tmp
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("push tmp %v failed: %v\n%s", args, err, out)
+		}
+	}
+
+	// Verify the local clone does NOT have this branch locally.
+	cmd := exec.Command("git", "rev-parse", "--verify", "remote-feature")
+	cmd.Dir = work
+	if err := cmd.Run(); err == nil {
+		t.Fatal("expected remote-feature to not exist locally before attach")
+	}
+
+	// AttachWorktree should auto-fetch and create the local tracking branch.
+	wt, err := git.AttachWorktree(work, "remote-agent", "", "remote-feature")
+	if err != nil {
+		t.Fatalf("AttachWorktree remote branch: %v", err)
+	}
+
+	// The worktree should contain the remote-only file.
+	if _, err := os.Stat(filepath.Join(wt.Path, "remote-feat.txt")); os.IsNotExist(err) {
+		t.Error("expected remote-feat.txt in worktree attached to remote branch")
+	}
+
+	if wt.Branch != "remote-feature" {
+		t.Errorf("expected Branch 'remote-feature', got %q", wt.Branch)
+	}
+}
+
+func TestAttachWorktreeNonexistent(t *testing.T) {
+	repo := initTestRepo(t)
+
+	_, err := git.AttachWorktree(repo, "bad-agent", "", "no-such-branch")
+	if err == nil {
+		t.Fatal("expected error attaching to nonexistent branch, got nil")
+	}
+}
+
+func TestListLocalBranches(t *testing.T) {
+	repo := initTestRepo(t)
+
+	// Create some extra branches.
+	for _, branch := range []string{"feature-a", "feature-b", "bugfix-1"} {
+		cmd := exec.Command("git", "branch", branch)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git branch %s: %v\n%s", branch, err, out)
+		}
+	}
+
+	branches, err := git.ListLocalBranches(repo)
+	if err != nil {
+		t.Fatalf("ListLocalBranches: %v", err)
+	}
+
+	expected := map[string]bool{"main": true, "feature-a": true, "feature-b": true, "bugfix-1": true}
+	got := make(map[string]bool)
+	for _, b := range branches {
+		got[b] = true
+	}
+
+	for name := range expected {
+		if !got[name] {
+			t.Errorf("expected branch %q in list, got %v", name, branches)
+		}
+	}
+
+	// Should not contain HEAD.
+	for _, b := range branches {
+		if b == "HEAD" {
+			t.Error("ListLocalBranches should not include HEAD")
+		}
+	}
+}
+
+func TestListRemoteBranches(t *testing.T) {
+	work, bare := initTestRepoWithRemote(t)
+
+	// Create and push additional branches via a second clone.
+	tmp := t.TempDir()
+	for _, args := range [][]string{
+		{"git", "clone", bare, "."},
+		{"git", "config", "user.email", "test@test.com"},
+		{"git", "config", "user.name", "Test"},
+		{"git", "config", "commit.gpgsign", "false"},
+	} {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = tmp
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("setup tmp %v failed: %v\n%s", args, err, out)
+		}
+	}
+
+	for _, branch := range []string{"remote-a", "remote-b"} {
+		for _, args := range [][]string{
+			{"git", "checkout", "-b", branch},
+			{"git", "push", "origin", branch},
+			{"git", "checkout", "main"},
+		} {
+			cmd := exec.Command(args[0], args[1:]...)
+			cmd.Dir = tmp
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("push branch %s %v failed: %v\n%s", branch, args, err, out)
+			}
+		}
+	}
+
+	// Fetch in the working clone so it sees the remote branches.
+	cmd := exec.Command("git", "fetch", "origin")
+	cmd.Dir = work
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("fetch origin: %v\n%s", err, out)
+	}
+
+	branches, err := git.ListRemoteBranches(work)
+	if err != nil {
+		t.Fatalf("ListRemoteBranches: %v", err)
+	}
+
+	got := make(map[string]bool)
+	for _, b := range branches {
+		got[b] = true
+	}
+
+	// Should have main, remote-a, remote-b (all without origin/ prefix).
+	for _, name := range []string{"main", "remote-a", "remote-b"} {
+		if !got[name] {
+			t.Errorf("expected branch %q in remote list, got %v", name, branches)
+		}
+	}
+
+	// Should NOT have HEAD or any origin/ prefix.
+	for _, b := range branches {
+		if b == "HEAD" {
+			t.Error("ListRemoteBranches should not include HEAD")
+		}
+		if strings.HasPrefix(b, "origin/") {
+			t.Errorf("ListRemoteBranches should strip origin/ prefix, got %q", b)
+		}
+	}
+}
+
 func TestCreateWorktreeWithStartPoint(t *testing.T) {
 	work, bare := initTestRepoWithRemote(t)
 
@@ -382,7 +598,7 @@ func TestCreateWorktreeWithStartPoint(t *testing.T) {
 	}
 
 	// Create worktree from origin/main (not local main).
-	wt, err := git.CreateWorktree(work, "start-point-agent", "", "", "origin/main")
+	wt, err := git.CreateWorktree(work, "start-point-agent", "", "", "", "origin/main")
 	if err != nil {
 		t.Fatalf("CreateWorktree with startPoint: %v", err)
 	}

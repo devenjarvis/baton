@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
@@ -422,6 +423,164 @@ func TestSessionStatusExcludesShell(t *testing.T) {
 	st := sess.Status()
 	if st != StatusDone {
 		t.Fatalf("expected session status Done (shell excluded), got %s", st)
+	}
+}
+
+func TestCreateSessionOnBranch(t *testing.T) {
+	repo := setupTestRepo(t)
+
+	// Create a branch to attach to.
+	cmd := exec.Command("git", "branch", "feature/add-auth")
+	cmd.Dir = repo
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("creating branch: %v\n%s", err, out)
+	}
+
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	cfg := Config{Task: "test", Rows: 24, Cols: 80}
+	sess, ag, err := mgr.CreateSessionOnBranchWithCommand("feature/add-auth", "main", cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Session name should be derived from branch.
+	if sess.Name != "add-auth" {
+		t.Errorf("expected session name 'add-auth', got %q", sess.Name)
+	}
+
+	// Agent should be created.
+	if ag == nil {
+		t.Fatal("agent should not be nil")
+	}
+
+	// Worktree should exist.
+	if _, err := os.Stat(sess.Worktree.Path); os.IsNotExist(err) {
+		t.Error("worktree should exist")
+	}
+
+	// Branch should be the one we specified.
+	if sess.Worktree.Branch != "feature/add-auth" {
+		t.Errorf("expected branch 'feature/add-auth', got %q", sess.Worktree.Branch)
+	}
+
+	// Base branch should be overridden to "main".
+	if sess.Worktree.BaseBranch != "main" {
+		t.Errorf("expected base branch 'main', got %q", sess.Worktree.BaseBranch)
+	}
+}
+
+func TestCreateSessionOnBranchPreservesBranch(t *testing.T) {
+	repo := setupTestRepo(t)
+
+	// Create and switch to a branch.
+	for _, args := range [][]string{
+		{"git", "branch", "feature/keep-me"},
+	} {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v\n%s", args, err, out)
+		}
+	}
+
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	cfg := Config{Task: "test", Rows: 24, Cols: 80}
+	sess, _, err := mgr.CreateSessionOnBranchWithCommand("feature/keep-me", "", cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 10")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sessID := sess.ID
+
+	// Kill the session — should clean up worktree but NOT delete the branch.
+	if err := mgr.KillSession(sessID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Branch should still exist.
+	cmd := exec.Command("git", "branch", "--list", "feature/keep-me")
+	cmd.Dir = repo
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git branch --list: %v", err)
+	}
+	if !strings.Contains(string(out), "feature/keep-me") {
+		t.Error("branch should be preserved after killing attached session")
+	}
+}
+
+func TestCreateSessionOwnsBranchDeletesOnCleanup(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	cfg := Config{Task: "test", Rows: 24, Cols: 80}
+	sess, _, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 10")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	branch := sess.Worktree.Branch
+	sessID := sess.ID
+
+	if err := mgr.KillSession(sessID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Branch should be deleted (normal session owns its branch).
+	cmd := exec.Command("git", "branch", "--list", branch)
+	cmd.Dir = repo
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git branch --list: %v", err)
+	}
+	if strings.Contains(string(out), branch) {
+		t.Errorf("branch %s should be deleted after killing session that owns it", branch)
+	}
+}
+
+func TestSlugifyBranchName(t *testing.T) {
+	tests := []struct {
+		branch   string
+		wantName string // expected name, or "" to indicate RandomName fallback
+	}{
+		{"feature/add-auth", "add-auth"},
+		{"bugfix/fix-login-issue", "fix-login-issue"},
+		{"main", "main"},
+		{"some/nested/deep/branch", "branch"},
+	}
+
+	for _, tt := range tests {
+		name := slugifyBranchName(tt.branch, nil)
+		if tt.wantName != "" && name != tt.wantName {
+			t.Errorf("slugifyBranchName(%q) = %q, want %q", tt.branch, name, tt.wantName)
+		}
+		if name == "" {
+			t.Errorf("slugifyBranchName(%q) returned empty string", tt.branch)
+		}
+	}
+}
+
+func TestSlugifyBranchNameCollisionFallback(t *testing.T) {
+	existing := []string{"add-auth"}
+	name := slugifyBranchName("feature/add-auth", existing)
+
+	// Should fall back to a random name due to collision.
+	if name == "add-auth" {
+		t.Error("expected fallback to random name on collision, got 'add-auth'")
+	}
+	if name == "" {
+		t.Error("name should not be empty")
 	}
 }
 

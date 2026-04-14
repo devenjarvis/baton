@@ -137,7 +137,7 @@ func TestGetPerFileDiffStats_AddedModifiedDeleted(t *testing.T) {
 	gitInDir(t, repo, "add", "to-delete.txt")
 	gitInDir(t, repo, "commit", "-m", "add file to delete")
 
-	wt, err := git.CreateWorktree(repo, "stats-agent", "", "")
+	wt, err := git.CreateWorktree(repo, "stats-agent", "", "", "")
 	if err != nil {
 		t.Fatalf("CreateWorktree: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestGetPerFileDiffStats_AddedModifiedDeleted(t *testing.T) {
 func TestGetPerFileDiffStats_BinaryFile(t *testing.T) {
 	repo := initTestRepo(t)
 
-	wt, err := git.CreateWorktree(repo, "bin-agent", "", "")
+	wt, err := git.CreateWorktree(repo, "bin-agent", "", "", "")
 	if err != nil {
 		t.Fatalf("CreateWorktree: %v", err)
 	}
@@ -268,7 +268,7 @@ func TestGetPerFileDiffStats_BinaryFile(t *testing.T) {
 func TestGetPerFileDiffStats_UncommittedChanges(t *testing.T) {
 	repo := initTestRepo(t)
 
-	wt, err := git.CreateWorktree(repo, "wip-agent", "", "")
+	wt, err := git.CreateWorktree(repo, "wip-agent", "", "", "")
 	if err != nil {
 		t.Fatalf("CreateWorktree: %v", err)
 	}
@@ -319,7 +319,7 @@ func TestGetPerFileDiffStats_UncommittedChanges(t *testing.T) {
 func TestGetPerFileDiffStats_NoChanges(t *testing.T) {
 	repo := initTestRepo(t)
 
-	wt, err := git.CreateWorktree(repo, "empty-agent", "", "")
+	wt, err := git.CreateWorktree(repo, "empty-agent", "", "", "")
 	if err != nil {
 		t.Fatalf("CreateWorktree: %v", err)
 	}
