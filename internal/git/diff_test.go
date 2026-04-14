@@ -131,7 +131,7 @@ func TestGetPerFileDiffStats_AddedModifiedDeleted(t *testing.T) {
 	repo := initTestRepo(t)
 
 	// Create a file that will be deleted later.
-	if err := os.WriteFile(filepath.Join(repo, "to-delete.txt"), []byte("delete me\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, "to-delete.txt"), []byte("delete me\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	gitInDir(t, repo, "add", "to-delete.txt")
@@ -143,13 +143,13 @@ func TestGetPerFileDiffStats_AddedModifiedDeleted(t *testing.T) {
 	}
 
 	// Add a new file.
-	if err := os.WriteFile(filepath.Join(wt.Path, "new.txt"), []byte("line1\nline2\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(wt.Path, "new.txt"), []byte("line1\nline2\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	gitInDir(t, wt.Path, "add", "new.txt")
 
 	// Modify existing file.
-	if err := os.WriteFile(filepath.Join(wt.Path, "README"), []byte("init\nupdated\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(wt.Path, "README"), []byte("init\nupdated\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	gitInDir(t, wt.Path, "add", "README")
@@ -234,7 +234,7 @@ func TestGetPerFileDiffStats_BinaryFile(t *testing.T) {
 
 	// Write a binary file (contains null bytes).
 	binaryContent := []byte{0x89, 0x50, 0x4e, 0x47, 0x00, 0x00, 0x00}
-	if err := os.WriteFile(filepath.Join(wt.Path, "image.png"), binaryContent, 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(wt.Path, "image.png"), binaryContent, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	gitInDir(t, wt.Path, "add", "image.png")
@@ -274,20 +274,20 @@ func TestGetPerFileDiffStats_UncommittedChanges(t *testing.T) {
 	}
 
 	// Make a committed change.
-	if err := os.WriteFile(filepath.Join(wt.Path, "committed.txt"), []byte("line1\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(wt.Path, "committed.txt"), []byte("line1\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	gitInDir(t, wt.Path, "add", "committed.txt")
 	gitInDir(t, wt.Path, "commit", "-m", "add committed file")
 
 	// Make an uncommitted change (new file, staged but not committed).
-	if err := os.WriteFile(filepath.Join(wt.Path, "uncommitted.txt"), []byte("wip\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(wt.Path, "uncommitted.txt"), []byte("wip\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	gitInDir(t, wt.Path, "add", "uncommitted.txt")
 
 	// Make an uncommitted modification to the committed file (unstaged).
-	if err := os.WriteFile(filepath.Join(wt.Path, "committed.txt"), []byte("line1\nline2\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(wt.Path, "committed.txt"), []byte("line1\nline2\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

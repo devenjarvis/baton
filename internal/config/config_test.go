@@ -30,7 +30,7 @@ func initTestRepo(t *testing.T) string {
 		}
 	}
 
-	if err := os.WriteFile(filepath.Join(dir, "README"), []byte("init\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "README"), []byte("init\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	for _, args := range [][]string{
@@ -77,7 +77,7 @@ func TestLoad_MissingFile_ReturnsEmpty(t *testing.T) {
 func TestLoad_ExistingFile_ReturnsRepos(t *testing.T) {
 	dir := configDirInTmp(t)
 
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -87,7 +87,7 @@ func TestLoad_ExistingFile_ReturnsRepos(t *testing.T) {
 			{Path: "/some/path", Name: "path", AddedAt: now},
 		},
 	})
-	if err := os.WriteFile(filepath.Join(dir, "repos.json"), data, 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "repos.json"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -187,7 +187,7 @@ func TestAddRepo_DotResolvesToAbsolute(t *testing.T) {
 
 	// Change working directory to the repo so "." resolves to it.
 	orig, _ := os.Getwd()
-	defer os.Chdir(orig)
+	defer func() { _ = os.Chdir(orig) }()
 	if err := os.Chdir(repoPath); err != nil {
 		t.Fatal(err)
 	}
@@ -272,12 +272,12 @@ func TestLoad_MissingFile_DefaultsBypassPermissionsTrue(t *testing.T) {
 
 func TestLoad_ExistingFileWithoutBypassField_DefaultsTrue(t *testing.T) {
 	dir := configDirInTmp(t)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	// Write config without bypass_permissions field
 	data := []byte(`{"repos":[]}`)
-	if err := os.WriteFile(filepath.Join(dir, "repos.json"), data, 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "repos.json"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := config.Load()
@@ -291,11 +291,11 @@ func TestLoad_ExistingFileWithoutBypassField_DefaultsTrue(t *testing.T) {
 
 func TestLoad_ExistingFileWithBypassFalse_ReturnsFalse(t *testing.T) {
 	dir := configDirInTmp(t)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	data := []byte(`{"repos":[],"bypass_permissions":false}`)
-	if err := os.WriteFile(filepath.Join(dir, "repos.json"), data, 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "repos.json"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := config.Load()

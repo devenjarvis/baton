@@ -143,7 +143,6 @@ func (s *Session) HasShell() bool {
 	return false
 }
 
-
 // GetAgent returns an agent by ID, or nil if not found.
 func (s *Session) GetAgent(id string) *Agent {
 	s.mu.RLock()

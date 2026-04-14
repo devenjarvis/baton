@@ -18,13 +18,13 @@ type fileBrowserCancelMsg struct{}
 
 // fileBrowserModel is a sub-component for browsing and selecting git repo directories.
 type fileBrowserModel struct {
-	currentDir  string
-	entries     []os.DirEntry // only dirs, no hidden
-	selected    int
-	isGitRepo   bool   // cached git.IsRepo for selected entry
-	gitBranch   string // cached branch name for selected entry
-	width       int
-	height      int
+	currentDir string
+	entries    []os.DirEntry // only dirs, no hidden
+	selected   int
+	isGitRepo  bool   // cached git.IsRepo for selected entry
+	gitBranch  string // cached branch name for selected entry
+	width      int
+	height     int
 }
 
 // newFileBrowserModel creates a fileBrowserModel starting at the user's home directory.
@@ -47,7 +47,7 @@ func loadEntries(dir string) []os.DirEntry {
 	if err != nil {
 		return nil
 	}
-	var entries []os.DirEntry
+	entries := make([]os.DirEntry, 0, len(all))
 	for _, e := range all {
 		if !e.IsDir() {
 			continue
@@ -142,7 +142,7 @@ func (m fileBrowserModel) renderDirList(width int) string {
 	}
 	separator := StyleSubtle.Render(strings.Repeat("─", sepWidth))
 
-	var lines []string
+	lines := make([]string, 0, 4+len(m.entries))
 	lines = append(lines, title, separator)
 	lines = append(lines, StyleSubtle.Render(m.currentDir))
 	lines = append(lines, "")

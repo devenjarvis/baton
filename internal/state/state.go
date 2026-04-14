@@ -46,7 +46,7 @@ func Save(repoPath string, s *BatonState) error {
 	path := statePath(repoPath)
 	dir := filepath.Dir(path)
 
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("state: creating dir %s: %w", dir, err)
 	}
 
@@ -63,12 +63,12 @@ func Save(repoPath string, s *BatonState) error {
 
 	defer func() {
 		if err != nil {
-			os.Remove(tmpName)
+			_ = os.Remove(tmpName)
 		}
 	}()
 
 	if _, writeErr := tmp.Write(data); writeErr != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		err = fmt.Errorf("state: writing temp file: %w", writeErr)
 		return err
 	}

@@ -27,9 +27,11 @@ func newMergeModel(agentName, branchName, baseBranch string) mergeModel {
 	}
 }
 
-type mergeConfirmMsg struct{}
-type mergeCancelMsg struct{}
-type mergeCompleteMsg struct{ err error }
+type (
+	mergeConfirmMsg  struct{}
+	mergeCancelMsg   struct{}
+	mergeCompleteMsg struct{ err error }
+)
 
 func (m mergeModel) Update(msg tea.Msg) (mergeModel, tea.Cmd) {
 	switch msg := msg.(type) {

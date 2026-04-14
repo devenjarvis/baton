@@ -9,8 +9,8 @@ import (
 	"github.com/devenjarvis/baton/internal/config"
 )
 
-func boolPtr(v bool) *bool       { return &v }
-func strPtr(v string) *string    { return &v }
+func boolPtr(v bool) *bool    { return &v }
+func strPtr(v string) *string { return &v }
 
 // ---- Resolve ----
 
@@ -196,7 +196,7 @@ func TestLoadRepoSettings_MissingFile(t *testing.T) {
 func TestSaveLoadRoundTrip_Repo(t *testing.T) {
 	repoPath := t.TempDir()
 	// Create .baton dir
-	os.MkdirAll(filepath.Join(repoPath, ".baton"), 0755)
+	_ = os.MkdirAll(filepath.Join(repoPath, ".baton"), 0o755)
 
 	original := &config.RepoSettings{
 		BypassPermissions: boolPtr(false),
@@ -239,19 +239,19 @@ func TestLoadResolved_MergesGlobalAndRepo(t *testing.T) {
 	repoPath := t.TempDir()
 
 	// Write global settings
-	os.MkdirAll(dir, 0755)
+	_ = os.MkdirAll(dir, 0o755)
 	globalData, _ := json.Marshal(config.GlobalSettings{
 		AudioEnabled: boolPtr(false),
 		BranchPrefix: strPtr("global/"),
 	})
-	os.WriteFile(filepath.Join(dir, "config.json"), globalData, 0644)
+	_ = os.WriteFile(filepath.Join(dir, "config.json"), globalData, 0o644)
 
 	// Write repo settings
-	os.MkdirAll(filepath.Join(repoPath, ".baton"), 0755)
+	_ = os.MkdirAll(filepath.Join(repoPath, ".baton"), 0o755)
 	repoData, _ := json.Marshal(config.RepoSettings{
 		BranchPrefix: strPtr("repo/"),
 	})
-	os.WriteFile(filepath.Join(repoPath, ".baton", "config.json"), repoData, 0644)
+	_ = os.WriteFile(filepath.Join(repoPath, ".baton", "config.json"), repoData, 0o644)
 
 	r, err := config.LoadResolved(repoPath)
 	if err != nil {
@@ -278,7 +278,7 @@ func TestGlobalSettings_OmitsNilFields(t *testing.T) {
 	}
 
 	var m map[string]any
-	json.Unmarshal(data, &m)
+	_ = json.Unmarshal(data, &m)
 
 	if _, ok := m["audio_enabled"]; !ok {
 		t.Error("audio_enabled should be present")
@@ -295,7 +295,7 @@ func TestGlobalSettings_OmitsNilFields(t *testing.T) {
 
 func TestMigrateBypassPermissions(t *testing.T) {
 	dir := configDirInTmp(t)
-	os.MkdirAll(dir, 0755)
+	_ = os.MkdirAll(dir, 0o755)
 
 	// Start with repos.json that has BypassPermissions set to false
 	cfg := &config.Config{
@@ -341,13 +341,13 @@ func TestMigrateBypassPermissions_NilIsNoop(t *testing.T) {
 
 func TestMigrateBypassPermissions_DoesNotOverwriteExistingGlobal(t *testing.T) {
 	dir := configDirInTmp(t)
-	os.MkdirAll(dir, 0755)
+	_ = os.MkdirAll(dir, 0o755)
 
 	// Pre-set global settings with BypassPermissions=true
 	globalData, _ := json.Marshal(config.GlobalSettings{
 		BypassPermissions: boolPtr(true),
 	})
-	os.WriteFile(filepath.Join(dir, "config.json"), globalData, 0644)
+	_ = os.WriteFile(filepath.Join(dir, "config.json"), globalData, 0o644)
 
 	// repos.json has BypassPermissions=false
 	cfg := &config.Config{
@@ -380,11 +380,11 @@ func TestLoad_MigratesFromLegacyXDGPath(t *testing.T) {
 
 	// Write repos.json to old XDG location
 	oldDir := filepath.Join(base, ".config", "baton")
-	os.MkdirAll(oldDir, 0755)
+	_ = os.MkdirAll(oldDir, 0o755)
 	data, _ := json.Marshal(config.Config{
 		Repos: []config.Repo{{Path: "/legacy", Name: "legacy"}},
 	})
-	os.WriteFile(filepath.Join(oldDir, "repos.json"), data, 0644)
+	_ = os.WriteFile(filepath.Join(oldDir, "repos.json"), data, 0o644)
 
 	// Load should find the legacy file and migrate
 	cfg, err := config.Load()

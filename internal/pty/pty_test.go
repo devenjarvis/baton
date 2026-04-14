@@ -15,7 +15,7 @@ func TestStartEchoAndReadOutput(t *testing.T) {
 	if err := p.Start(cmd, 24, 80); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	var output bytes.Buffer
 	buf := make([]byte, 1024)
@@ -50,7 +50,7 @@ func TestCatWriteReadRoundTrip(t *testing.T) {
 	if err := p.Start(cmd, 24, 80); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	msg := "ping\n"
 	if _, err := p.Write([]byte(msg)); err != nil {
@@ -94,7 +94,7 @@ func TestPid(t *testing.T) {
 	if err := p.Start(cmd, 24, 80); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	// After Start, Pid should be a positive integer.
 	if got := p.Pid(); got <= 0 {

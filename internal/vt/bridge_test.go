@@ -144,7 +144,7 @@ func TestRenderRegion(t *testing.T) {
 	defer term.Close()
 
 	// Write text on different lines
-	term.Write([]byte("Line1\r\nLine2\r\nLine3\r\nLine4\r\nLine5"))
+	_, _ = term.Write([]byte("Line1\r\nLine2\r\nLine3\r\nLine4\r\nLine5"))
 
 	region := term.RenderRegion(1, 3)
 	lines := strings.Split(region, "\n")
@@ -161,7 +161,7 @@ func TestScrollbackLines(t *testing.T) {
 	defer term.Close()
 
 	// Write 3 lines — the first will scroll off into the scrollback buffer.
-	term.Write([]byte("First\r\nSecond\r\nThird"))
+	_, _ = term.Write([]byte("First\r\nSecond\r\nThird"))
 
 	lines := term.ScrollbackLines()
 	if len(lines) == 0 {
@@ -191,10 +191,10 @@ func TestScrollbackLinesAltScreen(t *testing.T) {
 	defer term.Close()
 
 	// Enter alternate screen mode.
-	term.Write([]byte("\x1b[?1049h"))
+	_, _ = term.Write([]byte("\x1b[?1049h"))
 
 	// Write 4 lines — the first will scroll off the 3-row alt screen.
-	term.Write([]byte("AltFirst\r\nAltSecond\r\nAltThird\r\nAltFourth"))
+	_, _ = term.Write([]byte("AltFirst\r\nAltSecond\r\nAltThird\r\nAltFourth"))
 
 	lines := term.ScrollbackLines()
 	if len(lines) == 0 {
@@ -213,11 +213,11 @@ func TestScrollbackLinesHistoryPreferred(t *testing.T) {
 	defer term.Close()
 
 	// Scroll in main screen to populate VT scrollback AND our history buffer.
-	term.Write([]byte("MainFirst\r\nMainSecond\r\nMainThird"))
+	_, _ = term.Write([]byte("MainFirst\r\nMainSecond\r\nMainThird"))
 
 	// Enter alt screen and scroll to populate history with alt-screen content.
-	term.Write([]byte("\x1b[?1049h"))
-	term.Write([]byte("AltFirst\r\nAltSecond\r\nAltThird"))
+	_, _ = term.Write([]byte("\x1b[?1049h"))
+	_, _ = term.Write([]byte("AltFirst\r\nAltSecond\r\nAltThird"))
 
 	lines := term.ScrollbackLines()
 	if len(lines) == 0 {
@@ -246,7 +246,7 @@ func TestCursorPosition(t *testing.T) {
 	term := New(80, 24)
 	defer term.Close()
 
-	term.Write([]byte("Hello"))
+	_, _ = term.Write([]byte("Hello"))
 
 	x, y := term.CursorPosition()
 	// After writing "Hello", cursor should be at column 5, row 0

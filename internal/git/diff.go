@@ -146,7 +146,7 @@ func GetPerFileDiffStats(repoPath string, wt *WorktreeInfo) ([]FileStat, *DiffSt
 	parseNameStatus(nameStatusOut, fileMap)
 
 	// Build result slice and aggregate stats.
-	var result []FileStat
+	result := make([]FileStat, 0, len(fileMap))
 	agg := &DiffStats{}
 	for _, fs := range fileMap {
 		result = append(result, *fs)

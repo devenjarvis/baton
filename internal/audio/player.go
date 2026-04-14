@@ -51,5 +51,5 @@ func (p *Player) LastPlayedTime() time.Time {
 
 // Close removes the temporary chime file.
 func (p *Player) Close() {
-	os.Remove(p.chimePath)
+	_ = os.Remove(p.chimePath)
 }

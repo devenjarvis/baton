@@ -31,7 +31,7 @@ func initTestRepo(t *testing.T) string {
 	}
 
 	// Create an initial file and commit so the repo is not empty.
-	if err := os.WriteFile(filepath.Join(dir, "README"), []byte("init\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "README"), []byte("init\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	for _, args := range [][]string{
@@ -147,7 +147,7 @@ func TestDiffAndMerge(t *testing.T) {
 
 	// Make a change in the worktree and commit it.
 	newFile := filepath.Join(wt.Path, "feature.txt")
-	if err := os.WriteFile(newFile, []byte("new feature\n"), 0644); err != nil {
+	if err := os.WriteFile(newFile, []byte("new feature\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	for _, args := range [][]string{
@@ -266,7 +266,7 @@ func initTestRepoWithRemote(t *testing.T) (string, string) {
 		}
 	}
 
-	if err := os.WriteFile(filepath.Join(work, "README"), []byte("init\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(work, "README"), []byte("init\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	for _, args := range [][]string{
@@ -301,7 +301,7 @@ func TestUpdateBaseBranch(t *testing.T) {
 			t.Fatalf("setup tmp %v failed: %v\n%s", args, err, out)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(tmp, "new.txt"), []byte("hello\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmp, "new.txt"), []byte("hello\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	for _, args := range [][]string{
@@ -407,7 +407,7 @@ func TestAttachWorktreeRemoteBranch(t *testing.T) {
 			t.Fatalf("setup tmp %v failed: %v\n%s", args, err, out)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(tmp, "remote-feat.txt"), []byte("remote feature\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmp, "remote-feat.txt"), []byte("remote feature\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	for _, args := range [][]string{
@@ -575,7 +575,7 @@ func TestCreateWorktreeWithStartPoint(t *testing.T) {
 			t.Fatalf("setup tmp %v failed: %v\n%s", args, err, out)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(tmp, "remote-only.txt"), []byte("from remote\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmp, "remote-only.txt"), []byte("from remote\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	for _, args := range [][]string{

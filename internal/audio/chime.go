@@ -59,7 +59,7 @@ func GenerateChime() (string, error) {
 		sample := amplitude * math.Sin(2*math.Pi*freq*t)
 
 		// Fade envelope
-		var env float64 = 1.0
+		env := 1.0
 		if i < fadeSamples {
 			env = float64(i) / float64(fadeSamples)
 		} else if i >= numSamples-fadeSamples {
@@ -80,12 +80,12 @@ func GenerateChime() (string, error) {
 	path := f.Name()
 
 	if _, err := f.Write(buf); err != nil {
-		f.Close()
-		os.Remove(path)
+		_ = f.Close()
+		_ = os.Remove(path)
 		return "", err
 	}
 	if err := f.Close(); err != nil {
-		os.Remove(path)
+		_ = os.Remove(path)
 		return "", err
 	}
 

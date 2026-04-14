@@ -3,8 +3,8 @@ package tui
 import (
 	"strings"
 
-	tea "charm.land/bubbletea/v2"
 	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -20,9 +20,9 @@ const (
 type formField struct {
 	label       string
 	kind        fieldKind
-	toggleValue bool               // for fieldToggle
-	textInput   textinput.Model    // for fieldText
-	editing     bool               // true when text field has cursor active
+	toggleValue bool            // for fieldToggle
+	textInput   textinput.Model // for fieldText
+	editing     bool            // true when text field has cursor active
 }
 
 // configForm composes toggle and text input fields into a navigable form.
@@ -87,14 +87,6 @@ func (f *configForm) focusField(idx int) {
 	f.focused = idx
 }
 
-// isEditing returns true if the currently focused text field is in editing mode.
-func (f *configForm) isEditing() bool {
-	if f.focused < 0 || f.focused >= len(f.fields) {
-		return false
-	}
-	return f.fields[f.focused].editing
-}
-
 // Update handles key events for the form.
 func (f *configForm) Update(msg tea.Msg) tea.Cmd {
 	if len(f.fields) == 0 {
@@ -135,9 +127,10 @@ func (f *configForm) Update(msg tea.Msg) tea.Cmd {
 			}
 			return nil
 		case "enter", " ":
-			if field.kind == fieldToggle {
+			switch field.kind {
+			case fieldToggle:
 				field.toggleValue = !field.toggleValue
-			} else if field.kind == fieldText {
+			case fieldText:
 				field.editing = true
 				field.textInput.Focus()
 			}
@@ -163,7 +156,7 @@ func (f configForm) View() string {
 	toggleOn := StyleSuccess.Render("[x]")
 	toggleOff := StyleSubtle.Render("[ ]")
 
-	var rows []string
+	rows := make([]string, 0, len(f.fields))
 	for i, field := range f.fields {
 		ls := labelStyle
 		cursor := "  "

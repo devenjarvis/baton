@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,8 +13,6 @@ import (
 	"github.com/devenjarvis/baton/internal/git"
 	"github.com/devenjarvis/baton/internal/state"
 )
-
-var validName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 
 // EventType represents the kind of agent event.
 type EventType int
@@ -525,7 +522,7 @@ func (m *Manager) Shutdown() {
 		go func() {
 			defer wg.Done()
 			s.KillAll()
-			s.Cleanup(m.repoPath)
+			_ = s.Cleanup(m.repoPath)
 		}()
 	}
 	wg.Wait()
@@ -568,7 +565,7 @@ func (m *Manager) Detach() *state.BatonState {
 	m.mu.RUnlock()
 
 	// Snapshot state before killing agents.
-	var sessionStates []state.SessionState
+	sessionStates := make([]state.SessionState, 0, len(sessions))
 	for _, s := range sessions {
 		ss := state.SessionState{
 			ID:           s.ID,

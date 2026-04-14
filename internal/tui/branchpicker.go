@@ -23,10 +23,10 @@ type branchPickerItem struct {
 
 // branchPickerDataMsg carries the async-loaded picker data.
 type branchPickerDataMsg struct {
-	prs      []branchPickerItem
-	local    []branchPickerItem
-	remote   []branchPickerItem
-	err      error
+	prs    []branchPickerItem
+	local  []branchPickerItem
+	remote []branchPickerItem
+	err    error
 }
 
 // branchPickerSelectMsg is emitted when the user picks an item.
@@ -267,7 +267,7 @@ func (m branchPickerModel) renderList(width int) string {
 	}
 	separator := StyleSubtle.Render(strings.Repeat("─", sepWidth))
 
-	var lines []string
+	lines := make([]string, 0, len(m.filtered)+6)
 	lines = append(lines, title, separator)
 
 	// Filter indicator.
