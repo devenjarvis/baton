@@ -5,6 +5,7 @@ package e2e
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // repoOnlyHint is shown in the dashboard preview when only a repo is selected
@@ -64,17 +65,35 @@ func TestAgentAddition(t *testing.T) {
 			beforeAgentCount, s.Screenshot())
 	}
 
-	// Add a second agent to the session.
+	// Add a second agent to the session. After "c", baton creates an agent
+	// asynchronously and auto-focuses its terminal. We can't rely on
+	// WaitForText(`\$`) to signal a new prompt — the FIRST agent's prompt may
+	// still be visible in the preview pane, so the wait can match instantly
+	// without the new agent existing yet. Instead, poll the agent-row count
+	// after escaping back to the list.
 	s.Press("c")
 	s.WaitForText(`\$`, 10000)
 	s.Press("Escape")
 	s.WaitForText("navigate", 10000)
 
-	afterAgentCount := countAgentRows(s.Screenshot())
-	if afterAgentCount <= beforeAgentCount {
-		t.Errorf("expected agent row count to increase from %d, got %d\n%s",
-			beforeAgentCount, afterAgentCount, s.Screenshot())
+	if !waitForAgentCount(s, beforeAgentCount+1, 10000) {
+		t.Errorf("expected agent row count to reach %d after adding, last seen %d\n%s",
+			beforeAgentCount+1, countAgentRows(s.Screenshot()), s.Screenshot())
 	}
+}
+
+// waitForAgentCount polls Screenshot for up to timeoutMs and returns true once
+// countAgentRows reaches at least min. Used to handle async agent creation
+// where a render-driven wait (WaitForText) isn't sufficient.
+func waitForAgentCount(s *Session, min, timeoutMs int) bool {
+	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if countAgentRows(s.Screenshot()) >= min {
+			return true
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+	return countAgentRows(s.Screenshot()) >= min
 }
 
 // TestAgentKill verifies that pressing "x" kills the selected agent.
