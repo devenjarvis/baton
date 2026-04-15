@@ -120,9 +120,17 @@ func (m fileBrowserModel) Update(msg tea.Msg) (fileBrowserModel, tea.Cmd) {
 		case "esc":
 			return m, func() tea.Msg { return fileBrowserCancelMsg{} }
 		case ".":
+			// With a filter active, treat `.` as a normal filter character so that
+			// names like "next.js" or "v2.0" are reachable. Toggle hidden only when
+			// the filter is empty.
+			if m.filter != "" {
+				m.filter += "."
+				m.applyFilter()
+				m.refreshGitStatus()
+				break
+			}
 			m.showHidden = !m.showHidden
 			m.entries = loadEntries(m.currentDir, m.showHidden)
-			m.filter = ""
 			m.scrollOffset = 0
 			m.applyFilter()
 			if m.selected >= len(m.filtered) {
@@ -202,31 +210,32 @@ func (m fileBrowserModel) renderBreadcrumb(maxWidth int) string {
 	}
 
 	sep := StyleSubtle.Render(" / ")
-	sepPlain := " / "
+	sepWidth := 3 // " / " is 3 ASCII cells
 
 	// Build from the right, dropping leading segments until it fits.
-	// Start by trying to include everything; if too wide, progressively elide.
+	// Widths are measured in display cells via lipgloss.Width so that multi-byte
+	// and wide (CJK) segment names are handled correctly.
 	build := func(start int, elided bool) (string, int) {
 		var styled strings.Builder
-		plainLen := 0
+		width := 0
 
 		if elided {
 			styled.WriteString(StyleSubtle.Render("…"))
-			plainLen++
+			width++
 		} else if leadingRoot {
 			styled.WriteString(StyleSubtle.Render("/"))
-			plainLen++
+			width++
 		}
 
 		for i := start; i < len(segments); i++ {
 			if i > start || elided || leadingRoot {
 				styled.WriteString(sep)
-				plainLen += len(sepPlain)
+				width += sepWidth
 			}
 			styled.WriteString(segments[i])
-			plainLen += len(segments[i])
+			width += lipgloss.Width(segments[i])
 		}
-		return styled.String(), plainLen
+		return styled.String(), width
 	}
 
 	// Handle empty (e.g. just "~" with no trailing segments — shouldn't happen normally).
@@ -249,15 +258,21 @@ func (m fileBrowserModel) renderBreadcrumb(maxWidth int) string {
 	}
 
 	// Even the last segment alone is too wide — fall back to a compact form.
-	// If the panel is very narrow (maxWidth < "… / x" = 5 chars), just render "…".
-	if maxWidth < len(sepPlain)+2 {
+	// If the panel is very narrow (maxWidth < "… / x" = 5 cells), just render "…".
+	if maxWidth < sepWidth+2 {
 		return StyleSubtle.Render("…")
 	}
 	last := segments[len(segments)-1]
 	// Reserve space for "… / ".
-	room := maxWidth - (1 + len(sepPlain)) // 1 for "…"
-	if len(last) > room {
-		last = last[:room]
+	room := maxWidth - (1 + sepWidth) // 1 for "…"
+	// Rune-safe truncation to avoid emitting invalid UTF-8 mid-codepoint.
+	// This may slightly over-truncate for wide (CJK) chars but never under-truncates.
+	if lipgloss.Width(last) > room {
+		runes := []rune(last)
+		for len(runes) > 0 && lipgloss.Width(string(runes)) > room {
+			runes = runes[:len(runes)-1]
+		}
+		last = string(runes)
 	}
 	return StyleSubtle.Render("…") + sep + last
 }
