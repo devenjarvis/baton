@@ -41,6 +41,7 @@ gofumpt -w .                # format all Go files
 - `internal/git/` — Tests use temp repos with real git commands
 - `internal/agent/` — Tests use `bash -c` commands instead of claude
 - `internal/tui/` — Manual testing only (TUI views)
+- `internal/e2e/` — End-to-end TUI tests using `tu` CLI (headless virtual terminal). Requires `tu` v0.6.0+. Run with: `go test -tags e2e -timeout 300s -v ./internal/e2e/`
 
 Always run `go test -race ./...` before committing — concurrency bugs have been caught and fixed by the race detector.
 
