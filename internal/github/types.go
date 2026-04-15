@@ -1,5 +1,7 @@
 package github
 
+import "time"
+
 // PRState holds the state of a GitHub pull request.
 type PRState struct {
 	Number     int
@@ -20,6 +22,16 @@ type CheckStatus struct {
 	Failed       int
 	Pending      int
 	FailedChecks []FailedCheck
+	Runs         []CheckRun
+}
+
+// CheckRun holds details about a single check run.
+type CheckRun struct {
+	Name       string
+	Status     string // "queued", "in_progress", "completed"
+	Conclusion string // "success", "failure", "cancelled", "skipped", etc.
+	StartedAt  time.Time
+	Duration   time.Duration
 }
 
 // FailedCheck holds details about a single failed check run.
@@ -28,4 +40,12 @@ type FailedCheck struct {
 	Name       string
 	Conclusion string
 	DetailsURL string
+}
+
+// ReviewStatus holds the aggregated review status for a PR.
+type ReviewStatus struct {
+	State            string // "approved", "changes_requested", "pending"
+	Approved         int
+	Pending          int
+	ChangesRequested int
 }
