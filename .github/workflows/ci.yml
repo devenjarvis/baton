@@ -51,3 +51,30 @@ jobs:
         run: |
           go install mvdan.cc/gofumpt@latest
           test -z "$(gofumpt -l .)"
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Configure git for tests
+        run: |
+          git config --global user.name "CI"
+          git config --global user.email "ci@test.com"
+
+      - name: Install tu
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/flipbit03/terminal-use/main/install.sh | sh
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Build baton
+        run: go build -o baton .
+
+      - name: Run e2e tests
+        run: go test -tags e2e -timeout 300s -v ./internal/e2e/
