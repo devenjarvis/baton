@@ -28,16 +28,19 @@ type Agent struct {
 	pty      *bpty.PTY
 	terminal *vt.Terminal
 
-	mu              sync.RWMutex
-	displayName     string
-	claudePid       int
-	claudeSessionID string
-	hasClaudeName   bool
-	status          Status
-	lastOutput      time.Time
-	lastInput       time.Time
-	composing       bool
-	exitErr         error
+	mu               sync.RWMutex
+	displayName      string
+	claudePid        int
+	claudeSessionID  string
+	hasClaudeName    bool
+	status           Status
+	lastOutput       time.Time
+	lastInput        time.Time
+	composing        bool
+	exitErr          error
+	lastScreenHash   uint64
+	lastScreenChange time.Time
+	chimedForTurn    bool
 
 	done          chan struct{}
 	stop          chan struct{}
@@ -327,6 +330,9 @@ func (a *Agent) statusLoop() {
 		case <-a.stop:
 			return
 		case <-ticker.C:
+			hash := a.terminal.ScreenHash()
+			now := time.Now()
+
 			a.mu.Lock()
 			timeout := idleTimeout
 			if a.composing {
@@ -337,6 +343,15 @@ func (a *Agent) statusLoop() {
 				a.composing = false
 			} else if a.status == StatusIdle && time.Since(a.lastOutput) <= idleTimeout {
 				a.status = StatusActive
+			}
+			// Track visual stability. On first sample, stamp the tick time so
+			// stability is measured from first observation (not time.Time{}).
+			if a.lastScreenChange.IsZero() {
+				a.lastScreenHash = hash
+				a.lastScreenChange = now
+			} else if hash != a.lastScreenHash {
+				a.lastScreenHash = hash
+				a.lastScreenChange = now
 			}
 			a.mu.Unlock()
 		}
@@ -359,6 +374,9 @@ func (a *Agent) SendKey(key xvt.KeyPressEvent) {
 	a.lastInput = time.Now()
 	if key.Code == xvt.KeyEnter {
 		a.composing = false
+		// Enter re-arms the chime: the user just submitted a new turn.
+		// Other keys (edits, backspace, arrow keys) must not reset the flag.
+		a.chimedForTurn = false
 	} else {
 		a.composing = true
 	}
@@ -424,6 +442,44 @@ func (a *Agent) HasReceivedInput() bool {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return !a.lastInput.IsZero()
+}
+
+// VisualStableFor returns how long the rendered screen has been unchanged.
+// Returns 0 before the first statusLoop sample has run.
+func (a *Agent) VisualStableFor() time.Duration {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.lastScreenChange.IsZero() {
+		return 0
+	}
+	return time.Since(a.lastScreenChange)
+}
+
+// TimeSinceOutput returns how long since the PTY last produced output.
+// Returns 0 before any output has been observed.
+func (a *Agent) TimeSinceOutput() time.Duration {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.lastOutput.IsZero() {
+		return 0
+	}
+	return time.Since(a.lastOutput)
+}
+
+// ChimedForTurn reports whether the chime has already fired for the current
+// user turn. Resets to false when the user presses Enter.
+func (a *Agent) ChimedForTurn() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.chimedForTurn
+}
+
+// MarkChimedForTurn marks the current turn as having chimed, so the trigger
+// won't re-fire until the user presses Enter to start a new turn.
+func (a *Agent) MarkChimedForTurn() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.chimedForTurn = true
 }
 
 // HasDisplayName reports whether a display name has been explicitly set.
