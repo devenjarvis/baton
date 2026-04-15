@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	xvt "github.com/charmbracelet/x/vt"
 	"github.com/devenjarvis/baton/internal/agent"
+	"github.com/devenjarvis/baton/internal/github"
 )
 
 // listItemKind distinguishes repo headers, session rows, and agent rows in the dashboard list.
@@ -57,8 +59,9 @@ type dashboardModel struct {
 	height       int
 	panelFocus   panelFocus
 	scrollOffset int
-	diffStats    *diffSummaryData         // nil when no session selected or no data
-	prCache      map[string]*prCacheEntry // keyed by session ID, passed from App
+	diffStats    *diffSummaryData           // nil when no session selected or no data
+	prCache      map[string]*prCacheEntry   // keyed by session ID, passed from App
+	prPollStates map[string]*prSessionState // keyed by session ID, passed from App
 
 	// Repo config form shown in the right panel when focusConfig is active.
 	repoConfigForm *configForm
@@ -314,11 +317,14 @@ func (d dashboardModel) renderList(width int) string {
 			var prSuffix string
 			var prSuffixLen int
 			if entry := d.prCache[sess.ID]; entry != nil && entry.pr != nil {
-				prSuffix = " " + prIndicator(entry.pr, entry.checks)
-				// Approximate visible length: space + #N + space + symbol
+				prSuffix = " " + prIndicator(entry)
+				// Approximate visible length: space + #N + space + symbol + optional " Ready"
 				prSuffixLen = 1 + len(fmt.Sprintf("#%d", entry.pr.Number))
 				if entry.checks != nil {
 					prSuffixLen += 2 // space + check symbol
+				}
+				if isMergeReady(entry) {
+					prSuffixLen += 6 // " Ready"
 				}
 			}
 
@@ -337,7 +343,19 @@ func (d dashboardModel) renderList(width int) string {
 			if padLen < 0 {
 				padLen = 0
 			}
-			line := StyleSubtle.Render("  ──") + label + prSuffix + StyleSubtle.Render(strings.Repeat("─", padLen))
+
+			// Use flash color for separator dashes if the session has an active flash.
+			sepStyle := StyleSubtle
+			if ps := d.prPollStates[sess.ID]; ps != nil && time.Now().Before(ps.flashUntil) {
+				switch ps.flashColor {
+				case "success":
+					sepStyle = lipgloss.NewStyle().Foreground(ColorSuccess)
+				case "error":
+					sepStyle = lipgloss.NewStyle().Foreground(ColorError)
+				}
+			}
+
+			line := sepStyle.Render("  ──") + label + prSuffix + sepStyle.Render(strings.Repeat("─", padLen))
 			lines = append(lines, line)
 
 		case listItemAgent:
@@ -391,11 +409,20 @@ func (d dashboardModel) renderList(width int) string {
 		}
 	}
 
-	// Render PR summary and diff stats at the bottom of the left panel.
+	// Render PR checks summary and diff stats at the bottom of the left panel.
 	var bottomLines []string
 	if sess := d.selectedSession(); sess != nil {
 		if entry := d.prCache[sess.ID]; entry != nil && entry.pr != nil {
-			bottomLines = append(bottomLines, d.renderPRSummary(entry, width))
+			contentH := d.contentHeight()
+			agentListHeight := len(lines)
+			maxCheckHeight := contentH / 3
+			availCheckHeight := contentH - agentListHeight
+			if availCheckHeight > maxCheckHeight {
+				availCheckHeight = maxCheckHeight
+			}
+			if availCheckHeight >= 2 {
+				bottomLines = append(bottomLines, d.renderChecksSummary(entry, width, availCheckHeight)...)
+			}
 		}
 	}
 	if d.diffStats != nil {
@@ -674,40 +701,154 @@ func (d dashboardModel) renderDiffSummary(width, maxHeight int) []string {
 	return lines
 }
 
-// renderPRSummary renders a compact PR status line for the left panel bottom section.
-func (d dashboardModel) renderPRSummary(entry *prCacheEntry, width int) string {
+// renderChecksSummary renders a rich PR checks section for the left panel bottom.
+// It shows per-check rows with status, name, and duration, plus review status.
+func (d dashboardModel) renderChecksSummary(entry *prCacheEntry, width, maxHeight int) []string {
 	pr := entry.pr
-	checks := entry.checks
 
+	// Header line: "── PR #42 ── Ready ──────"
 	prLabel := fmt.Sprintf("── PR #%d ──", pr.Number)
-	var checkInfo string
-	if checks != nil {
-		checkInfo = fmt.Sprintf(" %d/%d ", checks.Passed, checks.Total)
-		switch checks.State {
-		case "success":
-			checkInfo += StyleSuccess.Render("\u2713")
-		case "failure":
-			checkInfo += StyleError.Render("\u2717")
-		case "pending":
-			checkInfo += StyleWarning.Render("\u25cb")
-		}
+	var badge string
+	var badgeLen int
+	if isMergeReady(entry) {
+		badge = " " + lipgloss.NewStyle().Foreground(ColorSuccess).Render("Ready") + " "
+		badgeLen = 7 // " Ready "
 	}
 
 	sepWidth := width - 2
 	if sepWidth < 0 {
 		sepWidth = 0
 	}
-	// Visible length of label + checkInfo (approximate).
-	visLen := len(prLabel)
-	if checks != nil {
-		visLen += 1 + len(fmt.Sprintf("%d/%d", checks.Passed, checks.Total)) + 2
-	}
-	padLen := sepWidth - visLen
+	padLen := sepWidth - len(prLabel) - badgeLen
 	if padLen < 0 {
 		padLen = 0
 	}
+	header := StyleSubtle.Render(prLabel) + badge + StyleSubtle.Render(strings.Repeat("─", padLen))
 
-	return StyleSubtle.Render(prLabel) + checkInfo + StyleSubtle.Render(strings.Repeat("─", padLen))
+	var lines []string
+	lines = append(lines, header)
+
+	// Review status line.
+	if entry.reviews != nil && maxHeight > 2 {
+		lines = append(lines, d.renderReviewLine(entry.reviews, width))
+	}
+
+	// Per-check rows.
+	if entry.checks != nil && len(entry.checks.Runs) > 0 {
+		availRows := maxHeight - len(lines)
+		lines = append(lines, d.renderCheckRows(entry.checks.Runs, width, availRows)...)
+	}
+
+	return lines
+}
+
+// renderReviewLine renders the review status line.
+func (d dashboardModel) renderReviewLine(reviews *github.ReviewStatus, width int) string {
+	var symbol string
+	var style lipgloss.Style
+	var text string
+	switch reviews.State {
+	case "approved":
+		symbol = "\u2713"
+		style = lipgloss.NewStyle().Foreground(ColorSuccess)
+		text = fmt.Sprintf("%d approved", reviews.Approved)
+	case "changes_requested":
+		symbol = "\u2717"
+		style = lipgloss.NewStyle().Foreground(ColorError)
+		text = fmt.Sprintf("%d changes requested", reviews.ChangesRequested)
+	default:
+		symbol = "\u25cb"
+		style = lipgloss.NewStyle().Foreground(ColorWarning)
+		text = "pending"
+		if reviews.Approved > 0 {
+			text = fmt.Sprintf("%d approved, pending", reviews.Approved)
+		}
+	}
+	return fmt.Sprintf("  Reviews: %s %s", style.Render(symbol), text)
+}
+
+// renderCheckRows renders individual check run rows sorted: failed, pending, passed.
+func (d dashboardModel) renderCheckRows(runs []github.CheckRun, width, availRows int) []string {
+	if availRows <= 0 {
+		return nil
+	}
+
+	// Sort: failed first, then pending/in_progress, then passed.
+	sorted := make([]github.CheckRun, len(runs))
+	copy(sorted, runs)
+	sort.Slice(sorted, func(i, j int) bool {
+		return checkSortOrder(sorted[i]) < checkSortOrder(sorted[j])
+	})
+
+	showMore := false
+	visible := len(sorted)
+	if visible > availRows {
+		visible = availRows - 1 // leave room for "+N more"
+		showMore = true
+	}
+
+	var lines []string
+	for i := 0; i < visible; i++ {
+		run := sorted[i]
+		var symbol string
+		var style lipgloss.Style
+		switch {
+		case run.Status != "completed":
+			symbol = "\u25cb"
+			style = lipgloss.NewStyle().Foreground(ColorWarning)
+		case run.Conclusion == "success" || run.Conclusion == "skipped" || run.Conclusion == "neutral":
+			symbol = "\u2713"
+			style = lipgloss.NewStyle().Foreground(ColorSuccess)
+		default:
+			symbol = "\u2717"
+			style = lipgloss.NewStyle().Foreground(ColorError)
+		}
+
+		// Duration or "running" indicator.
+		var durStr string
+		if run.Status != "completed" {
+			durStr = "running"
+		} else {
+			durStr = formatCheckDuration(run.Duration)
+		}
+		durLen := len(durStr)
+
+		// "  ✓ name       12s"
+		nameWidth := width - 4 - durLen - 1 // "  S " prefix + duration + space
+		if nameWidth < 1 {
+			nameWidth = 1
+		}
+		name := run.Name
+		if len(name) > nameWidth {
+			name = name[:nameWidth-1] + "…"
+		}
+		padName := nameWidth - len(name)
+		if padName < 0 {
+			padName = 0
+		}
+
+		line := fmt.Sprintf("  %s %s%s%s", style.Render(symbol), name, strings.Repeat(" ", padName), StyleSubtle.Render(durStr))
+		lines = append(lines, line)
+	}
+
+	if showMore {
+		remaining := len(sorted) - visible
+		lines = append(lines, StyleSubtle.Render(fmt.Sprintf("  +%d more", remaining)))
+	}
+
+	return lines
+}
+
+// checkSortOrder returns a sort key: 0=failed, 1=pending, 2=passed.
+func checkSortOrder(run github.CheckRun) int {
+	switch {
+	case run.Status == "completed" && run.Conclusion != "success" && run.Conclusion != "skipped" && run.Conclusion != "neutral":
+		return 0 // failed
+	case run.Status != "completed":
+		return 1 // pending/running
+	default:
+		return 2 // passed
+	}
 }
 
 // humanizeElapsed formats a duration for display.

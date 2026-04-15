@@ -5,6 +5,7 @@ package vt
 
 import (
 	"bytes"
+	"hash/fnv"
 	"io"
 	"strings"
 	"sync"
@@ -126,6 +127,17 @@ func (t *Terminal) Write(p []byte) (int, error) {
 // Render returns the full screen as an ANSI-encoded string.
 func (t *Terminal) Render() string {
 	return t.emu.Render()
+}
+
+// ScreenHash returns a deterministic hash of the current visible screen content.
+// Identical rendered screens produce identical hashes; any visible change
+// (rune, color, style, cursor on a filled cell) produces a different hash.
+// Safe to call concurrently with Write/Render — delegates to Render which
+// acquires the emulator lock.
+func (t *Terminal) ScreenHash() uint64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(t.emu.Render()))
+	return h.Sum64()
 }
 
 // RenderRegion returns a subset of rows from startRow to endRow (inclusive)

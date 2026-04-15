@@ -474,6 +474,84 @@ func TestKillAfterNaturalExitDoesNotPanic(t *testing.T) {
 	a.Kill()
 }
 
+func TestVisualStableForTracksHashChanges(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	cfg := Config{Name: "test-visual-stable", Task: "test", Rows: 24, Cols: 80}
+	a, err := mgr.CreateWithCommand(cfg, func(name string) *exec.Cmd {
+		// Produce one line of output, then go quiet.
+		return exec.Command("bash", "-c", "echo ready; sleep 60")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for the screen to stabilize after initial output.
+	// statusLoop ticks every 500ms; give it enough time for output + one sample.
+	time.Sleep(1500 * time.Millisecond)
+
+	stableA := a.VisualStableFor()
+	if stableA == 0 {
+		t.Fatal("expected VisualStableFor to be non-zero after first sample")
+	}
+
+	// Wait another tick — with no new output, VisualStableFor must grow.
+	time.Sleep(600 * time.Millisecond)
+
+	stableB := a.VisualStableFor()
+	if stableB <= stableA {
+		t.Errorf("expected VisualStableFor to grow while screen unchanged; was %v, now %v", stableA, stableB)
+	}
+}
+
+func TestChimedForTurnResetsOnEnterOnly(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	cfg := Config{Name: "test-chime-turn", Task: "test", Rows: 24, Cols: 80}
+	a, err := mgr.CreateWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "echo ready; cat")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(300 * time.Millisecond)
+
+	// MarkChimedForTurn flips the flag.
+	a.MarkChimedForTurn()
+	if !a.ChimedForTurn() {
+		t.Fatal("expected ChimedForTurn true after MarkChimedForTurn")
+	}
+
+	// SendText must NOT reset the flag.
+	a.SendText("hello")
+	if !a.ChimedForTurn() {
+		t.Error("expected ChimedForTurn to remain true after SendText")
+	}
+
+	// Paste must NOT reset the flag.
+	a.Paste("pasted")
+	if !a.ChimedForTurn() {
+		t.Error("expected ChimedForTurn to remain true after Paste")
+	}
+
+	// Non-Enter keys must NOT reset the flag.
+	a.SendKey(xvt.KeyPressEvent{Code: xvt.KeyBackspace})
+	if !a.ChimedForTurn() {
+		t.Error("expected ChimedForTurn to remain true after Backspace")
+	}
+
+	// Enter RESETS the flag.
+	a.SendKey(xvt.KeyPressEvent{Code: xvt.KeyEnter})
+	if a.ChimedForTurn() {
+		t.Error("expected ChimedForTurn to reset to false after Enter")
+	}
+}
+
 func TestShutdownCleansAll(t *testing.T) {
 	repo := setupTestRepo(t)
 	mgr := NewManager(repo, defaultTestSettings())

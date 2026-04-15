@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	gh "github.com/google/go-github/v69/github"
 )
@@ -119,6 +120,21 @@ func (c *Client) GetChecks(ctx context.Context, owner, repo, ref string) (*Check
 				DetailsURL: run.GetDetailsURL(),
 			})
 		}
+
+		cr := CheckRun{
+			Name:       run.GetName(),
+			Status:     run.GetStatus(),
+			Conclusion: conclusion,
+		}
+		if run.StartedAt != nil {
+			cr.StartedAt = run.StartedAt.Time
+			if run.CompletedAt != nil {
+				cr.Duration = run.CompletedAt.Sub(run.StartedAt.Time)
+			} else {
+				cr.Duration = time.Since(run.StartedAt.Time)
+			}
+		}
+		status.Runs = append(status.Runs, cr)
 	}
 
 	switch {
@@ -156,6 +172,60 @@ func (c *Client) GetFailedCheckLogs(ctx context.Context, owner, repo string, che
 		)
 	}
 	return b.String(), nil
+}
+
+// GetReviews returns the aggregated review status for a pull request.
+// It deduplicates by user, keeping only the latest review per reviewer.
+func (c *Client) GetReviews(ctx context.Context, owner, repo string, number int) (*ReviewStatus, error) {
+	var allReviews []*gh.PullRequestReview
+	opts := &gh.ListOptions{PerPage: 100}
+	for {
+		reviews, resp, err := c.gh.PullRequests.ListReviews(ctx, owner, repo, number, opts)
+		if err != nil {
+			return nil, fmt.Errorf("listing reviews: %w", err)
+		}
+		allReviews = append(allReviews, reviews...)
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+
+	// Deduplicate: latest review per user wins.
+	latestByUser := make(map[int64]*gh.PullRequestReview)
+	for _, r := range allReviews {
+		uid := r.GetUser().GetID()
+		// COMMENTED state means review was started but not submitted — skip.
+		if r.GetState() == "COMMENTED" {
+			continue
+		}
+		if existing, ok := latestByUser[uid]; !ok || r.GetSubmittedAt().After(existing.GetSubmittedAt().Time) {
+			latestByUser[uid] = r
+		}
+	}
+
+	status := &ReviewStatus{}
+	for _, r := range latestByUser {
+		switch r.GetState() {
+		case "APPROVED":
+			status.Approved++
+		case "CHANGES_REQUESTED":
+			status.ChangesRequested++
+		default:
+			status.Pending++
+		}
+	}
+
+	switch {
+	case status.ChangesRequested > 0:
+		status.State = "changes_requested"
+	case status.Approved > 0 && status.Pending == 0:
+		status.State = "approved"
+	default:
+		status.State = "pending"
+	}
+
+	return status, nil
 }
 
 // prToState converts a GitHub API PullRequest to our PRState type.

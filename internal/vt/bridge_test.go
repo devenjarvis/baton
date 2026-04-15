@@ -242,6 +242,80 @@ func TestScrollbackLinesHistoryPreferred(t *testing.T) {
 	}
 }
 
+func TestScreenHashStableWhenUnchanged(t *testing.T) {
+	term := New(80, 24)
+	defer term.Close()
+
+	_, _ = term.Write([]byte("stable content"))
+
+	h1 := term.ScreenHash()
+	h2 := term.ScreenHash()
+	if h1 != h2 {
+		t.Errorf("expected identical hashes for unchanged screen, got %d and %d", h1, h2)
+	}
+}
+
+func TestScreenHashChangesOnWrite(t *testing.T) {
+	term := New(80, 24)
+	defer term.Close()
+
+	_, _ = term.Write([]byte("before"))
+	before := term.ScreenHash()
+
+	_, _ = term.Write([]byte(" after"))
+	after := term.ScreenHash()
+
+	if before == after {
+		t.Errorf("expected hash to change after Write, both are %d", before)
+	}
+}
+
+func TestScreenHashStableAcrossIdenticalWrites(t *testing.T) {
+	a := New(80, 24)
+	defer a.Close()
+	b := New(80, 24)
+	defer b.Close()
+
+	_, _ = a.Write([]byte("same payload"))
+	_, _ = b.Write([]byte("same payload"))
+
+	if a.ScreenHash() != b.ScreenHash() {
+		t.Errorf("expected identical hashes for identical screen content, got %d vs %d",
+			a.ScreenHash(), b.ScreenHash())
+	}
+}
+
+func TestScreenHashChangesOnStyleChange(t *testing.T) {
+	term := New(80, 24)
+	defer term.Close()
+
+	_, _ = term.Write([]byte("plain"))
+	plain := term.ScreenHash()
+
+	// Clear and write the same text but bold.
+	_, _ = term.Write([]byte("\x1b[2J\x1b[H\x1b[1mplain\x1b[0m"))
+	styled := term.ScreenHash()
+
+	if plain == styled {
+		t.Errorf("expected hash to differ when style changes, both are %d", plain)
+	}
+}
+
+func TestScreenHashChangesOnResize(t *testing.T) {
+	term := New(80, 24)
+	defer term.Close()
+
+	_, _ = term.Write([]byte("hello"))
+	before := term.ScreenHash()
+
+	term.Resize(40, 12)
+	after := term.ScreenHash()
+
+	if before == after {
+		t.Errorf("expected hash to change after resize (different render domain), both are %d", before)
+	}
+}
+
 func TestCursorPosition(t *testing.T) {
 	term := New(80, 24)
 	defer term.Close()
