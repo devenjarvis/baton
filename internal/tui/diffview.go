@@ -1,203 +1,199 @@
 package tui
 
 import (
-	"fmt"
-	"strings"
+	"sort"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/lipgloss"
 	git "github.com/devenjarvis/baton/internal/git"
 )
 
-const leftPanelWidth = 28
+// diffMode selects between the summary and detail views.
+type diffMode int
 
-// diffModel displays a split-pane diff browser.
-// Left panel: file list. Right panel: per-file diff.
+const (
+	summaryMode diffMode = iota
+	detailMode
+)
+
+// diffModel drives the two-mode diff browser.
 type diffModel struct {
-	agentName   string
-	files       []git.DiffFile
-	selected    int // index of selected file in left panel
-	rightOffset int // scroll offset for right panel
-	width       int
-	height      int
+	agentName string
+	files     []git.DiffFile
+	hunks     [][]git.Hunk // parallel to files; pre-parsed once
+	mode      diffMode
+	selected  int // index of selected file in summary
+	scroll    int // scroll offset in detail mode
+	width     int
+	height    int
 }
 
+type diffCloseMsg struct{}
+
+// newDiffModel constructs a diffModel. Files are sorted by total change
+// magnitude (descending, tie-break on path ascending) and hunks are
+// pre-parsed for each file.
 func newDiffModel(agentName string, files []git.DiffFile, width, height int) diffModel {
+	sorted := make([]git.DiffFile, len(files))
+	copy(sorted, files)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		mi := sorted[i].Insertions + sorted[i].Deletions
+		mj := sorted[j].Insertions + sorted[j].Deletions
+		if mi != mj {
+			return mi > mj
+		}
+		return sorted[i].Path < sorted[j].Path
+	})
+
+	hunks := make([][]git.Hunk, len(sorted))
+	for i, f := range sorted {
+		hunks[i] = git.ParseHunks(f)
+	}
+
 	return diffModel{
 		agentName: agentName,
-		files:     files,
+		files:     sorted,
+		hunks:     hunks,
+		mode:      summaryMode,
 		width:     width,
 		height:    height,
 	}
 }
 
+// Mode exposes the current mode to callers (e.g., status-bar hint selection).
+func (d diffModel) Mode() diffMode {
+	return d.mode
+}
+
 func (d diffModel) Update(msg tea.Msg) (diffModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
-		switch msg.String() {
-		case "q", "esc":
-			return d, func() tea.Msg { return diffCloseMsg{} }
-		case "j", "down":
-			if d.selected < len(d.files)-1 {
-				d.selected++
-				d.rightOffset = 0
-			}
-		case "k", "up":
-			if d.selected > 0 {
-				d.selected--
-				d.rightOffset = 0
-			}
-		case "d":
-			// Page-scroll right panel down.
-			d.rightOffset += d.viewHeight() / 2
-			if max := d.maxRightOffset(); d.rightOffset > max {
-				d.rightOffset = max
-			}
-		case "u":
-			// Page-scroll right panel up.
-			d.rightOffset -= d.viewHeight() / 2
-			if d.rightOffset < 0 {
-				d.rightOffset = 0
-			}
+		if d.mode == detailMode {
+			return d.updateDetail(msg)
+		}
+		return d.updateSummary(msg)
+	}
+	return d, nil
+}
+
+func (d diffModel) updateSummary(msg tea.KeyPressMsg) (diffModel, tea.Cmd) {
+	switch msg.String() {
+	case "q", "esc":
+		return d, func() tea.Msg { return diffCloseMsg{} }
+	}
+	if len(d.files) == 0 {
+		return d, nil
+	}
+	switch msg.String() {
+	case "j", "down":
+		if d.selected < len(d.files)-1 {
+			d.selected++
+		}
+	case "k", "up":
+		if d.selected > 0 {
+			d.selected--
+		}
+	case "g":
+		d.selected = 0
+	case "G":
+		d.selected = len(d.files) - 1
+	case "enter", "l", "right":
+		d.mode = detailMode
+		d.scroll = 0
+	}
+	return d, nil
+}
+
+func (d diffModel) updateDetail(msg tea.KeyPressMsg) (diffModel, tea.Cmd) {
+	switch msg.String() {
+	case "q":
+		return d, func() tea.Msg { return diffCloseMsg{} }
+	case "esc", "h", "left":
+		d.mode = summaryMode
+		d.scroll = 0
+		return d, nil
+	}
+	if len(d.files) == 0 {
+		return d, nil
+	}
+	switch msg.String() {
+	case "j", "down":
+		d.scroll++
+		d.clampScroll()
+	case "k", "up":
+		d.scroll--
+		if d.scroll < 0 {
+			d.scroll = 0
+		}
+	case "d", "ctrl+d":
+		d.scroll += d.detailBodyHeight() / 2
+		d.clampScroll()
+	case "u", "ctrl+u":
+		d.scroll -= d.detailBodyHeight() / 2
+		if d.scroll < 0 {
+			d.scroll = 0
+		}
+	case "n":
+		if d.selected < len(d.files)-1 {
+			d.selected++
+			d.scroll = 0
+		}
+	case "p":
+		if d.selected > 0 {
+			d.selected--
+			d.scroll = 0
 		}
 	}
 	return d, nil
 }
 
-type diffCloseMsg struct{}
-
-// viewHeight is the usable content height (total minus title row).
-// d.height is already set to terminal height minus the statusbar row.
-func (d diffModel) viewHeight() int {
-	h := d.height - 1 // minus title row
+// detailBodyHeight returns the approximate height available for the detail
+// body (total minus header + blank).
+func (d diffModel) detailBodyHeight() int {
+	h := d.height - 2
 	if h < 1 {
 		return 1
 	}
 	return h
 }
 
-// maxRightOffset returns the maximum scroll offset for the right panel.
-func (d diffModel) maxRightOffset() int {
-	if len(d.files) == 0 {
-		return 0
+// clampScroll keeps scroll within the bounds of the current file's rendered
+// detail body. It accounts for the current render mode (side-by-side vs
+// unified), since side-by-side pairs del/add runs into fewer rows.
+func (d *diffModel) clampScroll() {
+	if len(d.files) == 0 || d.selected < 0 || d.selected >= len(d.hunks) {
+		d.scroll = 0
+		return
 	}
-	lines := d.files[d.selected].Lines
-	max := len(lines) - d.viewHeight()
+	var total int
+	if d.width >= sideBySideMinWidth {
+		total = len(buildSideBySideRows(d.hunks[d.selected]))
+	} else {
+		for _, h := range d.hunks[d.selected] {
+			total += 1 + len(h.Lines) // header + lines
+		}
+	}
+	max := total - d.detailBodyHeight()
 	if max < 0 {
-		return 0
+		max = 0
 	}
-	return max
+	if d.scroll > max {
+		d.scroll = max
+	}
 }
 
 func (d diffModel) View() string {
-	// ── Title bar ──────────────────────────────────────────────────────────
-	fileCount := fmt.Sprintf("%d file", len(d.files))
-	if len(d.files) != 1 {
-		fileCount += "s"
+	if len(d.files) == 0 {
+		return renderEmptyState(d.agentName, d.width, d.height)
 	}
-	title := StyleTitle.Render(d.agentName) + "  " + StyleSubtle.Render(fileCount)
-
-	// ── Left panel: file list ───────────────────────────────────────────────
-	addStatusStyle := lipgloss.NewStyle().Foreground(ColorSuccess)
-	delStatusStyle := lipgloss.NewStyle().Foreground(ColorError)
-	selectedStyle := lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary)
-	normalStyle := lipgloss.NewStyle().Foreground(ColorText)
-
-	maxPathLen := leftPanelWidth - 2 // "A " prefix is 2 chars (letter + space)
-
-	vh := d.viewHeight()
-	var leftLines []string
-	for i, f := range d.files {
-		// Status letter with color.
-		var statusStr string
-		switch f.Status {
-		case "A":
-			statusStr = addStatusStyle.Render("A")
-		case "D":
-			statusStr = delStatusStyle.Render("D")
-		default:
-			statusStr = "M"
-		}
-
-		// Truncate path to fit.
-		path := f.Path
-		if len(path) > maxPathLen {
-			path = "…" + path[len(path)-maxPathLen+1:]
-		}
-
-		// Render path separately to preserve status letter color on selected row.
-		if i == d.selected {
-			entry := statusStr + " " + selectedStyle.Render(path)
-			leftLines = append(leftLines, entry)
-		} else {
-			entry := statusStr + " " + normalStyle.Render(path)
-			leftLines = append(leftLines, entry)
-		}
+	if d.mode == detailMode {
+		return renderDetail(
+			d.agentName,
+			d.files[d.selected],
+			d.hunks[d.selected],
+			d.scroll,
+			d.width,
+			d.height,
+		)
 	}
-
-	// Pad left panel to fill viewHeight.
-	for len(leftLines) < vh {
-		leftLines = append(leftLines, "")
-	}
-
-	leftPanel := lipgloss.NewStyle().
-		Width(leftPanelWidth).
-		Height(vh).
-		BorderRight(true).
-		BorderStyle(lipgloss.NormalBorder()).
-		BorderForeground(ColorMuted).
-		Render(strings.Join(leftLines, "\n"))
-
-	// ── Right panel: diff of selected file ─────────────────────────────────
-	addStyle := lipgloss.NewStyle().Foreground(ColorSuccess)
-	delStyle := lipgloss.NewStyle().Foreground(ColorError)
-	hunkStyle := lipgloss.NewStyle().Foreground(ColorSecondary)
-	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(ColorText)
-
-	var diffLines []string
-	if len(d.files) > 0 {
-		diffLines = d.files[d.selected].Lines
-	}
-
-	end := d.rightOffset + vh
-	if end > len(diffLines) {
-		end = len(diffLines)
-	}
-	start := d.rightOffset
-	if start > len(diffLines) {
-		start = len(diffLines)
-	}
-
-	var rendered []string
-	for _, line := range diffLines[start:end] {
-		switch {
-		case strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---"):
-			rendered = append(rendered, headerStyle.Render(line))
-		case strings.HasPrefix(line, "@@"):
-			rendered = append(rendered, hunkStyle.Render(line))
-		case strings.HasPrefix(line, "+"):
-			rendered = append(rendered, addStyle.Render(line))
-		case strings.HasPrefix(line, "-"):
-			rendered = append(rendered, delStyle.Render(line))
-		case strings.HasPrefix(line, "diff "):
-			rendered = append(rendered, headerStyle.Render(line))
-		default:
-			rendered = append(rendered, line)
-		}
-	}
-
-	rightWidth := d.width - leftPanelWidth - 1 // -1 for border
-	if rightWidth < 1 {
-		rightWidth = 1
-	}
-
-	rightPanel := lipgloss.NewStyle().
-		Width(rightWidth).
-		Height(vh).
-		Render(strings.Join(rendered, "\n"))
-
-	// ── Assemble ────────────────────────────────────────────────────────────
-	body := lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, rightPanel)
-
-	return title + "\n" + body
+	return renderSummary(d.agentName, d.files, d.selected, d.width, d.height)
 }
