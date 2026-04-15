@@ -100,10 +100,10 @@ type App struct {
 	diffStatsCache      map[string]*diffStatsEntry // keyed by session ID
 	diffRefreshInFlight bool
 
-	ghClient       *github.Client
-	prCache        map[string]*prCacheEntry // keyed by session ID
-	prPollInFlight bool
-	prLastPoll     time.Time
+	ghClient        *github.Client
+	prCache         map[string]*prCacheEntry   // keyed by session ID
+	prPollStates    map[string]*prSessionState // keyed by session ID
+	prPollsInFlight int                        // count of concurrent in-flight polls
 }
 
 func NewApp() App {
@@ -116,6 +116,7 @@ func NewApp() App {
 		lastKnownStatus: make(map[string]agent.Status),
 		diffStatsCache:  make(map[string]*diffStatsEntry),
 		prCache:         make(map[string]*prCacheEntry),
+		prPollStates:    make(map[string]*prSessionState),
 	}
 }
 
@@ -337,13 +338,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				diffCmd = a.refreshDiffStatsCmd()
 			}
 		}
-		// Poll PR status every 30s for the selected session.
-		var prCmd tea.Cmd
-		if a.ghClient != nil && !a.prPollInFlight && time.Since(a.prLastPoll) > 30*time.Second {
-			a.prLastPoll = time.Now() // Update unconditionally to avoid 100ms re-checks.
-			prCmd = a.refreshPRStatusCmd()
+		// Adaptive per-session PR polling.
+		var prCmds []tea.Cmd
+		if a.ghClient != nil {
+			prCmds = a.pollAllSessions()
 		}
-		return a, tea.Batch(tickCmd(), diffCmd, prCmd)
+		allCmds := append([]tea.Cmd{tickCmd(), diffCmd}, prCmds...)
+		return a, tea.Batch(allCmds...)
 
 	case agentEventMsg:
 		// Clean up stale lastKnownStatus entries when a session auto-closes.
@@ -403,12 +404,43 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case prPollMsg:
-		a.prPollInFlight = false
+		a.prPollsInFlight--
+		if a.prPollsInFlight < 0 {
+			a.prPollsInFlight = 0
+		}
+		ps := a.prPollStates[msg.sessionID]
+		if ps != nil {
+			ps.inFlight = false
+		}
 		// Only update cache if we got data; preserve existing cache on errors.
 		if msg.pr != nil {
 			a.prCache[msg.sessionID] = &prCacheEntry{
-				pr:     msg.pr,
-				checks: msg.checks,
+				pr:      msg.pr,
+				checks:  msg.checks,
+				reviews: msg.reviews,
+			}
+			// Detect check state transitions and fire notifications.
+			if ps != nil && msg.checks != nil {
+				prevState := ps.lastCheckState
+				newState := msg.checks.State
+				if prevState == "pending" && (newState == "success" || newState == "failure") {
+					// Flash the session row.
+					ps.flashUntil = time.Now().Add(2 * time.Second)
+					if newState == "success" {
+						ps.flashColor = "success"
+					} else {
+						ps.flashColor = "error"
+					}
+					// Play audio notification, gated by the session's repo AudioEnabled setting
+					// (same gate as the idle-transition notification above).
+					if a.audioPlayer != nil {
+						repoPath := a.repoPathForSession(msg.sessionID)
+						if repoPath != "" && a.resolvedCache[repoPath].AudioEnabled {
+							a.audioPlayer.Play()
+						}
+					}
+				}
+				ps.lastCheckState = newState
 			}
 			a.updateDashboardPRCache()
 		}
@@ -1201,6 +1233,7 @@ func (a App) updateMerge(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			delete(a.diffStatsCache, sessID)
 			delete(a.prCache, sessID)
+			delete(a.prPollStates, sessID)
 			a.refreshAgentList()
 			a.updateDashboardDiffStats()
 			a.updateDashboardPRCache()
@@ -1540,9 +1573,26 @@ func (a *App) updateDashboardDiffStats() {
 	}
 }
 
-// updateDashboardPRCache passes the PR cache to the dashboard for rendering.
+// updateDashboardPRCache passes the PR cache and poll states to the dashboard for rendering.
 func (a *App) updateDashboardPRCache() {
 	a.dashboard.prCache = a.prCache
+	a.dashboard.prPollStates = a.prPollStates
+}
+
+// repoPathForSession returns the repo path containing the given session, or "" if not found.
+func (a *App) repoPathForSession(sessionID string) string {
+	for _, repo := range a.cfg.Repos {
+		mgr := a.managers[repo.Path]
+		if mgr == nil {
+			continue
+		}
+		for _, sess := range mgr.ListSessions() {
+			if sess.ID == sessionID {
+				return repo.Path
+			}
+		}
+	}
+	return ""
 }
 
 // cleanStaleCaches removes diff stats and PR cache entries for sessions that no longer exist.
@@ -1563,26 +1613,105 @@ func (a *App) cleanStaleCaches() {
 			delete(a.prCache, id)
 		}
 	}
+	for id := range a.prPollStates {
+		if !activeSessions[id] {
+			delete(a.prPollStates, id)
+		}
+	}
 }
 
-// refreshPRStatusCmd returns a Cmd that polls PR and check status for the selected session.
-func (a *App) refreshPRStatusCmd() tea.Cmd {
-	sess := a.dashboard.selectedSession()
-	if sess == nil {
-		return nil
+// pollAllSessions returns Cmds for sessions that are due for a PR status poll.
+// It respects adaptive intervals and limits concurrent in-flight polls.
+func (a *App) pollAllSessions() []tea.Cmd {
+	const (
+		maxConcurrent    = 3
+		shaCheckInterval = 2 * time.Second
+	)
+
+	var cmds []tea.Cmd
+	now := time.Now()
+
+outer:
+	for _, repo := range a.cfg.Repos {
+		mgr := a.managers[repo.Path]
+		if mgr == nil {
+			continue
+		}
+		for _, sess := range mgr.ListSessions() {
+			if a.prPollsInFlight >= maxConcurrent {
+				break outer
+			}
+
+			ps := a.prPollStates[sess.ID]
+			if ps == nil {
+				ps = &prSessionState{}
+				a.prPollStates[sess.ID] = ps
+			}
+			if ps.inFlight {
+				continue
+			}
+
+			// Determine adaptive polling interval.
+			interval := a.prPollInterval(sess.ID, ps)
+			if now.Sub(ps.lastPoll) < interval {
+				// Check for push detection: if no PR yet, see if the remote SHA changed.
+				// Throttle git rev-parse calls to at most once every shaCheckInterval per
+				// session to avoid blocking the Bubble Tea main goroutine on every tick.
+				if a.prCache[sess.ID] == nil || a.prCache[sess.ID].pr == nil {
+					if now.Sub(ps.lastSHACheck) < shaCheckInterval {
+						continue
+					}
+					ps.lastSHACheck = now
+					sha := getRemoteSHA(repo.Path, sess.Worktree.Branch)
+					if sha != "" && sha != ps.lastRemoteSHA {
+						ps.lastRemoteSHA = sha
+						// Push detected — fall through to schedule an immediate poll.
+					} else {
+						continue
+					}
+				} else {
+					continue
+				}
+			}
+
+			ps.lastPoll = now
+			ps.inFlight = true
+			a.prPollsInFlight++
+			cmds = append(cmds, a.refreshPRStatusForSession(sess.ID, sess.Worktree.Branch, repo.Path))
+		}
 	}
-	// Skip sessions where agents are still starting/active.
-	st := sess.Status()
-	if st == agent.StatusActive || st == agent.StatusStarting {
-		return nil
+	return cmds
+}
+
+// prPollInterval returns the adaptive polling interval for a session.
+func (a *App) prPollInterval(sessionID string, ps *prSessionState) time.Duration {
+	entry := a.prCache[sessionID]
+	// No PR found yet but branch may have been pushed.
+	if entry == nil || entry.pr == nil {
+		if ps.lastRemoteSHA != "" {
+			return 10 * time.Second // branch pushed, waiting for PR
+		}
+		return 30 * time.Second // stable, no activity
 	}
-	repoPath := a.dashboard.selectedRepoPath()
-	if repoPath == "" {
-		return nil
+	// PR exists — adapt based on check state.
+	if entry.checks != nil && entry.checks.State == "pending" {
+		return 5 * time.Second
 	}
-	a.prPollInFlight = true
-	sessionID := sess.ID
-	branch := sess.Worktree.Branch
+	return 30 * time.Second
+}
+
+// getRemoteSHA runs `git rev-parse origin/<branch>` to detect pushes.
+// Returns empty string on any error.
+func getRemoteSHA(repoPath, branch string) string {
+	out, err := exec.Command("git", "-C", repoPath, "rev-parse", "origin/"+branch).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// refreshPRStatusForSession returns a Cmd that polls PR, check, and review status for a single session.
+func (a *App) refreshPRStatusForSession(sessionID, branch, repoPath string) tea.Cmd {
 	ghClient := a.ghClient
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1599,14 +1728,17 @@ func (a *App) refreshPRStatusCmd() tea.Cmd {
 
 		pr, _ := ghClient.GetPR(ctx, owner, repo, branch)
 		var checks *github.CheckStatus
+		var reviews *github.ReviewStatus
 		if pr != nil {
 			checks, _ = ghClient.GetChecks(ctx, owner, repo, branch)
+			reviews, _ = ghClient.GetReviews(ctx, owner, repo, pr.Number)
 		}
 
 		return prPollMsg{
 			sessionID: sessionID,
 			pr:        pr,
 			checks:    checks,
+			reviews:   reviews,
 		}
 	}
 }
