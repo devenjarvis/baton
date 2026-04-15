@@ -39,10 +39,19 @@ var (
 		{"⇧esc", "interrupt"},
 	}
 
-	diffHints = []keyHint{
+	diffSummaryHints = []keyHint{
 		{"j/k", "files"},
-		{"d/u", "scroll diff"},
-		{"q/esc", "back"},
+		{"enter", "open"},
+		{"g/G", "top/bot"},
+		{"q", "back"},
+	}
+
+	diffDetailHints = []keyHint{
+		{"j/k", "scroll"},
+		{"d/u", "page"},
+		{"n/p", "file"},
+		{"esc", "summary"},
+		{"q", "back"},
 	}
 
 	repoBrowsingHints = []keyHint{

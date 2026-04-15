@@ -51,10 +51,10 @@ func TestDiffView(t *testing.T) {
 	s.Press("Escape")
 	s.WaitForText(listFocusAnchor, 5000)
 
-	// Press "d" to open diff view; wait for the diff status bar (only rendered
-	// in the diff view, not the dashboard).
+	// Press "d" to open diff view; wait for the diff summary status bar hint
+	// (only rendered in the diff view).
 	s.Press("d")
-	s.WaitForText("scroll diff", 5000)
+	s.WaitForText("top/bot", 5000)
 	s.AssertScreenContains("file.txt")
 
 	// Exit diff view.

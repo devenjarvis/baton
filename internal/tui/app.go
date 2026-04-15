@@ -815,10 +815,8 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.setError(err.Error())
 					return a, nil
 				}
-				if rawDiff == "" {
-					a.setError("No changes yet")
-					return a, nil
-				}
+				// Always enter the diff view; the empty state is handled by
+				// the renderer when there are no files.
 				files := git.ParseDiffFiles(rawDiff)
 				a.view = ViewDiff
 				a.diff = newDiffModel(sess.GetDisplayName(), files, a.width, a.height-1)
@@ -1494,7 +1492,11 @@ func (a App) View() tea.View {
 		content = lipgloss.JoinVertical(lipgloss.Left, body, statusbar)
 	case ViewDiff:
 		body := a.diff.View()
-		statusbar := renderStatusBar(diffHints, a.width)
+		hints := diffSummaryHints
+		if a.diff.Mode() == detailMode {
+			hints = diffDetailHints
+		}
+		statusbar := renderStatusBar(hints, a.width)
 		content = lipgloss.JoinVertical(lipgloss.Left, body, statusbar)
 	case ViewMerge:
 		content = a.merge.View()
