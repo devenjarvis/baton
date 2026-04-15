@@ -115,14 +115,16 @@ func newSession(t *testing.T) *Session {
 	}
 	writeJSON(t, filepath.Join(repoDir, ".baton", "config.json"), repoCfg)
 
-	// Initialize a git repo so baton can auto-register it.
-	runGit(t, repoDir, "init")
-	runGit(t, repoDir, "config", "user.name", "Test")
-	runGit(t, repoDir, "config", "user.email", "test@test.com")
+	// Initialize a git repo so baton can auto-register it. Use the same
+	// sandboxed git env as Start() so the developer's real ~/.gitconfig
+	// (signing keys, hooks, templates) doesn't break test setup.
+	runGit(t, repoDir, home, "init")
+	runGit(t, repoDir, home, "config", "user.name", "Test")
+	runGit(t, repoDir, home, "config", "user.email", "test@test.com")
 	// Create an initial commit so the repo has a branch.
 	writeFile(t, filepath.Join(repoDir, "README.md"), "# test repo\n")
-	runGit(t, repoDir, "add", ".")
-	runGit(t, repoDir, "commit", "-m", "initial commit")
+	runGit(t, repoDir, home, "add", ".")
+	runGit(t, repoDir, home, "commit", "-m", "initial commit")
 
 	s := &Session{
 		t:       t,
@@ -220,9 +222,9 @@ func (s *Session) Type(text string) {
 func (s *Session) Screenshot() string {
 	s.t.Helper()
 	cmd := exec.Command("tu", "screenshot", "--json", "--name", s.name)
-	out, err := cmd.Output()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		s.t.Fatalf("e2e: Screenshot failed: %v", err)
+		s.t.Fatalf("e2e: Screenshot failed: %v\n%s", err, out)
 	}
 	var env struct {
 		Content string `json:"content"`
@@ -233,10 +235,22 @@ func (s *Session) Screenshot() string {
 	return env.Content
 }
 
-// Kill terminates the tu session. Safe to call multiple times.
+// Kill terminates the tu session. Safe to call multiple times. Logs (but does
+// not fail the test on) errors that aren't "session already gone" — silent
+// failures here would leak orphan tu sessions and only surface via `tu list`
+// on a future run.
 func (s *Session) Kill() {
-	// Best-effort kill; ignore errors (session may already be dead).
-	_ = exec.Command("tu", "kill", "--name", s.name).Run()
+	cmd := exec.Command("tu", "kill", "--name", s.name)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return
+	}
+	// Treat any "not found"/"no such session" output as expected.
+	lower := strings.ToLower(string(out))
+	if strings.Contains(lower, "not found") || strings.Contains(lower, "no such") {
+		return
+	}
+	s.t.Logf("e2e: tu kill --name %s returned %v: %s", s.name, err, out)
 }
 
 // tuStatus holds parsed output from tu status --json.
@@ -245,14 +259,19 @@ type tuStatus struct {
 	ExitCode *int `json:"exit_code"`
 }
 
-// Status returns the session status (alive, exit code).
+// Status returns the session status (alive, exit code). A "session not found"
+// error from tu is treated as "dead" (alive=false, exitCode=-1); other errors
+// fail the test so debugging isn't hidden behind a generic dead-session result.
 func (s *Session) Status() (alive bool, exitCode int) {
 	s.t.Helper()
 	cmd := exec.Command("tu", "status", "--json", "--name", s.name)
-	out, err := cmd.Output()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		// Session not found means it's dead.
-		return false, -1
+		lower := strings.ToLower(string(out))
+		if strings.Contains(lower, "not found") || strings.Contains(lower, "no such") {
+			return false, -1
+		}
+		s.t.Fatalf("e2e: tu status failed: %v\n%s", err, out)
 	}
 	var st tuStatus
 	if err := json.Unmarshal(out, &st); err != nil {
@@ -345,10 +364,18 @@ func writeFile(t *testing.T, path, content string) {
 	}
 }
 
-func runGit(t *testing.T, dir string, args ...string) {
+// runGit runs `git <args>` in dir with a sandboxed global config (pointed at
+// home/.gitconfig) and a /dev/null system config. This isolates the test from
+// the developer's real ~/.gitconfig (gpg signing, hooks, templates, etc.).
+func runGit(t *testing.T, dir, home string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"HOME="+home,
+		"GIT_CONFIG_GLOBAL="+filepath.Join(home, ".gitconfig"),
+		"GIT_CONFIG_SYSTEM=/dev/null",
+	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("e2e: git %v failed: %v\n%s", args, err, out)
