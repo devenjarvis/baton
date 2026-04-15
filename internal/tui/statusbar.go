@@ -47,8 +47,10 @@ var (
 
 	repoBrowsingHints = []keyHint{
 		{"j/k", "navigate"},
+		{"type", "filter"},
 		{"enter", "open/select"},
 		{"backspace", "up"},
+		{".", "hidden"},
 		{"esc", "cancel"},
 	}
 
