@@ -298,17 +298,30 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			ag := item.agent
 			currentStatus := ag.Status()
 
-			// Check for Active->Idle transition.
+			// Check for Active->Idle transition (preserves downstream side
+			// effects like diff-stats refresh). The chime trigger below uses
+			// a separate frame-stability signal rather than the transition.
 			if prev, ok := a.lastKnownStatus[ag.ID]; ok {
 				if prev == agent.StatusActive && currentStatus == agent.StatusIdle && ag.HasReceivedInput() && !ag.IsShell {
-					resolved := a.resolvedCache[item.repoPath]
-					if resolved.AudioEnabled && a.audioPlayer != nil {
-						a.audioPlayer.Play()
-					}
 					idleTransition = true
 				}
 			}
 			a.lastKnownStatus[ag.ID] = currentStatus
+
+			// Chime trigger: fire once per turn when the agent is truly
+			// awaiting input. Primary signal is frame stability (screen
+			// unchanged for VisualStabilityWindow); fallback is prolonged
+			// silence (no PTY output for StuckFallbackTimeout).
+			if !ag.IsShell && ag.HasReceivedInput() && !ag.ChimedForTurn() &&
+				(currentStatus == agent.StatusActive || currentStatus == agent.StatusIdle) &&
+				(ag.VisualStableFor() >= agent.VisualStabilityWindow ||
+					ag.TimeSinceOutput() >= agent.StuckFallbackTimeout) {
+				resolved := a.resolvedCache[item.repoPath]
+				if resolved.AudioEnabled && a.audioPlayer != nil {
+					a.audioPlayer.Play()
+					ag.MarkChimedForTurn()
+				}
+			}
 
 			// Poll Claude session file for auto-generated name.
 			if !ag.IsShell && !ag.HasClaudeName() {
