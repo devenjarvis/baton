@@ -13,9 +13,8 @@ func TestQuitNoAgents(t *testing.T) {
 	s.WaitForText("AGENTS", 10000)
 
 	s.Press("q")
-	s.WaitStable(2000)
 
-	alive, exitCode := s.Status()
+	alive, exitCode := s.WaitForExit(5000)
 	if alive {
 		t.Fatalf("expected process to have exited, but it is still alive")
 	}
@@ -34,25 +33,22 @@ func TestQuitConfirmation(t *testing.T) {
 
 	// Create a new agent session (bash).
 	s.Press("n")
-	s.WaitForText("\\$", 10000)
+	s.WaitForText(`\$`, 10000)
 
 	// Return to list focus so quit key is handled at the app level.
 	s.Press("Escape")
-	s.WaitStable(1000)
+	s.WaitForText("navigate", 10000)
 
-	// First "q" — should show confirmation, not exit.
+	// First "q" — should show confirmation banner. The banner is distinctive
+	// (only rendered when confirmQuit is set); the always-present status bar
+	// hints don't say "Agents are running".
 	s.Press("q")
-	s.WaitStable(1000)
-
-	// The confirmation banner is distinctive (and only shown when confirmQuit
-	// is set); the always-present status bar hints don't say "Agents are running".
-	s.AssertScreenContains("Agents are running")
+	s.WaitForText("Agents are running", 5000)
 
 	// Second "q" — actually detach and exit.
 	s.Press("q")
-	s.WaitStable(3000)
 
-	alive, exitCode := s.Status()
+	alive, exitCode := s.WaitForExit(10000)
 	if alive {
 		t.Fatalf("expected process to have exited after detach, but it is still alive")
 	}
@@ -71,26 +67,21 @@ func TestForceQuit(t *testing.T) {
 
 	// Create a new agent session (bash).
 	s.Press("n")
-	s.WaitForText("\\$", 10000)
+	s.WaitForText(`\$`, 10000)
 
 	// Return to list focus so quit key is handled at the app level.
 	s.Press("Escape")
-	s.WaitStable(1000)
+	s.WaitForText("navigate", 10000)
 
-	// First "Q" — should show confirmation, not exit.
+	// First "Q" — should show confirmation banner.
 	s.Press("Q")
-	s.WaitStable(1000)
+	s.WaitForText("Agents are running", 5000)
 
-	// The confirmation banner is distinctive (and only shown when confirmQuit
-	// is set); the always-present status bar hints don't say "Agents are running".
-	s.AssertScreenContains("Agents are running")
-
-	// Second "Q" — actually force quit and exit.
+	// Second "Q" — actually force quit and exit. Force quit cleans up
+	// worktrees and kills agents, which can take a few seconds.
 	s.Press("Q")
-	// Force quit cleans up worktrees and kills agents, which can take a few seconds.
-	s.WaitStable(5000)
 
-	alive, exitCode := s.Status()
+	alive, exitCode := s.WaitForExit(15000)
 	if alive {
 		t.Fatalf("expected process to have exited after force quit, but it is still alive")
 	}

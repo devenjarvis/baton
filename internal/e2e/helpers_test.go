@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 var batonBin string
@@ -181,6 +182,10 @@ func (s *Session) WaitForText(pattern string, timeoutMs int) {
 }
 
 // WaitStable waits until the screen is unchanged for the given duration.
+// Best-effort: a timeout is silent, since with a bash agent emitting cursor
+// activity the screen rarely fully stabilizes — but the wait still serves as
+// a "give the next render a chance" pause. Tests should rely on WaitForText
+// or content assertions for actual synchronization.
 func (s *Session) WaitStable(ms int) {
 	s.t.Helper()
 	cmd := exec.Command("tu", "wait",
@@ -188,10 +193,23 @@ func (s *Session) WaitStable(ms int) {
 		"--stable", fmt.Sprintf("%d", ms),
 		"--timeout", fmt.Sprintf("%d", ms+5000),
 	)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		s.t.Logf("e2e: WaitStable(%dms) warning: %v\n%s", ms, err, out)
+	_, _ = cmd.CombinedOutput()
+}
+
+// WaitForExit polls Status until the process is no longer alive or timeoutMs
+// elapses. Returns the final (alive, exitCode). Use this instead of
+// WaitStable+Status when confirming that baton has exited.
+func (s *Session) WaitForExit(timeoutMs int) (alive bool, exitCode int) {
+	s.t.Helper()
+	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
+	for time.Now().Before(deadline) {
+		alive, exitCode = s.Status()
+		if !alive {
+			return alive, exitCode
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
+	return s.Status()
 }
 
 // Press sends one or more keystrokes to the terminal.

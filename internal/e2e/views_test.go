@@ -4,26 +4,31 @@ package e2e
 
 import "testing"
 
+// Anchor strings used to wait for specific TUI views to render.
+//
+//   - dashboardAnchor: only appears in the dashboard status bar (not in any
+//     overlay's hint set, all of which use "navigate" too).
+//   - listFocusAnchor: dashboard text shown only when focus is on the list
+//     panel (terminal focus uses focusTerminalHints, which omits this).
+const (
+	dashboardAnchor = "new session"
+	listFocusAnchor = "new session"
+)
+
 func TestSettingsOverlay(t *testing.T) {
 	s := newSession(t)
 	s.Start()
 
-	// Wait for dashboard to appear.
 	s.WaitForText("AGENTS", 10000)
 
-	// Press "s" to open global settings overlay.
+	// Press "s" to open global settings overlay; wait for a known field label.
 	s.Press("s")
-	s.WaitStable(1000)
-
-	// Verify settings view content appears — look for setting field labels.
-	s.AssertScreenContains("Audio Enabled")
+	s.WaitForText("Audio Enabled", 5000)
 	s.AssertScreenContains("Bypass Permissions")
 
 	// Press Escape to return to dashboard.
 	s.Press("Escape")
-	s.WaitStable(1000)
-
-	// Verify dashboard is restored.
+	s.WaitForText(dashboardAnchor, 5000)
 	s.AssertScreenContains("AGENTS")
 }
 
@@ -31,41 +36,30 @@ func TestDiffView(t *testing.T) {
 	s := newSession(t)
 	s.Start()
 
-	// Wait for dashboard to appear.
 	s.WaitForText("AGENTS", 10000)
 
-	// Create a new session — "n" key. This auto-focuses the terminal.
+	// Create a new session — "n" key auto-focuses the terminal.
 	s.Press("n")
+	s.WaitForText(`\$`, 10000)
 
-	// Wait for bash prompt inside the worktree.
-	s.WaitForText("\\$", 10000)
+	// Create + commit a file in the worktree, then a sentinel echo we can
+	// wait for so we know the commit completed before moving on.
+	s.Type("echo test > file.txt && git add file.txt && git commit -m 'add file' && echo COMMIT_DONE\n")
+	s.WaitForText("COMMIT_DONE", 10000)
 
-	// Create a file, stage it, and commit so it shows up in branch diff.
-	s.Type("echo test > file.txt && git add file.txt && git commit -m 'add file'\n")
-	s.WaitStable(2000)
-
-	// Press Escape to return to list focus.
+	// Return to list focus.
 	s.Press("Escape")
-	s.WaitStable(1000)
+	s.WaitForText(listFocusAnchor, 5000)
 
-	// Press "d" to open diff view.
+	// Press "d" to open diff view; wait for the diff status bar (only rendered
+	// in the diff view, not the dashboard).
 	s.Press("d")
-	s.WaitStable(2000)
-
-	// Verify the diff view shows the new file. We assert on the diff status
-	// bar hints (which are only rendered in the diff view, not the dashboard)
-	// AND on the file name, so the assertion can't pass if the diff view
-	// failed to open.
-	screen := s.Screenshot()
-	t.Logf("Diff view screen:\n%s", screen)
+	s.WaitForText("scroll diff", 5000)
 	s.AssertScreenContains("file.txt")
-	s.AssertScreenContains("scroll diff") // unique to diffHints
 
 	// Exit diff view.
 	s.Press("Escape")
-	s.WaitStable(1000)
-
-	// Verify dashboard is restored.
+	s.WaitForText(dashboardAnchor, 5000)
 	s.AssertScreenContains("AGENTS")
 }
 
@@ -73,21 +67,16 @@ func TestFileBrowser(t *testing.T) {
 	s := newSession(t)
 	s.Start()
 
-	// Wait for dashboard to appear.
 	s.WaitForText("AGENTS", 10000)
 
-	// Press "a" to open file browser overlay.
+	// Press "a" to open file browser overlay; wait for a header that's unique
+	// to the browser.
 	s.Press("a")
-	s.WaitStable(1000)
-
-	// Verify the file browser overlay is showing its characteristic headers.
-	s.AssertScreenContains("DIRECTORIES")
+	s.WaitForText("DIRECTORIES", 5000)
 	s.AssertScreenContains("DETAILS")
 
 	// Press Escape to close.
 	s.Press("Escape")
-	s.WaitStable(1000)
-
-	// Verify dashboard is restored.
+	s.WaitForText(dashboardAnchor, 5000)
 	s.AssertScreenContains("AGENTS")
 }
