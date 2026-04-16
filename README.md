@@ -1,20 +1,17 @@
 # Baton
 
-A terminal-native tool for orchestrating multiple [Claude Code](https://docs.anthropic.com/en/docs/claude-code) agents in parallel. Each agent runs in an isolated git worktree with its own PTY, rendered via a virtual terminal emulator. Monitor agents from a dashboard, interact in focus mode, review diffs, and merge results — all without leaving the terminal.
+**A terminal-native orchestrator for parallel [Claude Code](https://docs.anthropic.com/en/docs/claude-code) agents.**
 
-No tmux dependency.
+[![CI](https://img.shields.io/github/actions/workflow/status/devenjarvis/baton/ci.yml?branch=main&label=ci)](https://github.com/devenjarvis/baton/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/devenjarvis/baton?include_prereleases&sort=semver)](https://github.com/devenjarvis/baton/releases)
+[![Go Report Card](https://goreportcard.com/badge/github.com/devenjarvis/baton)](https://goreportcard.com/report/github.com/devenjarvis/baton)
+[![License](https://img.shields.io/github/license/devenjarvis/baton)](./LICENSE)
 
-## Requirements
+![Baton demo](./demo/baton.gif)
 
-- Go 1.25+
-- Git 2.20+
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude` on PATH)
+## Why Baton?
 
-Verify with:
-
-```bash
-baton doctor
-```
+Running one Claude Code agent is easy. Running several at once — each on its own branch, without stomping on each other's working trees — is not. Baton gives each agent an isolated git worktree, wires its PTY into a virtual terminal emulator, and surfaces them all from a single dashboard. Switch focus, review diffs, and merge results without leaving the terminal and without a tmux dependency.
 
 ## Install
 
@@ -24,13 +21,17 @@ baton doctor
 brew install devenjarvis/tap/baton
 ```
 
+### Download a release binary
+
+Grab a tarball for your platform from the [latest release](https://github.com/devenjarvis/baton/releases/latest) and drop the `baton` binary on your `PATH`.
+
 ### Go
 
 ```bash
 go install github.com/devenjarvis/baton@latest
 ```
 
-### From source
+### Build from source
 
 ```bash
 git clone https://github.com/devenjarvis/baton.git
@@ -38,13 +39,19 @@ cd baton
 go build -o baton .
 ```
 
-## Usage
+## Quick start
 
-Run `baton` inside a git repository:
+1. Check your environment:
 
-```bash
-baton
-```
+   ```bash
+   baton doctor
+   ```
+
+2. Run it inside any git repo:
+
+   ```bash
+   baton
+   ```
 
 ### Keybindings
 
@@ -75,7 +82,7 @@ baton
 | `d` / `u` | Page down / up |
 | `q` / `esc` | Back to dashboard |
 
-## How It Works
+## How it works
 
 When you create an agent, Baton:
 
@@ -92,6 +99,7 @@ When you merge, Baton runs `git merge --no-ff` from the worktree branch into you
 main.go              Entry point
 cmd/
   root.go            Cobra root command, launches TUI
+  version.go         Version metadata, --version flag, `baton version`
   doctor.go          Environment validation
 internal/
   pty/               PTY wrapper (creack/pty)
@@ -101,6 +109,31 @@ internal/
   tui/               Bubble Tea views (dashboard, focus, diff, prompt, merge)
 ```
 
+## Status
+
+Pre-1.0. Expect breaking changes between minor versions. See [CHANGELOG.md](./CHANGELOG.md).
+
+## Platform support
+
+- macOS (Apple Silicon, Intel)
+- Linux (arm64, amd64)
+
+Windows and FreeBSD are not supported.
+
+## Troubleshooting
+
+**`baton doctor` reports `claude: not found`** — install the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) and make sure `claude` is on your `PATH`.
+
+**`baton` exits with "not a git repository"** — Baton must run inside a git working tree. Run `git init` first or `cd` into an existing repo.
+
+**"worktree already exists"** — a previous `.baton/worktrees/<name>` is still on disk. Remove the stale entry with `git worktree remove .baton/worktrees/<name>` (add `--force` if the worktree is dirty).
+
+## Contributing
+
+Bug reports, fixes, and small features are welcome. See [CONTRIBUTING.md](./CONTRIBUTING.md).
+
+Security issues: see [SECURITY.md](./SECURITY.md) — please do not open a public issue.
+
 ## License
 
-MIT
+[MIT](./LICENSE)
