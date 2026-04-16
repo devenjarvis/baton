@@ -1,67 +1,6 @@
 package agent
 
-import (
-	"encoding/json"
-	"fmt"
-	"os"
-	"path/filepath"
-	"testing"
-)
-
-func TestPollClaudeSessionName_NoFile(t *testing.T) {
-	dir := t.TempDir()
-	old := ClaudeSessionDir
-	ClaudeSessionDir = dir
-	defer func() { ClaudeSessionDir = old }()
-
-	a := &Agent{claudePid: 99999}
-	if got := a.PollClaudeSessionName(); got != "" {
-		t.Errorf("expected empty string for missing file, got %q", got)
-	}
-}
-
-func TestPollClaudeSessionName_NoNameField(t *testing.T) {
-	dir := t.TempDir()
-	old := ClaudeSessionDir
-	ClaudeSessionDir = dir
-	defer func() { ClaudeSessionDir = old }()
-
-	// Write a JSON file without a "name" field.
-	data, _ := json.Marshal(map[string]any{"id": "abc123"})
-	if err := os.WriteFile(filepath.Join(dir, "12345.json"), data, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	a := &Agent{claudePid: 12345}
-	if got := a.PollClaudeSessionName(); got != "" {
-		t.Errorf("expected empty string for missing name field, got %q", got)
-	}
-}
-
-func TestPollClaudeSessionName_WithName(t *testing.T) {
-	dir := t.TempDir()
-	old := ClaudeSessionDir
-	ClaudeSessionDir = dir
-	defer func() { ClaudeSessionDir = old }()
-
-	data, _ := json.Marshal(map[string]any{"name": "fix-auth-bug", "id": "abc123"})
-	if err := os.WriteFile(filepath.Join(dir, "42.json"), data, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	a := &Agent{claudePid: 42}
-	got := a.PollClaudeSessionName()
-	if got != "fix-auth-bug" {
-		t.Errorf("expected %q, got %q", "fix-auth-bug", got)
-	}
-}
-
-func TestPollClaudeSessionName_ZeroPid(t *testing.T) {
-	a := &Agent{claudePid: 0}
-	if got := a.PollClaudeSessionName(); got != "" {
-		t.Errorf("expected empty string for zero PID, got %q", got)
-	}
-}
+import "testing"
 
 func TestSlugify(t *testing.T) {
 	tests := []struct {
@@ -84,32 +23,6 @@ func TestSlugify(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("slugify(%q) = %q, want %q", tc.input, got, tc.want)
 		}
-	}
-}
-
-func TestPollClaudeSessionName_CapturesSessionID(t *testing.T) {
-	dir := t.TempDir()
-	old := ClaudeSessionDir
-	ClaudeSessionDir = dir
-	defer func() { ClaudeSessionDir = old }()
-
-	pid := 12345
-	data, _ := json.Marshal(map[string]string{
-		"sessionId": "test-uuid-123",
-		"name":      "test-session",
-	})
-	_ = os.WriteFile(filepath.Join(dir, fmt.Sprintf("%d.json", pid)), data, 0o644)
-
-	a := &Agent{
-		claudePid: pid,
-	}
-
-	name := a.PollClaudeSessionName()
-	if name != "test-session" {
-		t.Errorf("expected name 'test-session', got %q", name)
-	}
-	if got := a.ClaudeSessionID(); got != "test-uuid-123" {
-		t.Errorf("expected session ID 'test-uuid-123', got %q", got)
 	}
 }
 

@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/devenjarvis/baton/internal/hook"
 	bpty "github.com/devenjarvis/baton/internal/pty"
 	"github.com/devenjarvis/baton/internal/vt"
 
@@ -30,7 +30,6 @@ type Agent struct {
 
 	mu               sync.RWMutex
 	displayName      string
-	claudePid        int
 	claudeSessionID  string
 	hasClaudeName    bool
 	status           Status
@@ -38,13 +37,11 @@ type Agent struct {
 	lastInput        time.Time
 	composing        bool
 	exitErr          error
-	lastScreenHash   uint64
-	lastScreenChange time.Time
 	chimedForTurn    bool
+	sessionStartedAt time.Time
+	cleanExit        bool
 
 	done          chan struct{}
-	stop          chan struct{}
-	stopOnce      sync.Once
 	writeLoopDone chan struct{}
 }
 
@@ -67,35 +64,37 @@ func agentProgram(cfg Config) string {
 	return "claude"
 }
 
+// supportsHooks reports whether the configured agent program understands
+// Claude Code's --settings flag and lifecycle hooks. Other programs (e.g. a
+// bash shim used by e2e tests, or a custom tool a user wires in) get no
+// hook wiring — their agents will sit at Active indefinitely, matching the
+// "non-claude" assumption in the hook-integration plan.
+func supportsHooks(cfg Config) bool {
+	return filepath.Base(agentProgram(cfg)) == "claude"
+}
+
 // newAgent creates and starts an agent with the configured agent program.
 // The worktreePath is provided by the session — agents do not create worktrees.
-func newAgent(id string, cfg Config, worktreePath string) (*Agent, error) {
+// socketPath is the unix socket the baton-hook CLI should dial; when non-empty,
+// a Claude settings file is written that routes SessionStart/Stop/SessionEnd
+// events back to this baton process.
+func newAgent(id string, cfg Config, worktreePath, socketPath string) (*Agent, error) {
 	term := vt.New(cfg.Cols, cfg.Rows)
 
 	prog := agentProgram(cfg)
-	var cmd *exec.Cmd
-	if cfg.BypassPermissions {
-		if cfg.Task != "" {
-			cmd = exec.Command(prog, "--dangerously-skip-permissions", cfg.Task)
-		} else {
-			cmd = exec.Command(prog, "--dangerously-skip-permissions")
-		}
-	} else {
-		if cfg.Task != "" {
-			cmd = exec.Command(prog, cfg.Task)
-		} else {
-			cmd = exec.Command(prog)
-		}
+	args, err := buildSpawnArgs(cfg, worktreePath, socketPath)
+	if err != nil {
+		return nil, err
 	}
+	cmd := exec.Command(prog, args...)
 	cmd.Dir = worktreePath
 	cmd.Env = append(cmd.Environ(), "TERM=xterm-256color")
+	applyHookEnv(cmd, cfg, id, socketPath)
 
 	p := &bpty.PTY{}
 	if err := p.Start(cmd, uint16(cfg.Rows), uint16(cfg.Cols)); err != nil {
 		return nil, err
 	}
-
-	claudePid := p.Pid()
 
 	a := &Agent{
 		ID:            id,
@@ -105,10 +104,8 @@ func newAgent(id string, cfg Config, worktreePath string) (*Agent, error) {
 		CreatedAt:     time.Now(),
 		pty:           p,
 		terminal:      term,
-		claudePid:     claudePid,
 		status:        StatusStarting,
 		done:          make(chan struct{}),
-		stop:          make(chan struct{}),
 		writeLoopDone: make(chan struct{}),
 	}
 
@@ -118,7 +115,6 @@ func newAgent(id string, cfg Config, worktreePath string) (*Agent, error) {
 
 	go a.readLoop()
 	go a.writeLoop()
-	go a.statusLoop()
 
 	return a, nil
 }
@@ -131,13 +127,21 @@ func newResumedAgent(
 	cfg Config,
 	worktreePath string,
 	claudeSessionID string,
+	socketPath string,
 ) (*Agent, error) {
 	term := vt.New(cfg.Cols, cfg.Rows)
 
-	args := buildResumeArgs(cfg, claudeSessionID)
+	resumeArgs := buildResumeArgs(cfg, claudeSessionID)
+	hookArgs, err := buildHookArgs(cfg, worktreePath, socketPath)
+	if err != nil {
+		return nil, err
+	}
+	// --settings must come before --resume / --continue (flags before positional args).
+	args := append(hookArgs, resumeArgs...)
 	cmd := exec.Command(agentProgram(cfg), args...)
 	cmd.Dir = worktreePath
 	cmd.Env = append(cmd.Environ(), "TERM=xterm-256color")
+	applyHookEnv(cmd, cfg, id, socketPath)
 
 	p := &bpty.PTY{}
 	if err := p.Start(cmd, uint16(cfg.Rows), uint16(cfg.Cols)); err != nil {
@@ -152,17 +156,14 @@ func newResumedAgent(
 		CreatedAt:       time.Now(),
 		pty:             p,
 		terminal:        term,
-		claudePid:       p.Pid(),
 		claudeSessionID: claudeSessionID,
 		status:          StatusStarting,
 		done:            make(chan struct{}),
-		stop:            make(chan struct{}),
 		writeLoopDone:   make(chan struct{}),
 	}
 
 	go a.readLoop()
 	go a.writeLoop()
-	go a.statusLoop()
 
 	return a, nil
 }
@@ -188,6 +189,53 @@ func buildResumeArgs(cfg Config, claudeSessionID string) []string {
 	return args
 }
 
+// buildSpawnArgs builds the argv for a fresh `claude` invocation, prefixed with
+// the hook settings (`--settings <file>`) when hooks are supported.
+func buildSpawnArgs(cfg Config, worktreePath, socketPath string) ([]string, error) {
+	args, err := buildHookArgs(cfg, worktreePath, socketPath)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.BypassPermissions {
+		args = append(args, "--dangerously-skip-permissions")
+	}
+	if cfg.Task != "" {
+		args = append(args, cfg.Task)
+	}
+	return args, nil
+}
+
+// buildHookArgs writes the per-agent hooks settings file and returns the
+// `--settings <path>` pair. Returns an empty slice when hooks are disabled
+// (socketPath empty, or agent program is not claude).
+//
+// The file lives at `<worktreePath>/.baton/hooks.json` so it sits inside the
+// already-gitignored `.baton/` tree and doesn't show up as an untracked file
+// in the user's worktree `git status`.
+func buildHookArgs(cfg Config, worktreePath, socketPath string) ([]string, error) {
+	if socketPath == "" || !supportsHooks(cfg) {
+		return nil, nil
+	}
+	hookPath := filepath.Join(worktreePath, ".baton", "hooks.json")
+	if err := hook.WriteHooksFile(hookPath); err != nil {
+		return nil, fmt.Errorf("writing hooks settings: %w", err)
+	}
+	return []string{"--settings", hookPath}, nil
+}
+
+// applyHookEnv sets BATON_HOOK_SOCKET and BATON_AGENT_ID on cmd so the
+// baton-hook CLI (invoked by claude) knows where to forward events.
+// No-op when hooks are disabled for this program.
+func applyHookEnv(cmd *exec.Cmd, cfg Config, agentID, socketPath string) {
+	if socketPath == "" || !supportsHooks(cfg) {
+		return
+	}
+	cmd.Env = append(cmd.Env,
+		"BATON_HOOK_SOCKET="+socketPath,
+		"BATON_AGENT_ID="+agentID,
+	)
+}
+
 // newAgentWithCommand creates an agent using a custom command instead of claude.
 // Used for testing. The worktreePath is provided by the session.
 func newAgentWithCommand(id string, cfg Config, worktreePath string, cmd *exec.Cmd) (*Agent, error) {
@@ -209,16 +257,13 @@ func newAgentWithCommand(id string, cfg Config, worktreePath string, cmd *exec.C
 		CreatedAt:     time.Now(),
 		pty:           p,
 		terminal:      term,
-		claudePid:     p.Pid(),
 		status:        StatusStarting,
 		done:          make(chan struct{}),
-		stop:          make(chan struct{}),
 		writeLoopDone: make(chan struct{}),
 	}
 
 	go a.readLoop()
 	go a.writeLoop()
-	go a.statusLoop()
 
 	return a, nil
 }
@@ -253,7 +298,6 @@ func newShellAgent(id string, cfg Config, worktreePath string) (*Agent, error) {
 		displayName:   "shell",
 		status:        StatusStarting,
 		done:          make(chan struct{}),
-		stop:          make(chan struct{}),
 		writeLoopDone: make(chan struct{}),
 	}
 
@@ -318,44 +362,45 @@ func (a *Agent) writeLoop() {
 	}
 }
 
-// statusLoop periodically checks for idle status.
-func (a *Agent) statusLoop() {
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
+// OnHookEvent applies a Claude Code hook event to the agent's state.
+// Returns true if the agent's status changed as a result (so the manager
+// can emit EventStatusChanged).
+//
+// Status transitions driven here replace the old statusLoop heuristic —
+// Claude's SessionStart/Stop/SessionEnd events are the authoritative signal.
+func (a *Agent) OnHookEvent(e hook.Event) (statusChanged bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 
-	for {
-		select {
-		case <-a.done:
-			return
-		case <-a.stop:
-			return
-		case <-ticker.C:
-			hash := a.terminal.ScreenHash()
-			now := time.Now()
-
-			a.mu.Lock()
-			timeout := idleTimeout
-			if a.composing {
-				timeout = composingIdleTimeout
-			}
-			if a.status == StatusActive && time.Since(a.lastOutput) > timeout && time.Since(a.lastInput) > timeout {
-				a.status = StatusIdle
-				a.composing = false
-			} else if a.status == StatusIdle && time.Since(a.lastOutput) <= idleTimeout {
-				a.status = StatusActive
-			}
-			// Track visual stability. On first sample, stamp the tick time so
-			// stability is measured from first observation (not time.Time{}).
-			if a.lastScreenChange.IsZero() {
-				a.lastScreenHash = hash
-				a.lastScreenChange = now
-			} else if hash != a.lastScreenHash {
-				a.lastScreenHash = hash
-				a.lastScreenChange = now
-			}
-			a.mu.Unlock()
+	switch e.Kind {
+	case hook.KindSessionStart:
+		if e.SessionID != "" {
+			a.claudeSessionID = e.SessionID
 		}
+		a.sessionStartedAt = time.Now()
+		if a.status != StatusActive {
+			a.status = StatusActive
+			return true
+		}
+		return false
+
+	case hook.KindStop:
+		// Claude finished its turn; the user is now in control. Clear the
+		// composing flag so input-display logic returns to its idle baseline.
+		a.composing = false
+		if a.status != StatusIdle {
+			a.status = StatusIdle
+			return true
+		}
+		return false
+
+	case hook.KindSessionEnd:
+		// Flag a clean exit for observability. Actual teardown still goes
+		// through the PTY close path (readLoop -> close(done)).
+		a.cleanExit = true
+		return false
 	}
+	return false
 }
 
 // Render returns the full terminal screen as an ANSI string.
@@ -444,17 +489,6 @@ func (a *Agent) HasReceivedInput() bool {
 	return !a.lastInput.IsZero()
 }
 
-// VisualStableFor returns how long the rendered screen has been unchanged.
-// Returns 0 before the first statusLoop sample has run.
-func (a *Agent) VisualStableFor() time.Duration {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	if a.lastScreenChange.IsZero() {
-		return 0
-	}
-	return time.Since(a.lastScreenChange)
-}
-
 // TimeSinceOutput returns how long since the PTY last produced output.
 // Returns 0 before any output has been observed.
 func (a *Agent) TimeSinceOutput() time.Duration {
@@ -509,70 +543,11 @@ func (a *Agent) ExitErr() error {
 // Kill terminates the agent's process and waits for goroutines to exit.
 // Safe to call multiple times — subsequent calls are no-ops.
 func (a *Agent) Kill() {
-	a.closeStop()
 	_ = a.pty.Close()
 	// Close terminal to unblock writeLoop's Read call.
 	a.terminal.Close()
 	// Wait for writeLoop to finish before returning.
 	<-a.writeLoopDone
-}
-
-// closeStop safely closes the stop channel exactly once.
-func (a *Agent) closeStop() {
-	a.stopOnce.Do(func() { close(a.stop) })
-}
-
-// ClaudeSessionDir overrides the session directory for testing.
-// When empty, claudeSessionDir() uses the real home directory.
-var ClaudeSessionDir string
-
-func claudeSessionDir() string {
-	if ClaudeSessionDir != "" {
-		return ClaudeSessionDir
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".claude", "sessions")
-}
-
-// PollClaudeSessionName reads the Claude session file for this agent's PID
-// and returns the "name" field if present. Returns "" on any error or if
-// the name field is not yet populated.
-func (a *Agent) PollClaudeSessionName() string {
-	a.mu.RLock()
-	pid := a.claudePid
-	a.mu.RUnlock()
-
-	if pid == 0 {
-		return ""
-	}
-
-	dir := claudeSessionDir()
-	if dir == "" {
-		return ""
-	}
-
-	path := filepath.Join(dir, fmt.Sprintf("%d.json", pid))
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-
-	var session struct {
-		Name      string `json:"name"`
-		SessionID string `json:"sessionId"`
-	}
-	if err := json.Unmarshal(data, &session); err != nil {
-		return ""
-	}
-	if session.SessionID != "" {
-		a.mu.Lock()
-		a.claudeSessionID = session.SessionID
-		a.mu.Unlock()
-	}
-	return session.Name
 }
 
 // ClaudeSessionID returns the Claude session ID captured from the session file.
