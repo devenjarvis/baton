@@ -1,0 +1,29 @@
+# Changelog
+
+All notable changes to Baton will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+Every PR should update the `[Unreleased]` section with a short entry describing the change.
+
+## [Unreleased]
+
+## [0.1.0] — 2026-04-15
+
+Initial public release.
+
+### Added
+
+- Dashboard view listing all managed agents with live status (idle/active/error) and visual-stability detection.
+- Focus mode: full-screen interactive session with a selected agent; all keys forwarded to the PTY.
+- Diff view: two-mode experience — summary list sorted by change magnitude, and side-by-side (≥120 cols) or unified (below) detail view.
+- Merge: `git merge --no-ff` from a worktree branch into the base branch with cleanup of the worktree.
+- Prompt and merge overlays for creating and landing agent work without leaving the TUI.
+- `baton doctor` command for validating the environment (Go, git, `claude` on PATH).
+- Mouse support on the dashboard (click-to-select, click-to-focus).
+- Isolated git worktrees under `.baton/worktrees/<name>` on branches `baton/<name>`.
+- Virtual terminal bridge built on `charmbracelet/x/vt` for thread-safe rendering of agent output.
+
+[Unreleased]: https://github.com/devenjarvis/baton/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/devenjarvis/baton/releases/tag/v0.1.0
