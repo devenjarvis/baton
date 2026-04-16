@@ -40,12 +40,6 @@ type createResultMsg struct {
 	err       error
 }
 
-// splashResizeMsg is a delayed resize sent after agent creation to clear
-// Claude Code's splash text once its TUI has had time to initialize.
-type splashResizeMsg struct {
-	agentID string
-}
-
 // diffStatsMsg carries the result of an async diff stats refresh.
 type diffStatsMsg struct {
 	sessionID string
@@ -306,6 +300,20 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			a.lastKnownStatus[ag.ID] = currentStatus
 		}
+		// Detect alt-screen transitions and trigger a resize so Claude's TUI
+		// redraws cleanly (replaces the old splashResizeMsg delayed timer).
+		fixedW := a.dashboard.fixedTermWidth()
+		fixedH := a.dashboard.fixedTermHeight()
+		if fixedW > 0 && fixedH > 0 {
+			for _, item := range a.dashboard.items {
+				if item.kind != listItemAgent || item.agent == nil {
+					continue
+				}
+				if item.agent.AltScreenEntered() {
+					item.agent.Resize(fixedH, fixedW)
+				}
+			}
+		}
 		if a.errTicks > 0 {
 			a.errTicks--
 			if a.errTicks == 0 {
@@ -387,16 +395,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-		// Resize to force a clean redraw — Claude Code's initial splash output
-		// gets baked into the VT before its TUI fully initializes, and a SIGWINCH clears it.
+		// Set initial dimensions before any output arrives. The alt-screen
+		// transition detector in the tick handler will fire a follow-up resize
+		// once Claude's TUI enters alternate screen mode.
 		a.resizeSelectedForDashboard()
-		// Schedule a delayed follow-up resize: the immediate one above sets correct
-		// dimensions but arrives before Claude Code's TUI is ready. The delayed
-		// SIGWINCH hits after the TUI has initialized and triggers a clean redraw.
-		delayedResize := tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg {
-			return splashResizeMsg{agentID: msg.agentID}
-		})
-		return a, delayedResize
+		return a, nil
 
 	case diffStatsMsg:
 		a.diffRefreshInFlight = false
@@ -478,17 +481,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 
-	case splashResizeMsg:
-		// Guard: only resize if we're still on the dashboard and the agent
-		// that triggered this is still selected.
-		if a.view != ViewDashboard {
-			return a, nil
-		}
-		ag := a.dashboard.selectedAgent()
-		if ag != nil && ag.ID == msg.agentID {
-			a.resizeSelectedForDashboard()
-		}
-		return a, nil
 	}
 
 	// Route to the active view.

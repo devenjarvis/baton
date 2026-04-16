@@ -408,6 +408,18 @@ func (a *Agent) Render() string {
 	return a.terminal.Render()
 }
 
+// StableRender returns a cached render if the terminal was recently written to,
+// avoiding mid-repaint snapshots.
+func (a *Agent) StableRender() string {
+	return a.terminal.StableRender()
+}
+
+// AltScreenEntered returns true if the terminal transitioned into alternate
+// screen mode since the last call. The flag resets on each read.
+func (a *Agent) AltScreenEntered() bool {
+	return a.terminal.AltScreenEntered()
+}
+
 // RenderRegion returns a subset of terminal rows.
 func (a *Agent) RenderRegion(startRow, endRow int) string {
 	return a.terminal.RenderRegion(startRow, endRow)

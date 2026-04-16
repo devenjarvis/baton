@@ -193,7 +193,7 @@ func (d dashboardModel) View() string {
 		Height(d.contentHeight())
 	if d.panelFocus == focusTerminal || d.panelFocus == focusConfig {
 		previewStyle = lipgloss.NewStyle().
-			Width(previewWidth).
+			Width(d.fixedTermWidth()).
 			Height(d.contentHeight() - 2).
 			Border(lipgloss.NormalBorder()).
 			BorderForeground(ColorSecondary)
@@ -228,27 +228,12 @@ func (d dashboardModel) fixedTermHeight() int {
 
 // previewTermWidth returns the terminal column count for the preview panel.
 func (d dashboardModel) previewTermWidth() int {
-	listWidth := 30
-	w := d.width - listWidth - 1 // 1 for the list panel's right border
-	if d.panelFocus == focusTerminal {
-		w -= 2 // NormalBorder consumes 1 col each side
-	}
-	return w
+	return d.fixedTermWidth()
 }
 
 // previewTermHeight returns the terminal row count for the preview panel.
 func (d dashboardModel) previewTermHeight() int {
-	h := d.contentHeight() - 4 // title + session info + task info + blank line
-	// Account for PR info line if present.
-	if sess := d.selectedSession(); sess != nil {
-		if entry := d.prCache[sess.ID]; entry != nil && entry.pr != nil {
-			h-- // extra line for PR info
-		}
-	}
-	if d.panelFocus == focusTerminal {
-		h -= 2 // NormalBorder consumes 1 row top and bottom
-	}
-	return h
+	return d.fixedTermHeight()
 }
 
 func (d dashboardModel) emptyView() string {
@@ -512,7 +497,7 @@ func (d dashboardModel) renderPreview(width int) string {
 	var render string
 	if d.scrollOffset > 0 {
 		sbLines := ag.ScrollbackLines()
-		vpLines := strings.Split(ag.Render(), "\n")
+		vpLines := strings.Split(ag.StableRender(), "\n")
 		allLines := append(sbLines, vpLines...)
 
 		vpHeight := d.previewTermHeight()
@@ -526,7 +511,7 @@ func (d dashboardModel) renderPreview(width int) string {
 		}
 		render = strings.Join(allLines[start:end], "\n")
 	} else {
-		render = ag.Render()
+		render = ag.StableRender()
 	}
 
 	previewParts := []string{title, sessionInfo}

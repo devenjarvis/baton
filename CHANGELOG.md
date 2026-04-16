@@ -9,6 +9,12 @@ Every PR should update the `[Unreleased]` section with a short entry describing 
 
 ## [Unreleased]
 
+### Fixed
+
+- Startup splash text artifacts when Claude Code enters its TUI (alt-screen transition detection replaces 500ms delayed resize heuristic).
+- Mid-repaint flicker in dashboard preview (StableRender with 16ms quiescence threshold).
+- VT emulator / lipgloss container sizing mismatch causing displaced content in focusList mode.
+
 ## [0.1.0] — 2026-04-15
 
 Initial public release.
