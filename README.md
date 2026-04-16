@@ -18,11 +18,19 @@ baton doctor
 
 ## Install
 
+### Homebrew (macOS & Linux)
+
+```bash
+brew install devenjarvis/tap/baton
+```
+
+### Go
+
 ```bash
 go install github.com/devenjarvis/baton@latest
 ```
 
-Or build from source:
+### From source
 
 ```bash
 git clone https://github.com/devenjarvis/baton.git

@@ -75,24 +75,25 @@ release:
   prerelease: auto
   name_template: "v{{ .Version }}"
 
-# Homebrew publishing — wired in a follow-up PR once the tap repo exists and
-# the PAT is available as HOMEBREW_TAP_GITHUB_TOKEN in this repo's Actions
-# secrets.
-#
-# brews:
-#   - name: baton
-#     repository:
-#       owner: devenjarvis
-#       name: homebrew-tap
-#       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-#     directory: Formula
-#     homepage: https://github.com/devenjarvis/baton
-#     description: Terminal-native orchestrator for parallel Claude Code agents
-#     license: MIT
-#     skip_upload: auto
-#     test: |
-#       system "#{bin}/baton", "--version"
-#     install: |
-#       bin.install "baton"
-#     dependencies:
-#       - name: git
+# Homebrew publishing. Requires:
+#   1) A public repo at github.com/devenjarvis/homebrew-tap
+#   2) A PAT with `contents: write` on that repo, stored as the
+#      HOMEBREW_TAP_GITHUB_TOKEN secret on this repo's Actions settings.
+# skip_upload: auto keeps snapshots and pre-releases from touching the tap.
+brews:
+  - name: baton
+    repository:
+      owner: devenjarvis
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: https://github.com/devenjarvis/baton
+    description: Terminal-native orchestrator for parallel Claude Code agents
+    license: MIT
+    skip_upload: auto
+    test: |
+      system "#{bin}/baton", "--version"
+    install: |
+      bin.install "baton"
+    dependencies:
+      - name: git
