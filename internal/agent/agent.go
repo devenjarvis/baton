@@ -208,11 +208,15 @@ func buildSpawnArgs(cfg Config, worktreePath, socketPath string) ([]string, erro
 // buildHookArgs writes the per-agent hooks settings file and returns the
 // `--settings <path>` pair. Returns an empty slice when hooks are disabled
 // (socketPath empty, or agent program is not claude).
+//
+// The file lives at `<worktreePath>/.baton/hooks.json` so it sits inside the
+// already-gitignored `.baton/` tree and doesn't show up as an untracked file
+// in the user's worktree `git status`.
 func buildHookArgs(cfg Config, worktreePath, socketPath string) ([]string, error) {
 	if socketPath == "" || !supportsHooks(cfg) {
 		return nil, nil
 	}
-	hookPath := filepath.Join(worktreePath, ".baton-hooks.json")
+	hookPath := filepath.Join(worktreePath, ".baton", "hooks.json")
 	if err := hook.WriteHooksFile(hookPath); err != nil {
 		return nil, fmt.Errorf("writing hooks settings: %w", err)
 	}

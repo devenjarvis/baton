@@ -341,19 +341,18 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-		// Chime on Active->Idle transitions driven by Claude's Stop hook.
-		// Fire once per turn; MarkChimedForTurn is reset when the user presses
-		// Enter (see Agent.SendKey).
-		//
-		// We record the new status immediately so two event-driven transitions
-		// in the same tick window (faster than the 100ms tickMsg cadence) stay
-		// self-consistent even when the tick handler hasn't caught up yet.
+		// Chime when Claude's Stop hook arrives (EventStatusChanged with Idle).
+		// Gated only by ChimedForTurn + HasReceivedInput: ChimedForTurn is reset
+		// on Enter (Agent.SendKey), so once-per-turn semantics are enforced there
+		// rather than by re-reading lastKnownStatus. This avoids a race with the
+		// 100ms tickMsg: a tick landing between the manager mutating status and
+		// the TUI dequeuing this event would otherwise clobber the cached "prev
+		// was Active" signal and silently suppress the chime.
 		if msg.event.Type == agent.EventStatusChanged {
 			if msg.event.Status == agent.StatusIdle {
-				prev, hadPrev := a.lastKnownStatus[msg.event.AgentID]
 				if mgr := a.managers[msg.repoPath]; mgr != nil {
 					if ag := mgr.Get(msg.event.AgentID); ag != nil && !ag.IsShell {
-						if hadPrev && prev == agent.StatusActive && ag.HasReceivedInput() && !ag.ChimedForTurn() {
+						if ag.HasReceivedInput() && !ag.ChimedForTurn() {
 							resolved := a.resolvedCache[msg.repoPath]
 							if resolved.AudioEnabled && a.audioPlayer != nil {
 								a.audioPlayer.Play()
