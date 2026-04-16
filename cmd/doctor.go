@@ -38,11 +38,29 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	}
 
 	// Check claude
-	if path, err := exec.LookPath("claude"); err != nil {
+	claudePath, err := exec.LookPath("claude")
+	if err != nil {
 		fmt.Println("  [FAIL] claude: not found")
 		allOk = false
 	} else {
-		fmt.Printf("  [OK]   claude: %s\n", path)
+		fmt.Printf("  [OK]   claude: %s\n", claudePath)
+
+		// Verify claude supports --settings, which baton uses to inject the
+		// hooks that drive status detection and chimes.
+		if supportsSettingsFlag(claudePath) {
+			fmt.Println("  [OK]   claude --settings: supported")
+		} else {
+			fmt.Println("  [FAIL] claude --settings: not supported (required for hook integration)")
+			allOk = false
+		}
+	}
+
+	// Baton's own binary path — hooks commands reference it.
+	if exe, err := os.Executable(); err != nil {
+		fmt.Printf("  [FAIL] baton binary: unresolved (%v)\n", err)
+		allOk = false
+	} else {
+		fmt.Printf("  [OK]   baton binary: %s\n", exe)
 	}
 
 	// Check git repo
@@ -97,4 +115,15 @@ func parseGitVersion(version string) (int, int) {
 func isGitRepo() bool {
 	err := exec.Command("git", "rev-parse", "--is-inside-work-tree").Run()
 	return err == nil
+}
+
+// supportsSettingsFlag returns true if `claude --help` advertises the
+// --settings flag. We only spawn the real binary with --help so this is safe
+// to run from doctor in any environment.
+func supportsSettingsFlag(claudePath string) bool {
+	out, err := exec.Command(claudePath, "--help").CombinedOutput()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(out), "--settings")
 }

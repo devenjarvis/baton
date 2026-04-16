@@ -9,7 +9,18 @@ import (
 
 	xvt "github.com/charmbracelet/x/vt"
 	"github.com/devenjarvis/baton/internal/config"
+	"github.com/devenjarvis/baton/internal/hook"
 )
+
+// hookEvent is a test helper that builds a hook.Event for a given CLI-name event.
+func hookEvent(kind string) hook.Event {
+	return hook.Event{Kind: hook.Kind(kind)}
+}
+
+// hookEventWithSessionID builds a SessionStart event carrying a session ID.
+func hookEventWithSessionID(kind, sessionID string) hook.Event {
+	return hook.Event{Kind: hook.Kind(kind), SessionID: sessionID}
+}
 
 // setupTestRepo creates a temporary git repo with an initial commit.
 func setupTestRepo(t *testing.T) string {
@@ -222,14 +233,14 @@ func TestIdleSuppressedWhileTyping(t *testing.T) {
 	}
 }
 
-func TestIdleTransitionWithoutInput(t *testing.T) {
+func TestIdleDrivenByStopHook(t *testing.T) {
 	repo := setupTestRepo(t)
 	mgr := NewManager(repo, defaultTestSettings())
 	defer mgr.Shutdown()
 
-	cfg := Config{Name: "test-idle-no-input", Task: "test", Rows: 24, Cols: 80}
+	cfg := Config{Name: "test-idle-via-hook", Task: "test", Rows: 24, Cols: 80}
 	a, err := mgr.CreateWithCommand(cfg, func(name string) *exec.Cmd {
-		// Produce output then go quiet — no user input at all.
+		// Produce output then stay alive. Without a hook, Active must persist.
 		return exec.Command("bash", "-c", "echo ready; sleep 60")
 	})
 	if err != nil {
@@ -242,20 +253,50 @@ func TestIdleTransitionWithoutInput(t *testing.T) {
 		t.Fatalf("expected Active after output, got %s", s)
 	}
 
-	// Wait past idle timeout (3s) + statusLoop tick (500ms) margin.
+	// With no hook, Active MUST NOT flip to Idle on its own.
 	time.Sleep(4 * time.Second)
+	if s := a.Status(); s != StatusActive {
+		t.Errorf("expected Active without hook event, got %s", s)
+	}
 
+	// Simulated Stop hook flips the agent to Idle.
+	a.OnHookEvent(hookEvent("stop"))
 	if s := a.Status(); s != StatusIdle {
-		t.Errorf("expected Idle after timeout with no input, got %s", s)
+		t.Errorf("expected Idle after Stop hook, got %s", s)
 	}
 }
 
-func TestIdleWhileComposingUsesLongerTimeout(t *testing.T) {
+func TestSessionStartHookCapturesSessionID(t *testing.T) {
 	repo := setupTestRepo(t)
 	mgr := NewManager(repo, defaultTestSettings())
 	defer mgr.Shutdown()
 
-	cfg := Config{Name: "test-composing-idle", Task: "test", Rows: 24, Cols: 80}
+	cfg := Config{Name: "test-session-start", Task: "test", Rows: 24, Cols: 80}
+	a, err := mgr.CreateWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 2")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	changed := a.OnHookEvent(hookEventWithSessionID("session-start", "uuid-abc-123"))
+	if !changed {
+		t.Error("expected status change on SessionStart from Starting")
+	}
+	if s := a.Status(); s != StatusActive {
+		t.Errorf("expected Active after SessionStart, got %s", s)
+	}
+	if got := a.ClaudeSessionID(); got != "uuid-abc-123" {
+		t.Errorf("expected session ID uuid-abc-123, got %q", got)
+	}
+}
+
+func TestStopHookClearsComposing(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	cfg := Config{Name: "test-stop-hook", Task: "test", Rows: 24, Cols: 80}
 	a, err := mgr.CreateWithCommand(cfg, func(name string) *exec.Cmd {
 		return exec.Command("bash", "-c", "echo ready; cat")
 	})
@@ -263,53 +304,23 @@ func TestIdleWhileComposingUsesLongerTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Wait for initial output to become Active.
-	time.Sleep(500 * time.Millisecond)
-	if s := a.Status(); s != StatusActive {
-		t.Fatalf("expected Active after output, got %s", s)
-	}
-
-	// Type some text (sets composing = true), then stop typing.
+	time.Sleep(300 * time.Millisecond)
 	a.SendText("hello")
-
-	// Wait 5s — past the normal 3s idle timeout but within composing 30s timeout.
-	time.Sleep(5 * time.Second)
-
-	if s := a.Status(); s != StatusActive {
-		t.Errorf("expected Active while composing (5s pause), got %s", s)
+	a.mu.RLock()
+	if !a.composing {
+		a.mu.RUnlock()
+		t.Fatal("expected composing true before Stop hook")
 	}
-}
+	a.mu.RUnlock()
 
-func TestIdleAfterEnterUsesNormalTimeout(t *testing.T) {
-	repo := setupTestRepo(t)
-	mgr := NewManager(repo, defaultTestSettings())
-	defer mgr.Shutdown()
+	a.OnHookEvent(hookEvent("stop"))
 
-	cfg := Config{Name: "test-enter-idle", Task: "test", Rows: 24, Cols: 80}
-	a, err := mgr.CreateWithCommand(cfg, func(name string) *exec.Cmd {
-		return exec.Command("bash", "-c", "echo ready; cat")
-	})
-	if err != nil {
-		t.Fatal(err)
+	a.mu.RLock()
+	if a.composing {
+		a.mu.RUnlock()
+		t.Error("expected composing cleared after Stop hook")
 	}
-
-	// Wait for initial output.
-	time.Sleep(500 * time.Millisecond)
-	if s := a.Status(); s != StatusActive {
-		t.Fatalf("expected Active after output, got %s", s)
-	}
-
-	// Type text then press Enter (clears composing).
-	a.SendText("hello")
-	a.SendKey(xvt.KeyPressEvent{Code: xvt.KeyEnter})
-
-	// Wait past normal 3s idle timeout + tick margin.
-	// cat echoes input back, resetting lastOutput, so allow extra margin.
-	time.Sleep(5 * time.Second)
-
-	if s := a.Status(); s != StatusIdle {
-		t.Errorf("expected Idle after Enter + 4s, got %s", s)
-	}
+	a.mu.RUnlock()
 }
 
 func TestComposingClearedOnEnter(t *testing.T) {
@@ -472,38 +483,6 @@ func TestKillAfterNaturalExitDoesNotPanic(t *testing.T) {
 
 	// Kill on an already-exited agent must not panic.
 	a.Kill()
-}
-
-func TestVisualStableForTracksHashChanges(t *testing.T) {
-	repo := setupTestRepo(t)
-	mgr := NewManager(repo, defaultTestSettings())
-	defer mgr.Shutdown()
-
-	cfg := Config{Name: "test-visual-stable", Task: "test", Rows: 24, Cols: 80}
-	a, err := mgr.CreateWithCommand(cfg, func(name string) *exec.Cmd {
-		// Produce one line of output, then go quiet.
-		return exec.Command("bash", "-c", "echo ready; sleep 60")
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Wait for the screen to stabilize after initial output.
-	// statusLoop ticks every 500ms; give it enough time for output + one sample.
-	time.Sleep(1500 * time.Millisecond)
-
-	stableA := a.VisualStableFor()
-	if stableA == 0 {
-		t.Fatal("expected VisualStableFor to be non-zero after first sample")
-	}
-
-	// Wait another tick — with no new output, VisualStableFor must grow.
-	time.Sleep(600 * time.Millisecond)
-
-	stableB := a.VisualStableFor()
-	if stableB <= stableA {
-		t.Errorf("expected VisualStableFor to grow while screen unchanged; was %v, now %v", stableA, stableB)
-	}
 }
 
 func TestChimedForTurnResetsOnEnterOnly(t *testing.T) {

@@ -1,9 +1,11 @@
 package agent
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/devenjarvis/baton/internal/config"
 	"github.com/devenjarvis/baton/internal/git"
+	"github.com/devenjarvis/baton/internal/hook"
 	"github.com/devenjarvis/baton/internal/state"
 )
 
@@ -46,17 +49,105 @@ type Manager struct {
 	events   chan Event
 	done     chan struct{}
 	watchers sync.WaitGroup
+
+	hookServer     *hook.Server
+	hookSocketPath string
+	hookDispatcher sync.WaitGroup
 }
 
 // NewManager creates a new agent manager for the given repo.
+//
+// The manager owns a hook.Server listening on <repoPath>/.baton/hook.sock that
+// routes Claude Code hook events to agents by BATON_AGENT_ID. If the socket
+// fails to start (e.g. filesystem permissions), the manager logs to stderr
+// and continues with hooks disabled; spawned agents will then never transition
+// out of Active.
 func NewManager(repoPath string, settings config.ResolvedSettings) *Manager {
-	return &Manager{
+	m := &Manager{
 		repoPath: repoPath,
 		settings: settings,
 		sessions: make(map[string]*Session),
 		events:   make(chan Event, 64),
 		done:     make(chan struct{}),
 	}
+
+	batonDir := filepath.Join(repoPath, ".baton")
+	if err := os.MkdirAll(batonDir, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "baton: creating %s: %v (hooks disabled)\n", batonDir, err)
+		return m
+	}
+	socketPath := hookSocketPath(repoPath)
+	srv, err := hook.NewServer(socketPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "baton: starting hook server on %s: %v (hooks disabled)\n", socketPath, err)
+		return m
+	}
+	m.hookServer = srv
+	m.hookSocketPath = socketPath
+
+	m.hookDispatcher.Add(1)
+	go m.dispatchHookEvents()
+
+	return m
+}
+
+// HookSocketPath returns the unix socket path the manager's hook server is
+// listening on, or "" if the server failed to start.
+func (m *Manager) HookSocketPath() string {
+	return m.hookSocketPath
+}
+
+// hookSocketPath returns the unix socket path for a given repoPath.
+//
+// Preferred layout: <repoPath>/.baton/hook.sock — easy to inspect and cleaned
+// up with the rest of baton's per-repo state. macOS limits unix socket paths
+// to 104 bytes, so when the preferred path would exceed a safe threshold we
+// fall back to a short hashed name under os.TempDir(). Tests exercise the
+// fallback path via deeply nested temp directories.
+func hookSocketPath(repoPath string) string {
+	preferred := filepath.Join(repoPath, ".baton", "hook.sock")
+	// 104 is the darwin sun_path limit; leave headroom for the trailing NUL
+	// and any quirks. 100 is comfortably below.
+	if len(preferred) < 100 {
+		return preferred
+	}
+	h := sha256.Sum256([]byte(repoPath))
+	return filepath.Join(os.TempDir(), fmt.Sprintf("baton-%x.sock", h[:8]))
+}
+
+// dispatchHookEvents reads hook events from the server and routes each to the
+// agent named by AgentID. Unknown agent IDs are logged and dropped.
+func (m *Manager) dispatchHookEvents() {
+	defer m.hookDispatcher.Done()
+	for e := range m.hookServer.Events() {
+		a, sessID := m.findAgent(e.AgentID)
+		if a == nil {
+			// This can happen if an agent has already been killed but Claude's
+			// final Stop/SessionEnd hook is still in flight. Drop silently.
+			continue
+		}
+		if changed := a.OnHookEvent(e); changed {
+			m.emit(Event{
+				Type:      EventStatusChanged,
+				AgentID:   a.ID,
+				SessionID: sessID,
+				Status:    a.Status(),
+			})
+		}
+	}
+}
+
+// findAgent locates an agent across all sessions and returns it with the
+// containing session ID.
+func (m *Manager) findAgent(agentID string) (*Agent, string) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, s := range m.sessions {
+		if a := s.GetAgent(agentID); a != nil {
+			return a, s.ID
+		}
+	}
+	return nil, ""
 }
 
 // UpdateSettings replaces the manager's resolved settings.
@@ -214,6 +305,7 @@ func (m *Manager) createSessionOnBranchWorktree(branch, baseBranch string, cfg C
 	}
 
 	sess := newSession(id, name, wt)
+	sess.hookSocketPath = m.hookSocketPath
 	// ownsBranch stays false — we didn't create this branch.
 
 	m.mu.Lock()
@@ -287,6 +379,7 @@ func (m *Manager) createSessionWorktree(cfg Config) (*Session, error) {
 	}
 
 	sess := newSession(id, name, wt)
+	sess.hookSocketPath = m.hookSocketPath
 	sess.ownsBranch = true
 
 	m.mu.Lock()
@@ -528,12 +621,24 @@ func (m *Manager) Shutdown() {
 	wg.Wait()
 
 	m.watchers.Wait()
+	m.stopHookServer()
 
 	m.mu.Lock()
 	m.sessions = make(map[string]*Session)
 	m.mu.Unlock()
 
 	close(m.events)
+}
+
+// stopHookServer closes the hook server and waits for the dispatcher goroutine.
+// Safe to call multiple times; no-op if the server never started.
+func (m *Manager) stopHookServer() {
+	if m.hookServer == nil {
+		return
+	}
+	_ = m.hookServer.Close()
+	m.hookDispatcher.Wait()
+	m.hookServer = nil
 }
 
 // AgentCount returns the total number of agents across all sessions.
@@ -601,6 +706,7 @@ func (m *Manager) Detach() *state.BatonState {
 	wg.Wait()
 
 	m.watchers.Wait()
+	m.stopHookServer()
 
 	m.mu.Lock()
 	m.sessions = make(map[string]*Session)
@@ -636,6 +742,7 @@ func (m *Manager) ResumeSession(ss state.SessionState, cfg Config) error {
 	}
 
 	sess := newSession(ss.ID, ss.Name, wt)
+	sess.hookSocketPath = m.hookSocketPath
 	sess.ownsBranch = ss.OwnsBranch
 	if ss.DisplayName != "" && ss.DisplayName != ss.Name {
 		sess.SetDisplayName(ss.DisplayName)

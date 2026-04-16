@@ -289,7 +289,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		a.refreshAgentList()
-		// Poll for Claude session names and detect Active->Idle transitions.
+		// Detect Active->Idle transitions for diff-stats refresh. Chime
+		// notifications are fired in the EventStatusChanged handler below,
+		// which reacts the instant Claude's Stop hook arrives.
 		idleTransition := false
 		for _, item := range a.dashboard.items {
 			if item.kind != listItemAgent || item.agent == nil {
@@ -297,42 +299,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			ag := item.agent
 			currentStatus := ag.Status()
-
-			// Check for Active->Idle transition (preserves downstream side
-			// effects like diff-stats refresh). The chime trigger below uses
-			// a separate frame-stability signal rather than the transition.
 			if prev, ok := a.lastKnownStatus[ag.ID]; ok {
-				if prev == agent.StatusActive && currentStatus == agent.StatusIdle && ag.HasReceivedInput() && !ag.IsShell {
+				if prev == agent.StatusActive && currentStatus == agent.StatusIdle && !ag.IsShell {
 					idleTransition = true
 				}
 			}
 			a.lastKnownStatus[ag.ID] = currentStatus
-
-			// Chime trigger: fire once per turn when the agent is truly
-			// awaiting input. Primary signal is frame stability (screen
-			// unchanged for VisualStabilityWindow); fallback is prolonged
-			// silence (no PTY output for StuckFallbackTimeout).
-			if !ag.IsShell && ag.HasReceivedInput() && !ag.ChimedForTurn() &&
-				(currentStatus == agent.StatusActive || currentStatus == agent.StatusIdle) &&
-				(ag.VisualStableFor() >= agent.VisualStabilityWindow ||
-					ag.TimeSinceOutput() >= agent.StuckFallbackTimeout) {
-				resolved := a.resolvedCache[item.repoPath]
-				if resolved.AudioEnabled && a.audioPlayer != nil {
-					a.audioPlayer.Play()
-					ag.MarkChimedForTurn()
-				}
-			}
-
-			// Poll Claude session file for auto-generated name.
-			if !ag.IsShell && !ag.HasClaudeName() {
-				if name := ag.PollClaudeSessionName(); name != "" {
-					ag.SetDisplayName(name)
-					ag.SetClaudeName(true)
-					if item.session != nil && !item.session.HasDisplayName() {
-						item.session.SetDisplayName(name)
-					}
-				}
-			}
 		}
 		if a.errTicks > 0 {
 			a.errTicks--
@@ -368,6 +340,30 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					delete(a.lastKnownStatus, id)
 				}
 			}
+		}
+		// Chime on Active->Idle transitions driven by Claude's Stop hook.
+		// Fire once per turn; MarkChimedForTurn is reset when the user presses
+		// Enter (see Agent.SendKey).
+		//
+		// We record the new status immediately so two event-driven transitions
+		// in the same tick window (faster than the 100ms tickMsg cadence) stay
+		// self-consistent even when the tick handler hasn't caught up yet.
+		if msg.event.Type == agent.EventStatusChanged {
+			if msg.event.Status == agent.StatusIdle {
+				prev, hadPrev := a.lastKnownStatus[msg.event.AgentID]
+				if mgr := a.managers[msg.repoPath]; mgr != nil {
+					if ag := mgr.Get(msg.event.AgentID); ag != nil && !ag.IsShell {
+						if hadPrev && prev == agent.StatusActive && ag.HasReceivedInput() && !ag.ChimedForTurn() {
+							resolved := a.resolvedCache[msg.repoPath]
+							if resolved.AudioEnabled && a.audioPlayer != nil {
+								a.audioPlayer.Play()
+								ag.MarkChimedForTurn()
+							}
+						}
+					}
+				}
+			}
+			a.lastKnownStatus[msg.event.AgentID] = msg.event.Status
 		}
 		// Refresh list on any agent event — all repos are visible in the dashboard.
 		a.refreshAgentList()

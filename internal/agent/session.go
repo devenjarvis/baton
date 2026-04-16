@@ -17,11 +17,12 @@ type Session struct {
 	Worktree  *git.WorktreeInfo
 	CreatedAt time.Time
 
-	mu           sync.RWMutex
-	agents       map[string]*Agent
-	nextAgentNum int
-	displayName  string
-	ownsBranch   bool // true if this session created the branch (cleanup should delete it)
+	mu             sync.RWMutex
+	agents         map[string]*Agent
+	nextAgentNum   int
+	displayName    string
+	ownsBranch     bool   // true if this session created the branch (cleanup should delete it)
+	hookSocketPath string // absolute path to the manager's hook socket ("" disables hooks)
 }
 
 // newSession creates a session with the given worktree.
@@ -67,9 +68,10 @@ func (s *Session) AddAgentDefault(cfg Config) (*Agent, error) {
 	s.nextAgentNum++
 	num := s.nextAgentNum
 	id := fmt.Sprintf("%s-agent-%d", s.ID, num)
+	socketPath := s.hookSocketPath
 	s.mu.Unlock()
 
-	a, err := newAgent(id, cfg, s.Worktree.Path)
+	a, err := newAgent(id, cfg, s.Worktree.Path, socketPath)
 	if err != nil {
 		return nil, err
 	}
@@ -90,9 +92,10 @@ func (s *Session) AddAgentResumed(cfg Config, claudeSessionID string) (*Agent, e
 	s.nextAgentNum++
 	num := s.nextAgentNum
 	id := fmt.Sprintf("%s-agent-%d", s.ID, num)
+	socketPath := s.hookSocketPath
 	s.mu.Unlock()
 
-	a, err := newResumedAgent(id, cfg, s.Worktree.Path, claudeSessionID)
+	a, err := newResumedAgent(id, cfg, s.Worktree.Path, claudeSessionID, socketPath)
 	if err != nil {
 		return nil, err
 	}
