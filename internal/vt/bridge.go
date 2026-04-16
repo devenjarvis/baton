@@ -9,6 +9,8 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	xvt "github.com/charmbracelet/x/vt"
 )
@@ -35,6 +37,24 @@ type Terminal struct {
 	// before writing a newline, then capturing the top line before it's lost.
 	history   []string
 	historyMu sync.RWMutex
+
+	// lastWriteNano is the UnixNano timestamp of the last Write() completion.
+	// Atomic because Write() (agent.readLoop goroutine) and StableRender()
+	// (Bubble Tea main goroutine) access it from different goroutines.
+	lastWriteNano atomic.Int64
+
+	// stableRender caches the last Render() snapshot for StableRender().
+	// Only accessed from StableRender() on the Bubble Tea main goroutine.
+	stableRender string
+
+	// wasAltScreen tracks the previous alt-screen state for transition detection.
+	// Only accessed from Write() (agent.readLoop goroutine), no mutex needed.
+	wasAltScreen bool
+
+	// altScreenEntered is set to true on a false->true alt-screen transition.
+	// Written by Write() (agent.readLoop), read by AltScreenEntered() (Bubble Tea).
+	// Protected by historyMu.
+	altScreenEntered bool
 }
 
 // New creates a new Terminal with the given dimensions.
@@ -120,13 +140,49 @@ func (t *Terminal) Write(p []byte) (int, error) {
 		if err != nil {
 			return written, err
 		}
+
+		// Detect false->true alt-screen transition.
+		isAlt := t.emu.IsAltScreen()
+		if isAlt && !t.wasAltScreen {
+			t.historyMu.Lock()
+			t.altScreenEntered = true
+			t.history = nil
+			t.historyMu.Unlock()
+		}
+		t.wasAltScreen = isAlt
 	}
+	t.lastWriteNano.Store(time.Now().UnixNano())
 	return written, nil
 }
 
 // Render returns the full screen as an ANSI-encoded string.
 func (t *Terminal) Render() string {
 	return t.emu.Render()
+}
+
+// StableRender returns a cached render if the terminal was written to within the
+// last 16ms (mid-repaint), otherwise snapshots a fresh Render(). This avoids
+// showing torn/partial frames during rapid emulator updates.
+// Only called from Bubble Tea's main goroutine (View cycle).
+func (t *Terminal) StableRender() string {
+	lastWrite := t.lastWriteNano.Load()
+	if lastWrite > 0 && time.Since(time.Unix(0, lastWrite)) < 16*time.Millisecond {
+		return t.stableRender
+	}
+	t.stableRender = t.emu.Render()
+	return t.stableRender
+}
+
+// AltScreenEntered returns true if a false->true alt-screen transition has been
+// detected since the last call. The flag is reset on each read. This allows the
+// TUI layer to detect when an agent enters alt-screen mode (e.g., Claude Code
+// starting its interactive UI).
+func (t *Terminal) AltScreenEntered() bool {
+	t.historyMu.Lock()
+	entered := t.altScreenEntered
+	t.altScreenEntered = false
+	t.historyMu.Unlock()
+	return entered
 }
 
 // ScreenHash returns a deterministic hash of the current visible screen content.

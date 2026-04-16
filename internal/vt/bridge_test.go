@@ -206,36 +206,37 @@ func TestScrollbackLinesAltScreen(t *testing.T) {
 }
 
 func TestScrollbackLinesHistoryPreferred(t *testing.T) {
-	// Verify that our history buffer captures scrollback from both main-screen
-	// and alternate-screen mode. The x/vt emulator's built-in Scrollback() only
-	// covers the main screen, so alt-screen history would otherwise be lost.
+	// Verify that entering alt screen clears pre-existing main-screen history
+	// (startup splash is garbage) and that subsequent alt-screen scrollback is
+	// still captured.
 	term := New(80, 2)
 	defer term.Close()
 
-	// Scroll in main screen to populate VT scrollback AND our history buffer.
+	// Scroll in main screen to populate history.
 	_, _ = term.Write([]byte("MainFirst\r\nMainSecond\r\nMainThird"))
-
-	// Enter alt screen and scroll to populate history with alt-screen content.
-	_, _ = term.Write([]byte("\x1b[?1049h"))
-	_, _ = term.Write([]byte("AltFirst\r\nAltSecond\r\nAltThird"))
-
 	lines := term.ScrollbackLines()
 	if len(lines) == 0 {
-		t.Fatal("expected non-empty scrollback")
+		t.Fatal("expected non-empty scrollback before alt-screen transition")
 	}
-	// Both main-screen and alt-screen lines should appear in history.
-	hasMain := false
+
+	// Enter alt screen — history should be cleared (splash scrollback is garbage).
+	_, _ = term.Write([]byte("\x1b[?1049h"))
+	lines = term.ScrollbackLines()
+	if len(lines) != 0 {
+		t.Errorf("expected empty scrollback after alt-screen transition, got %d lines", len(lines))
+	}
+
+	// Scroll in alt screen — new scrollback should be captured.
+	_, _ = term.Write([]byte("AltFirst\r\nAltSecond\r\nAltThird"))
+	lines = term.ScrollbackLines()
+	if len(lines) == 0 {
+		t.Fatal("expected non-empty scrollback after scrolling in alt screen")
+	}
 	hasAlt := false
 	for _, line := range lines {
-		if strings.Contains(line, "MainFirst") {
-			hasMain = true
-		}
 		if strings.Contains(line, "AltFirst") {
 			hasAlt = true
 		}
-	}
-	if !hasMain {
-		t.Errorf("expected 'MainFirst' in scrollback history, got: %v", lines)
 	}
 	if !hasAlt {
 		t.Errorf("expected 'AltFirst' in scrollback history, got: %v", lines)
@@ -313,6 +314,111 @@ func TestScreenHashChangesOnResize(t *testing.T) {
 
 	if before == after {
 		t.Errorf("expected hash to change after resize (different render domain), both are %d", before)
+	}
+}
+
+func TestStableRenderQuiescent(t *testing.T) {
+	term := New(80, 24)
+	defer term.Close()
+
+	_, _ = term.Write([]byte("Hello, world!"))
+
+	// Wait for writes to settle (well past the 16ms threshold).
+	time.Sleep(20 * time.Millisecond)
+
+	got := term.StableRender()
+	want := term.Render()
+	if got != want {
+		t.Errorf("StableRender() after quiescence should match Render()\ngot:  %q\nwant: %q", got, want)
+	}
+}
+
+func TestStableRenderDuringActiveWrites(t *testing.T) {
+	term := New(80, 24)
+	defer term.Close()
+
+	// Write initial content and let it settle.
+	_, _ = term.Write([]byte("initial"))
+	time.Sleep(20 * time.Millisecond)
+
+	// Prime the cache.
+	cached := term.StableRender()
+	if !strings.Contains(cached, "initial") {
+		t.Fatalf("expected StableRender to contain 'initial', got %q", cached)
+	}
+
+	// Write new content — should be within 16ms window.
+	_, _ = term.Write([]byte(" updated"))
+
+	// StableRender should return the cached version (before "updated").
+	got := term.StableRender()
+	if got != cached {
+		t.Errorf("StableRender() during active writes should return cached value\ngot:  %q\nwant: %q", got, cached)
+	}
+
+	// After settling, StableRender should reflect the new content.
+	time.Sleep(20 * time.Millisecond)
+	settled := term.StableRender()
+	if !strings.Contains(settled, "updated") {
+		t.Errorf("StableRender() after settling should contain 'updated', got %q", settled)
+	}
+}
+
+func TestAltScreenEnteredTransition(t *testing.T) {
+	term := New(80, 24)
+	defer term.Close()
+
+	// Before any alt-screen transition, flag should be false.
+	if term.AltScreenEntered() {
+		t.Error("AltScreenEntered() should be false before any alt-screen transition")
+	}
+
+	// Enter alt screen.
+	_, _ = term.Write([]byte("\x1b[?1049h"))
+
+	// Flag should now be true.
+	if !term.AltScreenEntered() {
+		t.Error("AltScreenEntered() should be true after entering alt screen")
+	}
+
+	// Second call should return false (flag is reset on read).
+	if term.AltScreenEntered() {
+		t.Error("AltScreenEntered() should be false on second call (resets after read)")
+	}
+}
+
+func TestAltScreenEnteredClearsHistory(t *testing.T) {
+	term := New(80, 2)
+	defer term.Close()
+
+	// Scroll in main screen to populate history.
+	_, _ = term.Write([]byte("First\r\nSecond\r\nThird"))
+	lines := term.ScrollbackLines()
+	if len(lines) == 0 {
+		t.Fatal("expected non-empty scrollback before alt-screen transition")
+	}
+
+	// Enter alt screen — history should be cleared.
+	_, _ = term.Write([]byte("\x1b[?1049h"))
+	lines = term.ScrollbackLines()
+	if len(lines) != 0 {
+		t.Errorf("expected empty scrollback after alt-screen transition, got %d lines: %v", len(lines), lines)
+	}
+}
+
+func TestAltScreenEnteredNoSpuriousTransition(t *testing.T) {
+	term := New(80, 24)
+	defer term.Close()
+
+	// Enter alt screen.
+	_, _ = term.Write([]byte("\x1b[?1049h"))
+	// Consume the flag.
+	term.AltScreenEntered()
+
+	// Write more content while already in alt screen — no new transition.
+	_, _ = term.Write([]byte("more content in alt screen"))
+	if term.AltScreenEntered() {
+		t.Error("AltScreenEntered() should be false when already in alt screen (no new transition)")
 	}
 }
 
