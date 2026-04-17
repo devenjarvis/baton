@@ -47,6 +47,10 @@ func newGlobalConfigModel(gs *config.GlobalSettings, width, height int) globalCo
 	if gs.AgentProgram != nil {
 		agentProgram = *gs.AgentProgram
 	}
+	ideCommand := ""
+	if gs.IDECommand != nil {
+		ideCommand = *gs.IDECommand
+	}
 
 	inputWidth := 30
 
@@ -56,6 +60,7 @@ func newGlobalConfigModel(gs *config.GlobalSettings, width, height int) globalCo
 	fields = addTextInput(fields, "Default Branch", defaultBranch, "auto-detect", inputWidth)
 	fields = addTextInput(fields, "Branch Prefix", branchPrefix, config.DefaultBranchPrefix, inputWidth)
 	fields = addTextInput(fields, "Agent Program", agentProgram, config.DefaultAgentProgram, inputWidth)
+	fields = addTextInput(fields, "IDE Command", ideCommand, "e.g. code -n", inputWidth)
 
 	return globalConfigModel{
 		form:   newConfigForm(fields, width),
@@ -118,6 +123,9 @@ func (m globalConfigModel) extractSettings() *config.GlobalSettings {
 	}
 	if v := m.form.textValue("Agent Program"); v != "" {
 		s.AgentProgram = &v
+	}
+	if v := m.form.textValue("IDE Command"); v != "" {
+		s.IDECommand = &v
 	}
 
 	return s
