@@ -702,6 +702,30 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return createResultMsg{sessionID: sessionID, agentID: ag.ID}
 			}
 
+		case "e":
+			// Open the selected session's worktree in the configured IDE.
+			sess := a.dashboard.selectedSession()
+			if sess == nil {
+				a.setError("No session selected")
+				return a, nil
+			}
+			repoPath := a.dashboard.selectedRepoPath()
+			ideCmd := strings.TrimSpace(a.resolvedCache[repoPath].IDECommand)
+			if ideCmd == "" {
+				a.setError("No IDE configured (set 'IDE Command' in settings)")
+				return a, nil
+			}
+			parts := strings.Fields(ideCmd)
+			worktreePath := sess.Worktree.Path
+			exe := parts[0]
+			args := append(parts[1:], worktreePath)
+			go func() {
+				cmd := exec.Command(exe, args...)
+				cmd.Dir = worktreePath
+				_ = cmd.Start()
+			}()
+			return a, nil
+
 		case "a":
 			// Open file browser to add a new repo.
 			a.repoBrowser = newFileBrowserModel()
@@ -1268,6 +1292,10 @@ func (a *App) initRepoConfigForm(repoPath string) {
 	if rs.AgentProgram != nil {
 		agentProgram = *rs.AgentProgram
 	}
+	ideCommand := ""
+	if rs.IDECommand != nil {
+		ideCommand = *rs.IDECommand
+	}
 	worktreeDir := ""
 	if rs.WorktreeDir != nil {
 		worktreeDir = *rs.WorktreeDir
@@ -1279,6 +1307,7 @@ func (a *App) initRepoConfigForm(repoPath string) {
 	fields = addTextInput(fields, "Default Branch", defaultBranch, "auto-detect", inputWidth)
 	fields = addTextInput(fields, "Branch Prefix", branchPrefix, config.DefaultBranchPrefix, inputWidth)
 	fields = addTextInput(fields, "Agent Program", agentProgram, config.DefaultAgentProgram, inputWidth)
+	fields = addTextInput(fields, "IDE Command", ideCommand, "e.g. code -n", inputWidth)
 	fields = addTextInput(fields, "Worktree Directory", worktreeDir, config.DefaultWorktreeDir, inputWidth)
 
 	form := newConfigForm(fields, a.dashboard.previewTermWidth())
@@ -1306,6 +1335,9 @@ func (a App) extractRepoSettings() *config.RepoSettings {
 	}
 	if v := form.textValue("Agent Program"); v != "" {
 		s.AgentProgram = &v
+	}
+	if v := form.textValue("IDE Command"); v != "" {
+		s.IDECommand = &v
 	}
 	if v := form.textValue("Worktree Directory"); v != "" {
 		s.WorktreeDir = &v

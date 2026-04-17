@@ -25,6 +25,7 @@ type GlobalSettings struct {
 	DefaultBranch     *string `json:"default_branch,omitempty"`
 	BranchPrefix      *string `json:"branch_prefix,omitempty"`
 	AgentProgram      *string `json:"agent_program,omitempty"`
+	IDECommand        *string `json:"ide_command,omitempty"`
 }
 
 // RepoSettings holds per-repo overrides stored at <repo>/.baton/config.json.
@@ -34,6 +35,7 @@ type RepoSettings struct {
 	DefaultBranch     *string `json:"default_branch,omitempty"`
 	BranchPrefix      *string `json:"branch_prefix,omitempty"`
 	AgentProgram      *string `json:"agent_program,omitempty"`
+	IDECommand        *string `json:"ide_command,omitempty"`
 	WorktreeDir       *string `json:"worktree_dir,omitempty"`
 }
 
@@ -45,6 +47,7 @@ type ResolvedSettings struct {
 	DefaultBranch     string // "" means auto-detect
 	BranchPrefix      string
 	AgentProgram      string
+	IDECommand        string
 	WorktreeDir       string
 }
 
@@ -75,6 +78,9 @@ func Resolve(global *GlobalSettings, repo *RepoSettings) ResolvedSettings {
 		if global.AgentProgram != nil {
 			r.AgentProgram = *global.AgentProgram
 		}
+		if global.IDECommand != nil {
+			r.IDECommand = *global.IDECommand
+		}
 	}
 
 	if repo != nil {
@@ -89,6 +95,9 @@ func Resolve(global *GlobalSettings, repo *RepoSettings) ResolvedSettings {
 		}
 		if repo.AgentProgram != nil {
 			r.AgentProgram = *repo.AgentProgram
+		}
+		if repo.IDECommand != nil {
+			r.IDECommand = *repo.IDECommand
 		}
 		if repo.WorktreeDir != nil {
 			r.WorktreeDir = *repo.WorktreeDir

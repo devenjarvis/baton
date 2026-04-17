@@ -18,6 +18,7 @@ var (
 		{"n", "new session"},
 		{"c", "add agent"},
 		{"t", "shell"},
+		{"e", "open in IDE"},
 		{"s", "settings"},
 		{"a", "add repo"},
 		{"o", "open branch"},
