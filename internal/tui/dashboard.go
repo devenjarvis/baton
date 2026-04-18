@@ -290,11 +290,12 @@ func (d dashboardModel) renderList(width int) string {
 			status := sess.Status()
 			symbol := status.Symbol()
 			var symbolStyle lipgloss.Style
+			// StatusWaiting is intentionally absent: Session.Status() rolls
+			// Waiting up to Active at the session level, so this switch only
+			// ever sees Active/Starting/Idle/Done/Error.
 			switch status {
 			case agent.StatusActive:
 				symbolStyle = lipgloss.NewStyle().Foreground(ColorSecondary)
-			case agent.StatusWaiting:
-				symbolStyle = lipgloss.NewStyle().Foreground(ColorWaiting)
 			case agent.StatusDone:
 				symbolStyle = lipgloss.NewStyle().Foreground(ColorSuccess)
 			case agent.StatusError:

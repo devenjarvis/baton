@@ -183,10 +183,12 @@ func checkHookPipeline(batonExe string) error {
 
 	cmd := exec.Command(batonExe, "hook", "session-start")
 	// Scrub any BATON_* env inherited from a parent baton session — the
-	// check must exercise *this* temp socket, not a lingering one.
+	// check must exercise *this* temp socket, not a lingering one. Filter
+	// by the full `BATON_` prefix so future vars (not just the two used
+	// today) stay isolated from the doctor subprocess.
 	baseEnv := make([]string, 0, len(os.Environ()))
 	for _, kv := range os.Environ() {
-		if strings.HasPrefix(kv, "BATON_HOOK_SOCKET=") || strings.HasPrefix(kv, "BATON_AGENT_ID=") {
+		if strings.HasPrefix(kv, "BATON_") {
 			continue
 		}
 		baseEnv = append(baseEnv, kv)

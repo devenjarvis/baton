@@ -416,7 +416,12 @@ func (a *Agent) OnHookEvent(e hook.Event) (statusChanged bool) {
 	case hook.KindUserPromptSubmit:
 		// User just submitted a new turn. Re-arm the chime and drive the
 		// agent back to Active — this is the authoritative re-arm signal
-		// alongside the existing SendKey(Enter) path.
+		// alongside the existing SendKey(Enter) path. Mirror the Notification
+		// guard: a late event after the agent exited must not resurrect a
+		// Done or Error row, and must not reset chimedForTurn either.
+		if a.status == StatusDone || a.status == StatusError {
+			return false
+		}
 		a.chimedForTurn = false
 		if a.status != StatusActive {
 			a.status = StatusActive

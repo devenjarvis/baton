@@ -243,6 +243,53 @@ func TestDoneAgentIgnoresLateNotification(t *testing.T) {
 	}
 }
 
+// TestDoneAgentIgnoresLateUserPromptSubmit verifies a Done agent stays Done
+// (and its chimedForTurn flag is NOT reset) when a stray UserPromptSubmit
+// event arrives after the agent has already exited.
+func TestDoneAgentIgnoresLateUserPromptSubmit(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	cfg := Config{Name: "done-ignore-ups", Task: "test", Rows: 24, Cols: 80}
+	_, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-mgr.Events():
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for EventCreated")
+	}
+
+	// Force Done, and set chimedForTurn=true so a silent reset would be
+	// observable if the guard regresses.
+	ag.mu.Lock()
+	ag.status = StatusDone
+	ag.chimedForTurn = true
+	ag.mu.Unlock()
+
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindUserPromptSubmit,
+		AgentID: ag.ID,
+	}); err != nil {
+		t.Fatalf("SendEvent UserPromptSubmit: %v", err)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+	if got := ag.Status(); got != StatusDone {
+		t.Errorf("expected Done to be preserved, got %s", got)
+	}
+	ag.mu.Lock()
+	chimed := ag.chimedForTurn
+	ag.mu.Unlock()
+	if !chimed {
+		t.Error("expected chimedForTurn to stay true on Done agent, got reset")
+	}
+}
+
 // waitForStatus polls the agent status up to d for the desired value.
 func waitForStatus(t *testing.T, a *Agent, want Status, d time.Duration) bool {
 	t.Helper()
