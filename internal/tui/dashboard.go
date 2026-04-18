@@ -58,15 +58,17 @@ type diffAggregateStats struct {
 
 // dashboardModel shows the hierarchical repo/session/agent list and terminal preview.
 type dashboardModel struct {
-	items        []listItem
-	selected     int
-	width        int
-	height       int
-	panelFocus   panelFocus
-	scrollOffset int
-	diffStats    *diffSummaryData           // nil when no session selected or no data
-	prCache      map[string]*prCacheEntry   // keyed by session ID, passed from App
-	prPollStates map[string]*prSessionState // keyed by session ID, passed from App
+	items           []listItem
+	selected        int
+	width           int
+	height          int
+	panelFocus      panelFocus
+	scrollOffset    int
+	diffStats       *diffSummaryData           // nil when no session selected or no data
+	prCache         map[string]*prCacheEntry   // keyed by session ID, passed from App
+	prPollStates    map[string]*prSessionState // keyed by session ID, passed from App
+	closingAgents   map[string]bool            // keyed by agent ID, passed from App
+	closingSessions map[string]bool            // keyed by session ID, passed from App
 
 	// Repo config form shown in the right panel when focusConfig is active.
 	repoConfigForm *configForm
@@ -289,40 +291,58 @@ func (d dashboardModel) renderList(width int) string {
 			sess := item.session
 			status := sess.Status()
 			symbol := status.Symbol()
+			closing := d.closingSessions != nil && d.closingSessions[sess.ID]
 			var symbolStyle lipgloss.Style
 			// StatusWaiting is intentionally absent: Session.Status() rolls
 			// Waiting up to Active at the session level, so this switch only
 			// ever sees Active/Starting/Idle/Done/Error.
-			switch status {
-			case agent.StatusActive:
-				symbolStyle = lipgloss.NewStyle().Foreground(ColorSecondary)
-			case agent.StatusDone:
-				symbolStyle = lipgloss.NewStyle().Foreground(ColorSuccess)
-			case agent.StatusError:
-				symbolStyle = lipgloss.NewStyle().Foreground(ColorError)
-			default:
+			switch {
+			case closing:
 				symbolStyle = lipgloss.NewStyle().Foreground(ColorMuted)
+			default:
+				switch status {
+				case agent.StatusActive:
+					symbolStyle = lipgloss.NewStyle().Foreground(ColorSecondary)
+				case agent.StatusDone:
+					symbolStyle = lipgloss.NewStyle().Foreground(ColorSuccess)
+				case agent.StatusError:
+					symbolStyle = lipgloss.NewStyle().Foreground(ColorError)
+				default:
+					symbolStyle = lipgloss.NewStyle().Foreground(ColorMuted)
+				}
 			}
 
 			displayName := sess.GetDisplayName()
 
-			// Build PR indicator suffix for the session row.
+			// Build PR indicator suffix for the session row. Skipped while
+			// closing so the " closing…" tag doesn't fight with a PR badge
+			// for limited header width.
 			var prSuffix string
 			var prSuffixLen int
-			if entry := d.prCache[sess.ID]; entry != nil && entry.pr != nil {
-				prSuffix = " " + prIndicator(entry)
-				// Approximate visible length: space + #N + space + symbol + optional " Ready"
-				prSuffixLen = 1 + len(fmt.Sprintf("#%d", entry.pr.Number))
-				if entry.checks != nil {
-					prSuffixLen += 2 // space + check symbol
-				}
-				if isMergeReady(entry) {
-					prSuffixLen += 6 // " Ready"
+			if !closing {
+				if entry := d.prCache[sess.ID]; entry != nil && entry.pr != nil {
+					prSuffix = " " + prIndicator(entry)
+					// Approximate visible length: space + #N + space + symbol + optional " Ready"
+					prSuffixLen = 1 + len(fmt.Sprintf("#%d", entry.pr.Number))
+					if entry.checks != nil {
+						prSuffixLen += 2 // space + check symbol
+					}
+					if isMergeReady(entry) {
+						prSuffixLen += 6 // " Ready"
+					}
 				}
 			}
 
+			// Reserve width for " closing…" suffix when closing.
+			closingTag := ""
+			closingTagLen := 0
+			if closing {
+				closingTag = " closing…"
+				closingTagLen = 9
+			}
+
 			// 4 for "  ──", 3 for " symbol ", 1 trailing space, plus some padding chars
-			maxNameLen := width - 10 - prSuffixLen
+			maxNameLen := width - 10 - prSuffixLen - closingTagLen
 			if maxNameLen < 5 {
 				maxNameLen = 5
 			}
@@ -330,8 +350,16 @@ func (d dashboardModel) renderList(width int) string {
 				displayName = displayName[:maxNameLen-1] + "…"
 			}
 
-			label := fmt.Sprintf(" %s %s ", symbolStyle.Render(symbol), displayName)
-			labelLen := len(symbol) + 1 + len(displayName) + 2 + prSuffixLen
+			nameStyle := lipgloss.NewStyle()
+			if closing {
+				nameStyle = StyleSubtle
+			}
+			label := fmt.Sprintf(" %s %s", symbolStyle.Render(symbol), nameStyle.Render(displayName))
+			if closing {
+				label += StyleSubtle.Render(closingTag)
+			}
+			label += " "
+			labelLen := len(symbol) + 1 + len(displayName) + 2 + prSuffixLen + closingTagLen
 			padLen := width - 4 - labelLen
 			if padLen < 0 {
 				padLen = 0
@@ -339,12 +367,14 @@ func (d dashboardModel) renderList(width int) string {
 
 			// Use flash color for separator dashes if the session has an active flash.
 			sepStyle := StyleSubtle
-			if ps := d.prPollStates[sess.ID]; ps != nil && time.Now().Before(ps.flashUntil) {
-				switch ps.flashColor {
-				case "success":
-					sepStyle = lipgloss.NewStyle().Foreground(ColorSuccess)
-				case "error":
-					sepStyle = lipgloss.NewStyle().Foreground(ColorError)
+			if !closing {
+				if ps := d.prPollStates[sess.ID]; ps != nil && time.Now().Before(ps.flashUntil) {
+					switch ps.flashColor {
+					case "success":
+						sepStyle = lipgloss.NewStyle().Foreground(ColorSuccess)
+					case "error":
+						sepStyle = lipgloss.NewStyle().Foreground(ColorError)
+					}
 				}
 			}
 
@@ -356,16 +386,19 @@ func (d dashboardModel) renderList(width int) string {
 			ag := item.agent
 			status := ag.Status()
 			symbol := status.Symbol()
-			elapsed := humanizeElapsed(ag.Elapsed())
+			closing := d.closingAgents != nil && d.closingAgents[ag.ID]
 
 			if ag.IsShell {
 				symbol = "$"
 			}
 
 			var style lipgloss.Style
-			if ag.IsShell {
+			switch {
+			case closing:
 				style = lipgloss.NewStyle().Foreground(ColorMuted)
-			} else {
+			case ag.IsShell:
+				style = lipgloss.NewStyle().Foreground(ColorMuted)
+			default:
 				switch status {
 				case agent.StatusActive:
 					style = lipgloss.NewStyle().Foreground(ColorSecondary)
@@ -382,7 +415,20 @@ func (d dashboardModel) renderList(width int) string {
 				}
 			}
 
-			nameWidth := width - 18 // space for indent, symbol, elapsed, padding
+			// Suffix: elapsed time in the normal case, "closing…" when dispatched.
+			// Width budgeting keeps the "closing…" tag inside the same column so
+			// the layout doesn't shift while the kill is in flight.
+			suffix := humanizeElapsed(ag.Elapsed())
+			suffixWidth := 5
+			if closing {
+				suffix = "closing…"
+				suffixWidth = 9 // visual width of the suffix including ellipsis
+			}
+
+			nameWidth := width - 13 - suffixWidth
+			if nameWidth < 1 {
+				nameWidth = 1
+			}
 			name := ag.GetDisplayName()
 			if len(name) > nameWidth {
 				name = name[:nameWidth-1] + "…"
@@ -393,12 +439,25 @@ func (d dashboardModel) renderList(width int) string {
 				agentPrefix = "    " + StyleActive.Render("▸ ")
 			}
 
-			line := fmt.Sprintf("%s%s %-*s %5s",
+			renderedSuffix := suffix
+			if closing {
+				renderedSuffix = StyleSubtle.Render(suffix)
+			}
+			nameRendered := name
+			if closing {
+				nameRendered = StyleSubtle.Render(name)
+			}
+			padName := nameWidth - len(name)
+			if padName < 0 {
+				padName = 0
+			}
+
+			line := fmt.Sprintf("%s%s %s%s %s",
 				agentPrefix,
 				style.Render(symbol),
-				nameWidth,
-				name,
-				elapsed,
+				nameRendered,
+				strings.Repeat(" ", padName),
+				renderedSuffix,
 			)
 			lines = append(lines, line)
 		}
