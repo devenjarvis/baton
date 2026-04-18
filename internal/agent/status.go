@@ -6,6 +6,7 @@ type Status int
 const (
 	StatusStarting Status = iota
 	StatusActive
+	StatusWaiting
 	StatusIdle
 	StatusDone
 	StatusError
@@ -17,6 +18,8 @@ func (s Status) String() string {
 		return "Starting"
 	case StatusActive:
 		return "Active"
+	case StatusWaiting:
+		return "Waiting"
 	case StatusIdle:
 		return "Idle"
 	case StatusDone:
@@ -35,6 +38,8 @@ func (s Status) Symbol() string {
 		return "◎"
 	case StatusActive:
 		return "●"
+	case StatusWaiting:
+		return "◐"
 	case StatusIdle:
 		return "○"
 	case StatusDone:

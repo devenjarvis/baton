@@ -353,7 +353,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// the TUI dequeuing this event would otherwise clobber the cached "prev
 		// was Active" signal and silently suppress the chime.
 		if msg.event.Type == agent.EventStatusChanged {
-			if msg.event.Status == agent.StatusIdle {
+			// Chime on both Idle (Claude finished its turn) and Waiting
+			// (Claude needs user input). ChimedForTurn is the shared gate:
+			// whichever fires first in a turn wins, and the other is
+			// silently skipped. The flag resets on Enter or UserPromptSubmit.
+			if msg.event.Status == agent.StatusIdle || msg.event.Status == agent.StatusWaiting {
 				if mgr := a.managers[msg.repoPath]; mgr != nil {
 					if ag := mgr.Get(msg.event.AgentID); ag != nil && !ag.IsShell {
 						if ag.HasReceivedInput() && !ag.ChimedForTurn() {
