@@ -14,6 +14,7 @@ type fieldKind int
 const (
 	fieldToggle fieldKind = iota
 	fieldText
+	fieldSelect
 )
 
 // formField is a single field in a config form.
@@ -23,6 +24,8 @@ type formField struct {
 	toggleValue bool            // for fieldToggle
 	textInput   textinput.Model // for fieldText
 	editing     bool            // true when text field has cursor active
+	options     []string        // for fieldSelect
+	selected    int             // for fieldSelect
 }
 
 // configForm composes toggle and text input fields into a navigable form.
@@ -53,6 +56,23 @@ func addToggle(fields []formField, label string, value bool) []formField {
 		label:       label,
 		kind:        fieldToggle,
 		toggleValue: value,
+	})
+}
+
+// addSelect appends a select field cycling through a fixed option list.
+// selected is the initial option index (clamped to a valid range).
+func addSelect(fields []formField, label string, options []string, selected int) []formField {
+	if len(options) == 0 {
+		options = []string{""}
+	}
+	if selected < 0 || selected >= len(options) {
+		selected = 0
+	}
+	return append(fields, formField{
+		label:    label,
+		kind:     fieldSelect,
+		options:  options,
+		selected: selected,
 	})
 }
 
@@ -126,6 +146,16 @@ func (f *configForm) Update(msg tea.Msg) tea.Cmd {
 				f.focusField(f.focused - 1)
 			}
 			return nil
+		case "right", "l":
+			if field.kind == fieldSelect && len(field.options) > 0 {
+				field.selected = (field.selected + 1) % len(field.options)
+			}
+			return nil
+		case "left", "h":
+			if field.kind == fieldSelect && len(field.options) > 0 {
+				field.selected = (field.selected - 1 + len(field.options)) % len(field.options)
+			}
+			return nil
 		case "enter", " ":
 			switch field.kind {
 			case fieldToggle:
@@ -133,6 +163,10 @@ func (f *configForm) Update(msg tea.Msg) tea.Cmd {
 			case fieldText:
 				field.editing = true
 				field.textInput.Focus()
+			case fieldSelect:
+				if len(field.options) > 0 {
+					field.selected = (field.selected + 1) % len(field.options)
+				}
 			}
 			return nil
 		case "ctrl+s":
@@ -177,6 +211,16 @@ func (f configForm) View() string {
 			}
 		case fieldText:
 			value = field.textInput.View()
+		case fieldSelect:
+			chevronStyle := StyleSubtle
+			if i == f.focused {
+				chevronStyle = StyleActive
+			}
+			opt := ""
+			if len(field.options) > 0 {
+				opt = field.options[field.selected]
+			}
+			value = chevronStyle.Render("< ") + opt + chevronStyle.Render(" >")
 		}
 
 		rows = append(rows, cursor+label+" "+value)
@@ -200,6 +244,19 @@ func (f configForm) textValue(label string) string {
 	for _, field := range f.fields {
 		if field.label == label && field.kind == fieldText {
 			return field.textInput.Value()
+		}
+	}
+	return ""
+}
+
+// selectValue returns the currently selected option text for a select field.
+func (f configForm) selectValue(label string) string {
+	for _, field := range f.fields {
+		if field.label == label && field.kind == fieldSelect {
+			if field.selected >= 0 && field.selected < len(field.options) {
+				return field.options[field.selected]
+			}
+			return ""
 		}
 	}
 	return ""

@@ -715,7 +715,11 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.setError("No IDE configured (set 'IDE Command' in settings)")
 				return a, nil
 			}
-			parts := strings.Fields(ideCmd)
+			parts := splitIDECommand(ideCmd)
+			if len(parts) == 0 {
+				a.setError("No IDE configured (set 'IDE Command' in settings)")
+				return a, nil
+			}
 			worktreePath := sess.Worktree.Path
 			exe := parts[0]
 			args := append(parts[1:], worktreePath)
@@ -1307,7 +1311,7 @@ func (a *App) initRepoConfigForm(repoPath string) {
 	fields = addTextInput(fields, "Default Branch", defaultBranch, "auto-detect", inputWidth)
 	fields = addTextInput(fields, "Branch Prefix", branchPrefix, config.DefaultBranchPrefix, inputWidth)
 	fields = addTextInput(fields, "Agent Program", agentProgram, config.DefaultAgentProgram, inputWidth)
-	fields = addTextInput(fields, "IDE Command", ideCommand, "e.g. code -n", inputWidth)
+	fields = addEditorFields(fields, ideCommand, inputWidth)
 	fields = addTextInput(fields, "Worktree Directory", worktreeDir, config.DefaultWorktreeDir, inputWidth)
 
 	form := newConfigForm(fields, a.dashboard.previewTermWidth())
@@ -1336,7 +1340,7 @@ func (a App) extractRepoSettings() *config.RepoSettings {
 	if v := form.textValue("Agent Program"); v != "" {
 		s.AgentProgram = &v
 	}
-	if v := form.textValue("IDE Command"); v != "" {
+	if v := extractIDECommand(*form); v != "" {
 		s.IDECommand = &v
 	}
 	if v := form.textValue("Worktree Directory"); v != "" {

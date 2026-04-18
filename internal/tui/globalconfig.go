@@ -60,7 +60,7 @@ func newGlobalConfigModel(gs *config.GlobalSettings, width, height int) globalCo
 	fields = addTextInput(fields, "Default Branch", defaultBranch, "auto-detect", inputWidth)
 	fields = addTextInput(fields, "Branch Prefix", branchPrefix, config.DefaultBranchPrefix, inputWidth)
 	fields = addTextInput(fields, "Agent Program", agentProgram, config.DefaultAgentProgram, inputWidth)
-	fields = addTextInput(fields, "IDE Command", ideCommand, "e.g. code -n", inputWidth)
+	fields = addEditorFields(fields, ideCommand, inputWidth)
 
 	return globalConfigModel{
 		form:   newConfigForm(fields, width),
@@ -92,7 +92,7 @@ func (m globalConfigModel) View() string {
 		Width(boxWidth)
 
 	title := StyleTitle.Render("Global Settings")
-	hint := StyleSubtle.Render("j/k navigate  enter edit/toggle  ctrl+s save  esc cancel")
+	hint := StyleSubtle.Render("j/k navigate  ←/→ select  enter edit/toggle  ctrl+s save  esc cancel")
 
 	content := lipgloss.JoinVertical(lipgloss.Left,
 		title, "",
@@ -124,7 +124,7 @@ func (m globalConfigModel) extractSettings() *config.GlobalSettings {
 	if v := m.form.textValue("Agent Program"); v != "" {
 		s.AgentProgram = &v
 	}
-	if v := m.form.textValue("IDE Command"); v != "" {
+	if v := extractIDECommand(m.form); v != "" {
 		s.IDECommand = &v
 	}
 

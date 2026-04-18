@@ -9,11 +9,16 @@ Every PR should update the `[Unreleased]` section with a short entry describing 
 
 ## [Unreleased]
 
+### Added
+
+- IDE editor dropdown in global and per-repo settings. On macOS, probes `/Applications` and `~/Applications` for a curated list of editors (Zed, VS Code, Cursor, JetBrains IDEs) and generates `open -a "<App>"` invocations that take focus and support opening additional worktrees alongside an already-running editor window. Custom Command option preserves free-text entry; legacy stored values load unchanged.
+
 ### Fixed
 
 - Startup splash text artifacts when Claude Code enters its TUI (alt-screen transition detection replaces 500ms delayed resize heuristic).
 - Mid-repaint flicker in dashboard preview (StableRender with 16ms quiescence threshold).
 - VT emulator / lipgloss container sizing mismatch causing displaced content in focusList mode.
+- IDE launch path now uses a quote-aware tokenizer so multi-word app names in `open -a "Visual Studio Code"` style commands launch correctly instead of fragmenting on whitespace.
 
 ## [0.1.0] — 2026-04-15
 
