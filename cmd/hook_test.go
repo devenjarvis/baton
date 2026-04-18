@@ -48,14 +48,17 @@ func TestHookSubcommandForwards(t *testing.T) {
 	bin := buildBaton(t)
 
 	cases := []struct {
+		name        string
 		subcmd      string
 		wantKind    hook.Kind
 		stdin       string
 		wantSession string
 		wantCWD     string
 		wantMessage string
+		wantPrompt  string
 	}{
 		{
+			name:        "session-start",
 			subcmd:      "session-start",
 			wantKind:    hook.KindSessionStart,
 			stdin:       `{"session_id":"uuid-xyz","cwd":"/tmp/wt"}`,
@@ -63,17 +66,20 @@ func TestHookSubcommandForwards(t *testing.T) {
 			wantCWD:     "/tmp/wt",
 		},
 		{
+			name:        "stop",
 			subcmd:      "stop",
 			wantKind:    hook.KindStop,
 			stdin:       `{"session_id":"uuid-xyz"}`,
 			wantSession: "uuid-xyz",
 		},
 		{
+			name:     "session-end",
 			subcmd:   "session-end",
 			wantKind: hook.KindSessionEnd,
 			stdin:    `{}`,
 		},
 		{
+			name:        "notification",
 			subcmd:      "notification",
 			wantKind:    hook.KindNotification,
 			stdin:       `{"session_id":"uuid-xyz","message":"Claude needs your permission to use Bash"}`,
@@ -81,15 +87,32 @@ func TestHookSubcommandForwards(t *testing.T) {
 			wantMessage: "Claude needs your permission to use Bash",
 		},
 		{
+			name:        "user-prompt-submit",
 			subcmd:      "user-prompt-submit",
 			wantKind:    hook.KindUserPromptSubmit,
 			stdin:       `{"session_id":"uuid-xyz"}`,
 			wantSession: "uuid-xyz",
 		},
+		{
+			name:        "user-prompt-submit-with-prompt",
+			subcmd:      "user-prompt-submit",
+			wantKind:    hook.KindUserPromptSubmit,
+			stdin:       `{"session_id":"uuid-xyz","prompt":"investigate flaky checkout test"}`,
+			wantSession: "uuid-xyz",
+			wantPrompt:  "investigate flaky checkout test",
+		},
+		{
+			name:        "notification-ignores-prompt",
+			subcmd:      "notification",
+			wantKind:    hook.KindNotification,
+			stdin:       `{"session_id":"uuid-xyz","prompt":"should be dropped","message":"perm"}`,
+			wantSession: "uuid-xyz",
+			wantMessage: "perm",
+		},
 	}
 
 	for _, tc := range cases {
-		t.Run(tc.subcmd, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			// macOS caps unix socket paths at 104 bytes — t.TempDir() under the
 			// test name is too long, so use a short dir under os.TempDir().
@@ -134,6 +157,9 @@ func TestHookSubcommandForwards(t *testing.T) {
 				}
 				if e.Message != tc.wantMessage {
 					t.Errorf("message: got %q, want %q", e.Message, tc.wantMessage)
+				}
+				if e.Prompt != tc.wantPrompt {
+					t.Errorf("prompt: got %q, want %q", e.Prompt, tc.wantPrompt)
 				}
 			case <-time.After(3 * time.Second):
 				t.Fatal("timed out waiting for hook event")

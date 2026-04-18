@@ -69,11 +69,13 @@ func runHook(cmd *cobra.Command, args []string) error {
 
 	// Parse just the fields we route on; keep the rest in Raw so the server
 	// can inspect extras if it cares later. `message` is only populated by
-	// Notification payloads — other kinds will leave it empty.
+	// Notification payloads; `prompt` only by UserPromptSubmit — other kinds
+	// leave them empty.
 	var payload struct {
 		SessionID string `json:"session_id"`
 		CWD       string `json:"cwd"`
 		Message   string `json:"message"`
+		Prompt    string `json:"prompt"`
 	}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &payload); err != nil {
@@ -89,6 +91,9 @@ func runHook(cmd *cobra.Command, args []string) error {
 		CWD:       payload.CWD,
 		Message:   payload.Message,
 		Raw:       json.RawMessage(raw),
+	}
+	if kind == hook.KindUserPromptSubmit {
+		e.Prompt = payload.Prompt
 	}
 
 	if err := hook.SendEvent(socketPath, e); err != nil {
