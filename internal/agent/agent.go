@@ -428,6 +428,23 @@ func (a *Agent) OnHookEvent(e hook.Event) (statusChanged bool) {
 			return true
 		}
 		return false
+
+	case hook.KindPreToolUse:
+		// Claude resumed tool execution — authoritative signal that the
+		// agent is no longer waiting on the user (e.g. a permission prompt
+		// was just approved). Clear Waiting back to Active so the yellow
+		// indicator doesn't linger until Stop fires at end of turn.
+		// Mirror the late-event guard on Notification/UserPromptSubmit so a
+		// trailing event can't revive a Done or Error row. Do NOT reset
+		// chimedForTurn: that's gated to new user turns, not every tool call.
+		if a.status == StatusDone || a.status == StatusError {
+			return false
+		}
+		if a.status != StatusActive {
+			a.status = StatusActive
+			return true
+		}
+		return false
 	}
 	return false
 }

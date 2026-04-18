@@ -39,6 +39,26 @@ type createResultMsg struct {
 	err       error
 }
 
+// killScope distinguishes an agent-level kill from a session-level kill so the
+// result handler knows which closing set to clean up.
+type killScope int
+
+const (
+	killScopeAgent killScope = iota
+	killScopeSession
+)
+
+// killResultMsg carries the result of an async KillAgent/KillSession call.
+// agentID is empty for session-scoped kills; the closing-set cleanup iterates
+// the manager to find stale IDs instead.
+type killResultMsg struct {
+	scope     killScope
+	sessionID string
+	agentID   string
+	agentIDs  []string // for session scope: all agent IDs that were in the session
+	err       error
+}
+
 // diffStatsMsg carries the result of an async diff stats refresh.
 type diffStatsMsg struct {
 	sessionID string
@@ -89,6 +109,12 @@ type App struct {
 	lastKnownStatus map[string]agent.Status
 	audioPlayer     *audio.Player
 
+	// closingAgents and closingSessions track in-flight kill requests so the
+	// dashboard can render a "closing…" indicator while the async teardown runs.
+	// Lives in the TUI because it's purely a UI concern.
+	closingAgents   map[string]bool
+	closingSessions map[string]bool
+
 	diffStatsCache      map[string]*diffStatsEntry // keyed by session ID
 	diffRefreshInFlight bool
 
@@ -109,6 +135,8 @@ func NewApp() App {
 		diffStatsCache:  make(map[string]*diffStatsEntry),
 		prCache:         make(map[string]*prCacheEntry),
 		prPollStates:    make(map[string]*prSessionState),
+		closingAgents:   make(map[string]bool),
+		closingSessions: make(map[string]bool),
 	}
 }
 
@@ -407,6 +435,28 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// transition detector in the tick handler will fire a follow-up resize
 		// once Claude's TUI enters alternate screen mode.
 		a.resizeSelectedForDashboard()
+		return a, nil
+
+	case killResultMsg:
+		// Clean up closing-set entries regardless of error so the UI never
+		// gets stuck rendering "closing…" on a row whose kill failed.
+		switch msg.scope {
+		case killScopeAgent:
+			delete(a.closingAgents, msg.agentID)
+			delete(a.lastKnownStatus, msg.agentID)
+		case killScopeSession:
+			delete(a.closingSessions, msg.sessionID)
+			for _, id := range msg.agentIDs {
+				delete(a.closingAgents, id)
+				delete(a.lastKnownStatus, id)
+			}
+			delete(a.diffStatsCache, msg.sessionID)
+		}
+		if msg.err != nil {
+			a.setError(msg.err.Error())
+		}
+		a.refreshAgentList()
+		a.updateDashboardDiffStats()
 		return a, nil
 
 	case diffStatsMsg:
@@ -822,7 +872,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 
 		case "x":
-			// Kill the selected agent.
+			// Kill the selected agent asynchronously so the UI stays responsive.
 			item := a.dashboard.selectedItem()
 			if item == nil || item.kind != listItemAgent || item.agent == nil || item.session == nil {
 				return a, nil
@@ -831,15 +881,26 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if mgr == nil {
 				return a, nil
 			}
-			if err := mgr.KillAgent(item.session.ID, item.agent.ID); err != nil {
-				a.setError(err.Error())
+			agentID := item.agent.ID
+			sessionID := item.session.ID
+			// Already dispatched — no-op to avoid double-kills.
+			if a.closingAgents[agentID] {
+				return a, nil
 			}
-			delete(a.lastKnownStatus, item.agent.ID)
+			a.closingAgents[agentID] = true
 			a.refreshAgentList()
-			return a, nil
+			return a, func() tea.Msg {
+				err := mgr.KillAgent(sessionID, agentID)
+				return killResultMsg{
+					scope:     killScopeAgent,
+					sessionID: sessionID,
+					agentID:   agentID,
+					err:       err,
+				}
+			}
 
 		case "X":
-			// Kill the entire parent session of the selected agent.
+			// Kill the entire parent session of the selected agent asynchronously.
 			item := a.dashboard.selectedItem()
 			if item == nil || item.session == nil {
 				return a, nil
@@ -849,16 +910,26 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, nil
 			}
 			sessID := item.session.ID
+			// Already dispatched — no-op.
+			if a.closingSessions[sessID] {
+				return a, nil
+			}
+			var agentIDs []string
 			for _, ag := range item.session.Agents() {
-				delete(a.lastKnownStatus, ag.ID)
+				agentIDs = append(agentIDs, ag.ID)
+				a.closingAgents[ag.ID] = true
 			}
-			if err := mgr.KillSession(sessID); err != nil {
-				a.setError(err.Error())
-			}
-			delete(a.diffStatsCache, sessID)
+			a.closingSessions[sessID] = true
 			a.refreshAgentList()
-			a.updateDashboardDiffStats()
-			return a, nil
+			return a, func() tea.Msg {
+				err := mgr.KillSession(sessID)
+				return killResultMsg{
+					scope:     killScopeSession,
+					sessionID: sessID,
+					agentIDs:  agentIDs,
+					err:       err,
+				}
+			}
 
 		case "f":
 			// Fix failing checks: fetch logs and send to an idle agent.
@@ -1279,6 +1350,8 @@ func (a *App) forwardWheelToAgent(ag *agent.Agent, msg tea.MouseWheelMsg) {
 }
 
 func (a *App) refreshAgentList() {
+	a.dashboard.closingAgents = a.closingAgents
+	a.dashboard.closingSessions = a.closingSessions
 	if a.cfg == nil {
 		// Fallback used in tests that set up managers directly without cfg.
 		if mgr := a.managers[a.activeRepo]; mgr != nil {
