@@ -16,6 +16,7 @@ const (
 	KindSessionEnd       Kind = "session-end"
 	KindNotification     Kind = "notification"
 	KindUserPromptSubmit Kind = "user-prompt-submit"
+	KindPreToolUse       Kind = "pre-tool-use"
 )
 
 // Event is the wire-format payload sent from the baton-hook CLI to the

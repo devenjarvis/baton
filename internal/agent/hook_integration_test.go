@@ -290,6 +290,116 @@ func TestDoneAgentIgnoresLateUserPromptSubmit(t *testing.T) {
 	}
 }
 
+// TestManagerPreToolUseClearsWaiting verifies PreToolUse transitions a Waiting
+// agent back to Active — the fix path for approved permission prompts, where
+// Claude does not fire UserPromptSubmit but does fire PreToolUse when it
+// resumes tool execution.
+func TestManagerPreToolUseClearsWaiting(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	cfg := Config{Name: "pretooluse-dispatch", Task: "test", Rows: 24, Cols: 80}
+	_, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-mgr.Events():
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for EventCreated")
+	}
+
+	// SessionStart → Active.
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindSessionStart,
+		AgentID: ag.ID,
+	}); err != nil {
+		t.Fatalf("SendEvent SessionStart: %v", err)
+	}
+	if !waitForStatus(t, ag, StatusActive, 2*time.Second) {
+		t.Fatalf("expected Active after SessionStart, got %s", ag.Status())
+	}
+
+	// Notification → Waiting.
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindNotification,
+		AgentID: ag.ID,
+		Message: "Claude needs your permission to use Bash",
+	}); err != nil {
+		t.Fatalf("SendEvent Notification: %v", err)
+	}
+	if !waitForStatus(t, ag, StatusWaiting, 2*time.Second) {
+		t.Fatalf("expected Waiting after Notification, got %s", ag.Status())
+	}
+
+	// Mark chimedForTurn so we can verify PreToolUse does NOT reset it —
+	// chime re-arming is a per-turn signal, not a per-tool-call signal.
+	ag.mu.Lock()
+	ag.chimedForTurn = true
+	ag.mu.Unlock()
+
+	// PreToolUse → Active (permission approved, Claude resumed).
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindPreToolUse,
+		AgentID: ag.ID,
+	}); err != nil {
+		t.Fatalf("SendEvent PreToolUse: %v", err)
+	}
+	if !waitForStatus(t, ag, StatusActive, 2*time.Second) {
+		t.Fatalf("expected Active after PreToolUse, got %s", ag.Status())
+	}
+	if !ag.ChimedForTurn() {
+		t.Error("expected chimedForTurn to remain true across PreToolUse (it's per-turn, not per-tool)")
+	}
+}
+
+// TestDoneAgentIgnoresLatePreToolUse verifies a Done agent stays Done when a
+// stray PreToolUse event arrives after the agent has already exited.
+func TestDoneAgentIgnoresLatePreToolUse(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	cfg := Config{Name: "done-ignore-ptu", Task: "test", Rows: 24, Cols: 80}
+	_, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-mgr.Events():
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for EventCreated")
+	}
+
+	ag.mu.Lock()
+	ag.status = StatusDone
+	ag.chimedForTurn = true
+	ag.mu.Unlock()
+
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindPreToolUse,
+		AgentID: ag.ID,
+	}); err != nil {
+		t.Fatalf("SendEvent PreToolUse: %v", err)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+	if got := ag.Status(); got != StatusDone {
+		t.Errorf("expected Done to be preserved, got %s", got)
+	}
+	ag.mu.Lock()
+	chimed := ag.chimedForTurn
+	ag.mu.Unlock()
+	if !chimed {
+		t.Error("expected chimedForTurn to stay true on Done agent, got reset")
+	}
+}
+
 // waitForStatus polls the agent status up to d for the desired value.
 func waitForStatus(t *testing.T, a *Agent, want Status, d time.Duration) bool {
 	t.Helper()

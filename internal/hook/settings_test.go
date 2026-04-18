@@ -26,13 +26,14 @@ func TestWriteHooksFile(t *testing.T) {
 		t.Fatalf("unmarshalling hooks file: %v", err)
 	}
 
-	wantEvents := []string{"SessionStart", "Stop", "SessionEnd", "Notification", "UserPromptSubmit"}
+	wantEvents := []string{"SessionStart", "Stop", "SessionEnd", "Notification", "UserPromptSubmit", "PreToolUse"}
 	wantCLIEvents := map[string]string{
 		"SessionStart":     "session-start",
 		"Stop":             "stop",
 		"SessionEnd":       "session-end",
 		"Notification":     "notification",
 		"UserPromptSubmit": "user-prompt-submit",
+		"PreToolUse":       "pre-tool-use",
 	}
 
 	batonPath, err := os.Executable()

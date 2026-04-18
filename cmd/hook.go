@@ -47,6 +47,8 @@ func runHook(cmd *cobra.Command, args []string) error {
 		kind = hook.KindNotification
 	case "user-prompt-submit":
 		kind = hook.KindUserPromptSubmit
+	case "pre-tool-use":
+		kind = hook.KindPreToolUse
 	default:
 		return nil
 	}
