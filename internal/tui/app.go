@@ -301,12 +301,20 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		fixedW := a.dashboard.fixedTermWidth()
 		fixedH := a.dashboard.fixedTermHeight()
 		if fixedW > 0 && fixedH > 0 {
+			selected := a.dashboard.selectedAgent()
 			for _, item := range a.dashboard.items {
 				if item.kind != listItemAgent || item.agent == nil {
 					continue
 				}
 				if item.agent.AltScreenEntered() {
 					item.agent.Resize(fixedH, fixedW)
+					// VT history is cleared on alt-screen entry; any prior
+					// scrollOffset now indexes into an empty buffer and would
+					// leave the preview visually frozen until the user hits
+					// home. Snap the currently focused agent back to live.
+					if item.agent == selected {
+						a.dashboard.scrollOffset = 0
+					}
 				}
 			}
 		}
@@ -966,6 +974,15 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.dashboard.panelFocus == focusTerminal {
 			ag := a.dashboard.selectedAgent()
 			if ag != nil {
+				// Alt-screen apps (Claude's /tui fullscreen, vim, less) redraw
+				// the viewport instead of scrolling — baton's scrollback is
+				// inert for them. Forward the wheel event so the app can drive
+				// its own scrollback. SendMouse is a no-op unless the app has
+				// enabled mouse reporting.
+				if ag.IsAltScreen() {
+					a.forwardWheelToAgent(ag, msg)
+					return a, nil
+				}
 				switch msg.Button {
 				case tea.MouseWheelUp:
 					a.dashboard.scrollOffset += 3
@@ -1212,6 +1229,53 @@ func (a *App) resizeAllForDashboard() {
 func (a *App) setError(msg string) {
 	a.err = msg
 	a.errTicks = 30
+}
+
+// forwardWheelToAgent encodes a mouse wheel event and feeds it to the agent's
+// terminal. Coordinates are translated from dashboard-screen space to cells
+// relative to the agent's PTY viewport and clamped to [0,W)×[0,H). The
+// emulator only emits bytes when the running program has enabled mouse
+// reporting (DECSET 1000/1002/1003 + SGR 1006).
+func (a *App) forwardWheelToAgent(ag *agent.Agent, msg tea.MouseWheelMsg) {
+	// Row/col offsets to the terminal viewport's top-left cell in screen
+	// space. Mirrors the hardcoded layout assumed by fixedTermHeight
+	// (contentHeight − 4 metadata rows − 2 border rows) plus whatever banner
+	// rows the app layer has pushed the dashboard down by. Exact precision
+	// isn't critical — most alt-screen apps treat wheel events as
+	// direction-only — but translating keeps the coords inside the viewport.
+	dashboardTopY := 0
+	if a.err != "" {
+		dashboardTopY++
+	}
+	if a.confirmQuit {
+		dashboardTopY++
+	}
+	const (
+		previewColOffset    = 32 // list panel width + list-panel right border
+		previewLeftBorder   = 1
+		previewTopBorder    = 1
+		previewMetadataRows = 4 // title, sessionInfo, taskInfo, blank separator
+	)
+	termX := msg.X - previewColOffset - previewLeftBorder
+	if termX < 0 {
+		termX = 0
+	}
+	if w := a.dashboard.fixedTermWidth(); w > 0 && termX >= w {
+		termX = w - 1
+	}
+	termY := msg.Y - dashboardTopY - previewTopBorder - previewMetadataRows
+	if termY < 0 {
+		termY = 0
+	}
+	if h := a.dashboard.fixedTermHeight(); h > 0 && termY >= h {
+		termY = h - 1
+	}
+	ag.SendMouse(xvt.MouseWheel{
+		X:      termX,
+		Y:      termY,
+		Button: xvt.MouseButton(msg.Button),
+		Mod:    xvt.KeyMod(msg.Mod),
+	})
 }
 
 func (a *App) refreshAgentList() {

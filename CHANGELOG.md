@@ -20,6 +20,7 @@ Every PR should update the `[Unreleased]` section with a short entry describing 
 ### Fixed
 
 - GoReleaser now publishes the Homebrew formula into the tap's `Formula/` directory (via `directory: Formula`). v0.1.0 landed `baton.rb` at the tap repo root, where newer Homebrew versions don't discover it — installs with `brew install devenjarvis/tap/baton` would fail with "No available formula."
+- Mouse-wheel scrolling now works inside Claude Code's `/tui fullscreen` mode. When the focused agent is in alt-screen, wheel events are forwarded to the agent (so Claude's internal scrollback handles them) instead of being consumed by baton's own scrollback buffer, which is inert for alt-screen apps. Exiting fullscreen restores baton's scrollback. Entering fullscreen while scrolled back snaps the preview back to live.
 
 ## [0.1.0] — 2026-04-18
 
