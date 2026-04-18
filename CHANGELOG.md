@@ -13,6 +13,10 @@ Every PR should update the `[Unreleased]` section with a short entry describing 
 
 - GoReleaser config and release workflow: pushing a `v*` tag builds darwin/linux amd64+arm64 archives, publishes a GitHub release, and updates the `devenjarvis/homebrew-tap` formula.
 
+### Changed
+
+- Reverted "Release mouse capture in focus terminal view": the focus terminal view now re-captures the mouse. Text selection via the host terminal's drag was unreliable (copied text included the surrounding TUI frame), and capturing the mouse restores consistent keybinding/scroll behavior in focus mode.
+
 ## [0.1.0] — 2026-04-18
 
 Initial public release.
