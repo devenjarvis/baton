@@ -9,37 +9,29 @@ Every PR should update the `[Unreleased]` section with a short entry describing 
 
 ## [Unreleased]
 
-### Added
-
-- IDE editor dropdown in global and per-repo settings. On macOS, probes `/Applications` and `~/Applications` for a curated list of editors (Zed, VS Code, Cursor, JetBrains IDEs) and generates `open -a "<App>"` invocations that take focus and support opening additional worktrees alongside an already-running editor window. Custom Command option preserves free-text entry; legacy stored values load unchanged.
-
-### Changed
-
-- Dashboard keybindings pruned: removed `p` (PR create/open), `m` (merge), and the force-quit `Q`. The remaining `q` handles the detach-and-exit flow; per-session cleanup stays on `X`. PR polling, status indicators, and `f` (fix checks) are unchanged.
-- Focus terminal view now releases mouse capture so the host terminal's native click-and-drag text selection works. Mouse-wheel scrollback in focus mode is replaced by keyboard scrollback (`pgup` / `pgdn` / `home`).
-
-### Fixed
-
-- Startup splash text artifacts when Claude Code enters its TUI (alt-screen transition detection replaces 500ms delayed resize heuristic).
-- Mid-repaint flicker in dashboard preview (StableRender with 16ms quiescence threshold).
-- VT emulator / lipgloss container sizing mismatch causing displaced content in focusList mode.
-- IDE launch path now uses a quote-aware tokenizer so multi-word app names in `open -a "Visual Studio Code"` style commands launch correctly instead of fragmenting on whitespace.
-
-## [0.1.0] — 2026-04-15
+## [0.1.0] — 2026-04-18
 
 Initial public release.
 
 ### Added
 
-- Dashboard view listing all managed agents with live status (idle/active/error) and visual-stability detection.
-- Focus mode: full-screen interactive session with a selected agent; all keys forwarded to the PTY.
-- Diff view: two-mode experience — summary list sorted by change magnitude, and side-by-side (≥120 cols) or unified (below) detail view.
+- Dashboard view listing all managed repos, sessions, and agents with live status (idle/active/waiting/done/error) and visual-stability detection.
+- Focus mode: interactive preview of a selected agent with keys forwarded to the PTY, keyboard scrollback (`pgup` / `pgdn` / `home`), and native click-and-drag text selection in the host terminal.
+- Diff view: summary list sorted by change magnitude, plus side-by-side (≥120 cols) or unified (below) detail view.
 - Merge: `git merge --no-ff` from a worktree branch into the base branch with cleanup of the worktree.
 - Prompt and merge overlays for creating and landing agent work without leaving the TUI.
-- `baton doctor` command for validating the environment (Go, git, `claude` on PATH).
+- `baton doctor` for validating git, `claude` on PATH (with `--settings` support), the baton binary, hook-pipeline round-trip, git repo, and GitHub auth.
+- Hook pipeline: per-session settings file wires Claude Code's hooks (`session-start`, `stop`, `session-end`, `notification`, `user-prompt-submit`) to `baton hook <event>`, routed back to the running TUI over a unix socket for hook-driven status detection.
+- GitHub integration: PR creation, checks/review polling, and a "fix failing checks" flow (`f`) that fetches failed check logs and dispatches them to an idle agent.
+- IDE editor dropdown in global and per-repo settings. On macOS, probes `/Applications` and `~/Applications` for a curated list of editors (Zed, VS Code, Cursor, JetBrains IDEs) and generates `open -a "<App>"` invocations that take focus and support opening additional worktrees alongside an already-running editor window. Custom Command option preserves free-text entry.
+- Shell agent: open a shell in the selected session's worktree without leaving the TUI (`t`).
+- Branch picker: start a session on an existing branch or PR (`o`).
+- Global and per-repo settings persisted on disk (`AgentProgram`, `BypassPermissions`, `IDECommand`, etc.).
+- Session persistence: `q` detaches cleanly; a later `baton` invocation reattaches to preserved worktrees.
 - Mouse support on the dashboard (click-to-select, click-to-focus).
-- Isolated git worktrees under `.baton/worktrees/<name>` on branches `baton/<name>`.
+- Isolated git worktrees under `.baton/worktrees/<name>` on branches `baton/<name>`, with `.baton/` auto-added to the repo's `.gitignore` on first run.
 - Virtual terminal bridge built on `charmbracelet/x/vt` for thread-safe rendering of agent output.
+- Optional audio chimes for status transitions.
 
 [Unreleased]: https://github.com/devenjarvis/baton/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/devenjarvis/baton/releases/tag/v0.1.0
