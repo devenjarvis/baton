@@ -19,6 +19,7 @@ Every PR should update the `[Unreleased]` section with a short entry describing 
 
 ### Fixed
 
+- Permission-prompt approvals now clear the waiting indicator immediately via Claude's `PreToolUse` hook, instead of lingering yellow until the turn ends.
 - GoReleaser now publishes the Homebrew formula into the tap's `Formula/` directory (via `directory: Formula`). v0.1.0 landed `baton.rb` at the tap repo root, where newer Homebrew versions don't discover it — installs with `brew install devenjarvis/tap/baton` would fail with "No available formula."
 
 ## [0.1.0] — 2026-04-18
