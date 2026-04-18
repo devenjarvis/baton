@@ -302,3 +302,303 @@ func waitForStatus(t *testing.T, a *Agent, want Status, d time.Duration) bool {
 	}
 	return false
 }
+
+// waitForClaudeName polls HasClaudeName() up to d for the desired value.
+// The rename side-effect runs after OnHookEvent inside the dispatcher goroutine,
+// so tests that care about naming must wait on this rather than on status.
+func waitForClaudeName(t *testing.T, a *Agent, want bool, d time.Duration) bool {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		if a.HasClaudeName() == want {
+			return true
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return false
+}
+
+// sendUserPromptSubmit is a convenience wrapper that dispatches a
+// UserPromptSubmit event through the manager's hook socket and waits for
+// HasClaudeName() to flip — the only reliable signal that applyAutoName has
+// finished running on the dispatcher goroutine.
+func sendUserPromptSubmit(t *testing.T, mgr *Manager, a *Agent, prompt string) {
+	t.Helper()
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindUserPromptSubmit,
+		AgentID: a.ID,
+		Prompt:  prompt,
+	}); err != nil {
+		t.Fatalf("SendEvent UserPromptSubmit: %v", err)
+	}
+	if !waitForClaudeName(t, a, true, 2*time.Second) {
+		t.Fatalf("HasClaudeName did not flip true after UserPromptSubmit")
+	}
+}
+
+// TestManagerRenamesOnFirstUserPromptSubmit verifies that the first
+// UserPromptSubmit with a non-empty prompt slugifies and applies it as the
+// display name on both the agent and its session.
+func TestManagerRenamesOnFirstUserPromptSubmit(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	cfg := Config{Name: "rename-first", Task: "test", Rows: 24, Cols: 80}
+	sess, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-mgr.Events():
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for EventCreated")
+	}
+
+	if sess.HasDisplayName() {
+		t.Fatalf("precondition: fresh random-named session should not have a display name")
+	}
+
+	sendUserPromptSubmit(t, mgr, ag, "Investigate flaky checkout test!")
+
+	const want = "investigate-flaky-checkout-test"
+	if got := ag.GetDisplayName(); got != want {
+		t.Errorf("agent display name: got %q, want %q", got, want)
+	}
+	if got := sess.GetDisplayName(); got != want {
+		t.Errorf("session display name: got %q, want %q", got, want)
+	}
+}
+
+// TestManagerSecondUserPromptSubmitDoesNotRename verifies that once
+// HasClaudeName is set (on the first prompt), subsequent UserPromptSubmit
+// events leave the display name alone even when the new prompt is different.
+func TestManagerSecondUserPromptSubmitDoesNotRename(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	cfg := Config{Name: "rename-second", Task: "test", Rows: 24, Cols: 80}
+	sess, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-mgr.Events():
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for EventCreated")
+	}
+
+	sendUserPromptSubmit(t, mgr, ag, "first prompt wins")
+
+	const want = "first-prompt-wins"
+	if got := ag.GetDisplayName(); got != want {
+		t.Fatalf("after first prompt: agent = %q, want %q", got, want)
+	}
+
+	// Second prompt must be a no-op. HasClaudeName is already true, so we
+	// can't reuse sendUserPromptSubmit's wait — just wait on status as a
+	// barrier that the dispatcher processed the event.
+	ag.mu.Lock()
+	ag.status = StatusIdle
+	ag.mu.Unlock()
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindUserPromptSubmit,
+		AgentID: ag.ID,
+		Prompt:  "later prompt should be ignored",
+	}); err != nil {
+		t.Fatalf("SendEvent: %v", err)
+	}
+	if !waitForStatus(t, ag, StatusActive, 2*time.Second) {
+		t.Fatalf("expected Active after second UserPromptSubmit")
+	}
+
+	if got := ag.GetDisplayName(); got != want {
+		t.Errorf("agent display name changed: got %q, want %q", got, want)
+	}
+	if got := sess.GetDisplayName(); got != want {
+		t.Errorf("session display name changed: got %q, want %q", got, want)
+	}
+}
+
+// TestManagerEmptyPromptConsumesOneShotGate verifies the one-shot rule:
+// a UserPromptSubmit with an empty prompt still flips HasClaudeName, so a
+// subsequent non-empty prompt cannot silently rename the agent.
+func TestManagerEmptyPromptConsumesOneShotGate(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	cfg := Config{Name: "rename-empty", Task: "initial task", Rows: 24, Cols: 80}
+	sess, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-mgr.Events():
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for EventCreated")
+	}
+
+	// newAgentWithCommand (used by CreateSessionWithCommand) doesn't set a
+	// displayName from cfg.Task the way newAgent does — so the agent's
+	// display name falls through to cfg.Name until the first UPS renames it.
+	const interim = "rename-empty"
+	if got := ag.GetDisplayName(); got != interim {
+		t.Fatalf("precondition: agent display name, got %q want %q", got, interim)
+	}
+
+	// Empty prompt: must flip HasClaudeName but NOT rename.
+	sendUserPromptSubmit(t, mgr, ag, "")
+	if got := ag.GetDisplayName(); got != interim {
+		t.Errorf("empty-prompt UPS renamed agent: got %q, want %q", got, interim)
+	}
+	if sess.HasDisplayName() {
+		t.Errorf("empty-prompt UPS set a session display name")
+	}
+
+	// Follow-up non-empty prompt is ignored (gate already consumed).
+	ag.mu.Lock()
+	ag.status = StatusIdle
+	ag.mu.Unlock()
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindUserPromptSubmit,
+		AgentID: ag.ID,
+		Prompt:  "too late",
+	}); err != nil {
+		t.Fatalf("SendEvent: %v", err)
+	}
+	if !waitForStatus(t, ag, StatusActive, 2*time.Second) {
+		t.Fatalf("expected Active after second UserPromptSubmit")
+	}
+	if got := ag.GetDisplayName(); got != interim {
+		t.Errorf("late prompt renamed agent past the gate: got %q, want %q", got, interim)
+	}
+}
+
+// TestManagerPreservesSessionDisplayName verifies that when a session already
+// has a display name (e.g. derived from an attached branch via
+// slugifyBranchName, or restored from persisted state), the first
+// UserPromptSubmit still renames the agent but leaves the session name alone.
+func TestManagerPreservesSessionDisplayName(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	cfg := Config{Name: "rename-branch", Task: "test", Rows: 24, Cols: 80}
+	sess, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-mgr.Events():
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for EventCreated")
+	}
+
+	const sessPreset = "add-login"
+	sess.SetDisplayName(sessPreset)
+
+	sendUserPromptSubmit(t, mgr, ag, "refactor auth middleware")
+
+	const wantAgent = "refactor-auth-middleware"
+	if got := ag.GetDisplayName(); got != wantAgent {
+		t.Errorf("agent rename: got %q, want %q", got, wantAgent)
+	}
+	if got := sess.GetDisplayName(); got != sessPreset {
+		t.Errorf("session display name overwritten: got %q, want %q", got, sessPreset)
+	}
+}
+
+// TestManagerDoneAgentIgnoresLateRename verifies that a stray UserPromptSubmit
+// event for a Done/Error agent doesn't auto-rename the terminal row. Mirrors
+// the Done-agent guard in OnHookEvent.
+func TestManagerDoneAgentIgnoresLateRename(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	cfg := Config{Name: "rename-done", Task: "test", Rows: 24, Cols: 80}
+	sess, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-mgr.Events():
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for EventCreated")
+	}
+
+	ag.mu.Lock()
+	ag.status = StatusDone
+	ag.mu.Unlock()
+
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindUserPromptSubmit,
+		AgentID: ag.ID,
+		Prompt:  "too late to rename",
+	}); err != nil {
+		t.Fatalf("SendEvent: %v", err)
+	}
+	// Give the dispatcher time to process — no observable barrier since the
+	// status guard in OnHookEvent short-circuits and HasClaudeName stays false.
+	time.Sleep(200 * time.Millisecond)
+
+	if ag.HasClaudeName() {
+		t.Error("HasClaudeName flipped true on a Done agent")
+	}
+	if got := ag.GetDisplayName(); got != "rename-done" {
+		t.Errorf("Done agent renamed: got %q, want %q", got, "rename-done")
+	}
+	if sess.HasDisplayName() {
+		t.Error("session renamed by late UPS on Done agent")
+	}
+}
+
+// TestManagerUnslugifiablePromptLeavesNamesUnchanged verifies a prompt that
+// slugifies to empty (e.g. all punctuation) doesn't clear existing names and
+// still consumes the one-shot gate.
+func TestManagerUnslugifiablePromptLeavesNamesUnchanged(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	cfg := Config{Name: "rename-punct", Task: "keep me", Rows: 24, Cols: 80}
+	sess, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-mgr.Events():
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for EventCreated")
+	}
+
+	// See TestManagerEmptyPromptConsumesOneShotGate — custom-command agents
+	// don't derive a display name from cfg.Task, so the baseline is cfg.Name.
+	const interim = "rename-punct"
+	if got := ag.GetDisplayName(); got != interim {
+		t.Fatalf("precondition: agent display name, got %q want %q", got, interim)
+	}
+
+	sendUserPromptSubmit(t, mgr, ag, "!!! ??? ...")
+
+	if got := ag.GetDisplayName(); got != interim {
+		t.Errorf("agent display name overwritten: got %q, want %q", got, interim)
+	}
+	if sess.HasDisplayName() {
+		t.Errorf("session display name set from unslugifiable prompt")
+	}
+}
