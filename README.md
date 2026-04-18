@@ -1,20 +1,25 @@
 # Baton
 
-A terminal-native tool for orchestrating multiple [Claude Code](https://docs.anthropic.com/en/docs/claude-code) agents in parallel. Each agent runs in an isolated git worktree with its own PTY, rendered via a virtual terminal emulator. Monitor agents from a dashboard, interact in focus mode, review diffs, and merge results — all without leaving the terminal.
+A terminal-native tool for orchestrating multiple [Claude Code](https://docs.anthropic.com/en/docs/claude-code) agents in parallel. Each agent runs in an isolated git worktree with its own PTY, rendered via a virtual terminal emulator. Monitor agents from a single dashboard, interact in focus mode, review diffs, open PRs, fix failing CI checks, and merge results — all without leaving the terminal.
 
 No tmux dependency.
+
+> ⚠️ **Alpha software — here be dragons.** Baton is on its very first public release (v0.1.0). APIs, on-disk state layout, config schema, and keybindings may change without notice between versions. The TUI, hook pipeline, and session-resume layers are still stabilizing; expect rough edges and the occasional crash. Git operations are conservative — Baton only writes to `baton/*` branches inside `.baton/worktrees/` and uses `git merge --no-ff` with explicit confirmation — but please keep your work committed and file issues when things break.
 
 ## Requirements
 
 - Go 1.25+
 - Git 2.20+
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude` on PATH)
+- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude` on PATH, with `--settings` support for hook integration)
+- Optional: `gh` CLI or `GITHUB_TOKEN` for PR creation, checks polling, and the "fix failing checks" flow
 
-Verify with:
+Verify your environment with:
 
 ```bash
 baton doctor
 ```
+
+`doctor` validates git, Claude Code, the baton binary, hook-pipeline round-trip, the current directory is a git repo, and GitHub auth.
 
 ## Install
 
@@ -38,61 +43,104 @@ Run `baton` inside a git repository:
 baton
 ```
 
+The first run auto-registers the current directory as a repo and adds `.baton/` to `.gitignore`. Additional repos can be added from the TUI (`a`).
+
 ### Keybindings
 
-**Dashboard:**
+**Dashboard** (list focused):
 
-| Key | Action |
-|-----|--------|
-| `j` / `k` | Navigate agent list |
-| `enter` | Focus selected agent (full-screen interactive) |
-| `n` | Create new agent |
-| `d` | View diff for selected agent |
-| `x` | Kill selected agent |
-| `m` | Merge selected agent's changes |
-| `q` | Quit (confirms if agents running) |
+| Key       | Action                                                     |
+|-----------|------------------------------------------------------------|
+| `j` / `k` | Navigate repos, sessions, and agents                       |
+| `⏎` / `→` | Focus terminal preview (on agent) or repo config (on repo) |
+| `n`       | Create a new session                                       |
+| `c`       | Add another agent to the selected session                  |
+| `t`       | Open or focus a shell in the selected session's worktree   |
+| `e`       | Open selected session's worktree in the configured IDE     |
+| `o`       | Create session on an existing branch or PR                 |
+| `a`       | Add a repo (file browser)                                  |
+| `s`       | Global settings                                            |
+| `d`       | Diff the session's worktree, or remove selected repo       |
+| `x`       | Kill the selected agent                                    |
+| `X`       | Kill the selected agent's entire session                   |
+| `f`       | Fix failing CI checks on the session's PR                  |
+| `q`       | Detach and exit (prompts if agents are running)            |
 
-**Focus mode:**
+**Focus mode** (terminal preview focused):
 
-| Key | Action |
-|-----|--------|
-| `ctrl+b` | Return to dashboard |
-| *all other keys* | Forwarded to the agent |
+| Key              | Action                                        |
+|------------------|-----------------------------------------------|
+| `ctrl+e` / `esc` | Return to list                                |
+| `shift+esc`      | Send ESC to the agent (e.g. Claude interrupt) |
+| `pgup` / `pgdn`  | Scroll backward / forward                     |
+| `home`           | Jump back to live output                      |
+| *drag*           | Native terminal text selection                |
+| *other keys*     | Forwarded to the agent                        |
 
-**Diff view:**
+**Diff summary:**
 
-| Key | Action |
-|-----|--------|
-| `j` / `k` | Scroll |
-| `d` / `u` | Page down / up |
-| `q` / `esc` | Back to dashboard |
+| Key       | Action             |
+|-----------|--------------------|
+| `j` / `k` | Navigate files     |
+| `⏎`       | Open file detail   |
+| `g` / `G` | Top / bottom       |
+| `q`       | Back to dashboard  |
+
+**Diff detail:**
+
+| Key       | Action              |
+|-----------|---------------------|
+| `j` / `k` | Scroll              |
+| `d` / `u` | Page down / up      |
+| `n` / `p` | Next / prev file    |
+| `esc`     | Back to summary     |
+| `q`       | Back to dashboard   |
+
+Click support on the dashboard: click a row in the list to select it; click in the preview panel to enter focus mode.
 
 ## How It Works
 
-When you create an agent, Baton:
+When you create a session, Baton:
 
-1. Creates an isolated git worktree at `.baton/worktrees/<name>` with branch `baton/<name>`
-2. Spawns `claude "<task>"` in a PTY inside that worktree
-3. Feeds PTY output through a virtual terminal emulator ([charmbracelet/x/vt](https://github.com/charmbracelet/x/vt))
-4. Renders the emulator's ANSI output in the TUI via [Bubble Tea v2](https://github.com/charmbracelet/bubbletea)
+1. Creates an isolated git worktree at `.baton/worktrees/<name>` on branch `baton/<name>`.
+2. Writes a settings file wiring Claude Code's hooks (`session-start`, `stop`, `notification`, `user-prompt-submit`, `session-end`) to `baton hook <event>` and points Claude at it with `claude --settings`.
+3. Spawns `claude "<task>"` in a PTY inside the worktree.
+4. Feeds PTY output through a virtual terminal emulator ([charmbracelet/x/vt](https://github.com/charmbracelet/x/vt)) and renders it in the dashboard via [Bubble Tea v2](https://github.com/charmbracelet/bubbletea).
+5. Listens on a per-process unix socket for hook events so the TUI can distinguish idle / active / waiting / done states without screen-scraping.
 
-When you merge, Baton runs `git merge --no-ff` from the worktree branch into your base branch, then cleans up the worktree.
+When you merge, Baton runs `git merge --no-ff` from the worktree branch into the session's base branch and cleans up the worktree.
 
 ## Architecture
 
 ```
 main.go              Entry point
 cmd/
-  root.go            Cobra root command, launches TUI
-  doctor.go          Environment validation
+  root.go            Cobra root, launches TUI
+  doctor.go          Environment validation (git, claude, hook round-trip)
+  hook.go            Forwards Claude hook payloads to the running baton over a unix socket
 internal/
-  pty/               PTY wrapper (creack/pty)
-  vt/                Virtual terminal bridge (x/vt SafeEmulator)
-  git/               Worktree CRUD, diff, merge
-  agent/             Agent lifecycle (PTY + VT + git composed)
-  tui/               Bubble Tea views (dashboard, focus, diff, prompt, merge)
+  pty/               Raw PTY wrapper (creack/pty)
+  vt/                Virtual terminal bridge (x/vt SafeEmulator + io.Pipe)
+  git/               Worktree CRUD, diff, merge via exec.Command("git", ...)
+  agent/             Agent + Session + Manager (composes PTY + VT + git, runs read/write/status loops)
+  tui/               Bubble Tea v2 views (dashboard, diff, repo/global config, file/branch pickers)
+  hook/              Unix-socket server + client for Claude Code hook events
+  github/            GitHub API wrapper for PRs, checks, review status
+  config/            Global and per-repo settings (JSON on disk, resolved at runtime)
+  state/             Session persistence across baton restarts
+  editor/            IDE launcher helpers (macOS app probing, quote-aware tokenizer)
+  audio/             Optional chimes for status transitions
+  e2e/               End-to-end TUI tests (behind the `e2e` build tag)
 ```
+
+## Contributing
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md). Bug reports and focused PRs are welcome; because Baton is a single-maintainer alpha, larger feature proposals should start as an issue.
+
+## Security
+
+See [SECURITY.md](./SECURITY.md) for how to report vulnerabilities.
 
 ## License
 
-MIT
+MIT — see [LICENSE](./LICENSE).
