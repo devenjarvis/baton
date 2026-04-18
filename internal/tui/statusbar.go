@@ -64,6 +64,7 @@ var (
 
 	repoConfigHints = []keyHint{
 		{"j/k", "navigate"},
+		{"←/→", "select"},
 		{"enter", "edit/toggle"},
 		{"ctrl+s", "save"},
 		{"esc", "back"},
