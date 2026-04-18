@@ -962,6 +962,28 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
+	if msg, ok := msg.(tea.MouseWheelMsg); ok {
+		if a.dashboard.panelFocus == focusTerminal {
+			ag := a.dashboard.selectedAgent()
+			if ag != nil {
+				switch msg.Button {
+				case tea.MouseWheelUp:
+					a.dashboard.scrollOffset += 3
+					maxOffset := len(ag.ScrollbackLines())
+					if a.dashboard.scrollOffset > maxOffset {
+						a.dashboard.scrollOffset = maxOffset
+					}
+				case tea.MouseWheelDown:
+					a.dashboard.scrollOffset -= 3
+					if a.dashboard.scrollOffset < 0 {
+						a.dashboard.scrollOffset = 0
+					}
+				}
+			}
+		}
+		return a, nil
+	}
+
 	prevSelected := a.dashboard.selected
 	var cmd tea.Cmd
 	a.dashboard, cmd = a.dashboard.Update(msg)
@@ -1328,7 +1350,7 @@ func (a App) View() tea.View {
 
 	v := tea.NewView(content)
 	v.AltScreen = true
-	if a.view == ViewDashboard && a.dashboard.panelFocus != focusTerminal {
+	if a.view == ViewDashboard {
 		v.MouseMode = tea.MouseModeCellMotion
 	}
 	return v
