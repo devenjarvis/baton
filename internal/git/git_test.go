@@ -137,7 +137,7 @@ func TestListWorktrees(t *testing.T) {
 	}
 }
 
-func TestDiffAndMerge(t *testing.T) {
+func TestDiff(t *testing.T) {
 	repo := initTestRepo(t)
 
 	wt, err := git.CreateWorktree(repo, "agent1", "", "", "")
@@ -185,21 +185,6 @@ func TestDiffAndMerge(t *testing.T) {
 	}
 	if stats.Insertions < 1 {
 		t.Errorf("expected at least 1 insertion, got %d", stats.Insertions)
-	}
-
-	// Merge the worktree back.
-	if err := git.MergeWorktree(repo, wt, "merge agent1 work"); err != nil {
-		t.Fatalf("MergeWorktree: %v", err)
-	}
-
-	// The merged file should now exist on the base branch.
-	mergedFile := filepath.Join(repo, "feature.txt")
-	data, err := os.ReadFile(mergedFile)
-	if err != nil {
-		t.Fatalf("reading merged file: %v", err)
-	}
-	if string(data) != "new feature\n" {
-		t.Errorf("expected 'new feature\\n', got %q", string(data))
 	}
 }
 

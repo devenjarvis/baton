@@ -65,30 +65,6 @@ func (c *Client) ListPRs(ctx context.Context, owner, repo string) ([]*PRState, e
 	return states, nil
 }
 
-// CreatePR creates a new pull request and returns its state.
-func (c *Client) CreatePR(ctx context.Context, owner, repo, head, base, title, body string) (*PRState, error) {
-	pr, _, err := c.gh.PullRequests.Create(ctx, owner, repo, &gh.NewPullRequest{
-		Title: gh.Ptr(title),
-		Head:  gh.Ptr(head),
-		Base:  gh.Ptr(base),
-		Body:  gh.Ptr(body),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("creating PR: %w", err)
-	}
-
-	return prToState(pr), nil
-}
-
-// MergePR merges the pull request using the repository's default merge method.
-func (c *Client) MergePR(ctx context.Context, owner, repo string, number int) error {
-	_, _, err := c.gh.PullRequests.Merge(ctx, owner, repo, number, "", nil)
-	if err != nil {
-		return fmt.Errorf("merging PR #%d: %w", number, err)
-	}
-	return nil
-}
-
 // GetChecks returns the combined check status for the given git ref (SHA or branch).
 func (c *Client) GetChecks(ctx context.Context, owner, repo, ref string) (*CheckStatus, error) {
 	result, _, err := c.gh.Checks.ListCheckRunsForRef(ctx, owner, repo, ref, &gh.ListCheckRunsOptions{

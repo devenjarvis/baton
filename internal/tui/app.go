@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -79,7 +78,6 @@ type App struct {
 	view         ViewMode
 	dashboard    dashboardModel
 	diff         diffModel
-	merge        mergeModel
 	globalConfig globalConfigModel
 
 	width       int
@@ -162,8 +160,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.height = msg.Height
 		a.dashboard.width = msg.Width
 		a.dashboard.height = msg.Height - 1 // room for statusbar
-		a.merge.width = msg.Width
-		a.merge.height = msg.Height
 		a.diff.width = msg.Width
 		a.diff.height = msg.Height - 1
 		a.repoBrowser.width = msg.Width
@@ -357,7 +353,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// the TUI dequeuing this event would otherwise clobber the cached "prev
 		// was Active" signal and silently suppress the chime.
 		if msg.event.Type == agent.EventStatusChanged {
-			if msg.event.Status == agent.StatusIdle {
+			// Chime on both Idle (Claude finished its turn) and Waiting
+			// (Claude needs user input). ChimedForTurn is the shared gate:
+			// whichever fires first in a turn wins, and the other is
+			// silently skipped. The flag resets on Enter or UserPromptSubmit.
+			if msg.event.Status == agent.StatusIdle || msg.event.Status == agent.StatusWaiting {
 				if mgr := a.managers[msg.repoPath]; mgr != nil {
 					if ag := mgr.Get(msg.event.AgentID); ag != nil && !ag.IsShell {
 						if ag.HasReceivedInput() && !ag.ChimedForTurn() {
@@ -457,17 +457,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 
-	case prCreateMsg:
-		if msg.err != nil {
-			a.setError(msg.err.Error())
-			return a, nil
-		}
-		if msg.pr != nil {
-			a.prCache[msg.sessionID] = &prCacheEntry{pr: msg.pr}
-			a.updateDashboardPRCache()
-		}
-		return a, nil
-
 	case resumeDoneMsg:
 		for _, repoPath := range msg.repoPaths {
 			_ = state.Remove(repoPath)
@@ -489,8 +478,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a.updateDashboard(msg)
 	case ViewDiff:
 		return a.updateDiff(msg)
-	case ViewMerge:
-		return a.updateMerge(msg)
 	case ViewFileBrowser:
 		return a.updateFileBrowser(msg)
 	case ViewGlobalConfig:
@@ -599,27 +586,6 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else {
 					_ = state.Remove(repoPath)
 				}
-			}
-			if a.audioPlayer != nil {
-				a.audioPlayer.Close()
-			}
-			return a, tea.Quit
-		case "Q":
-			// Force quit: full cleanup, remove state.
-			hasRunning := false
-			for _, mgr := range a.managers {
-				if mgr.AgentCount() > 0 {
-					hasRunning = true
-					break
-				}
-			}
-			if hasRunning && !a.confirmQuit {
-				a.confirmQuit = true
-				return a, nil
-			}
-			for repoPath, mgr := range a.managers {
-				mgr.Shutdown()
-				_ = state.Remove(repoPath)
 			}
 			if a.audioPlayer != nil {
 				a.audioPlayer.Close()
@@ -886,94 +852,6 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.updateDashboardDiffStats()
 			return a, nil
 
-		case "p":
-			// Create PR or open existing PR URL.
-			if a.ghClient == nil {
-				a.setError("GitHub not configured (install gh CLI or set GITHUB_TOKEN)")
-				return a, nil
-			}
-			sess := a.dashboard.selectedSession()
-			if sess == nil {
-				a.setError("No session selected")
-				return a, nil
-			}
-			repoPath := a.dashboard.selectedRepoPath()
-			if repoPath == "" {
-				return a, nil
-			}
-			// If session already has a PR, open it in browser.
-			if entry := a.prCache[sess.ID]; entry != nil && entry.pr != nil {
-				url := entry.pr.URL
-				go func() {
-					switch runtime.GOOS {
-					case "darwin":
-						_ = exec.Command("open", url).Run()
-					case "linux":
-						_ = exec.Command("xdg-open", url).Run()
-					default:
-						_ = exec.Command("xdg-open", url).Run()
-					}
-				}()
-				return a, nil
-			}
-			// Otherwise, push branch and create PR.
-			sessionID := sess.ID
-			branch := sess.Worktree.Branch
-			baseBranch := sess.Worktree.BaseBranch
-			title := sess.GetDisplayName()
-			ghClient := a.ghClient
-			return a, func() tea.Msg {
-				// Push branch first.
-				if err := git.PushBranch(repoPath, branch); err != nil {
-					return prCreateMsg{sessionID: sessionID, err: err}
-				}
-				// Parse remote to get owner/repo.
-				rawURL, err := git.GetRemoteURL(repoPath)
-				if err != nil {
-					return prCreateMsg{sessionID: sessionID, err: err}
-				}
-				owner, repo, err := github.ParseRemoteURL(rawURL)
-				if err != nil {
-					return prCreateMsg{sessionID: sessionID, err: err}
-				}
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-				pr, err := ghClient.CreatePR(ctx, owner, repo, branch, baseBranch, title, "")
-				return prCreateMsg{sessionID: sessionID, pr: pr, err: err}
-			}
-
-		case "m":
-			item := a.dashboard.selectedItem()
-			if item == nil {
-				return a, nil
-			}
-			sess := a.dashboard.selectedSession()
-			if sess == nil {
-				return a, nil
-			}
-			// Check that all non-shell agents in the session are done or idle.
-			for _, ag := range sess.Agents() {
-				if ag.IsShell {
-					continue
-				}
-				st := ag.Status()
-				if st != agent.StatusDone && st != agent.StatusIdle {
-					a.setError("All agents in session must be done or idle to merge")
-					return a, nil
-				}
-			}
-			a.activeRepo = item.repoPath
-			a.view = ViewMerge
-			a.merge = newMergeModel(sess.Name, sess.Worktree.Branch, sess.Worktree.BaseBranch)
-			// If session has a PR, merge via GitHub API.
-			if entry := a.prCache[sess.ID]; entry != nil && entry.pr != nil {
-				a.merge.viaPR = true
-				a.merge.prNumber = entry.pr.Number
-			}
-			a.merge.width = a.width
-			a.merge.height = a.height
-			return a, nil
-
 		case "f":
 			// Fix failing checks: fetch logs and send to an idle agent.
 			if a.ghClient == nil {
@@ -1084,28 +962,6 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
-	if msg, ok := msg.(tea.MouseWheelMsg); ok {
-		if a.dashboard.panelFocus == focusTerminal {
-			ag := a.dashboard.selectedAgent()
-			if ag != nil {
-				switch msg.Button {
-				case tea.MouseWheelUp:
-					a.dashboard.scrollOffset += 3
-					maxOffset := len(ag.ScrollbackLines())
-					if a.dashboard.scrollOffset > maxOffset {
-						a.dashboard.scrollOffset = maxOffset
-					}
-				case tea.MouseWheelDown:
-					a.dashboard.scrollOffset -= 3
-					if a.dashboard.scrollOffset < 0 {
-						a.dashboard.scrollOffset = 0
-					}
-				}
-			}
-		}
-		return a, nil
-	}
-
 	prevSelected := a.dashboard.selected
 	var cmd tea.Cmd
 	a.dashboard, cmd = a.dashboard.Update(msg)
@@ -1195,81 +1051,6 @@ func (a App) updateDiff(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	a.diff, cmd = a.diff.Update(msg)
-	return a, cmd
-}
-
-func (a App) updateMerge(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case mergeCancelMsg:
-		a.view = ViewDashboard
-		return a, nil
-	case mergeConfirmMsg:
-		sess := a.dashboard.selectedSession()
-		if sess == nil {
-			a.view = ViewDashboard
-			return a, nil
-		}
-		activeRepo := a.activeRepo
-		wt := sess.Worktree
-		viaPR := a.merge.viaPR
-		prNumber := a.merge.prNumber
-		ghClient := a.ghClient
-		return a, func() tea.Msg {
-			if viaPR && ghClient != nil {
-				// Merge via GitHub API.
-				rawURL, err := git.GetRemoteURL(activeRepo)
-				if err != nil {
-					return mergeCompleteMsg{err: err}
-				}
-				owner, repo, err := github.ParseRemoteURL(rawURL)
-				if err != nil {
-					return mergeCompleteMsg{err: err}
-				}
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-				if err := ghClient.MergePR(ctx, owner, repo, prNumber); err != nil {
-					return mergeCompleteMsg{err: err}
-				}
-				return mergeCompleteMsg{}
-			}
-			// Local git merge.
-			message := "Merge " + wt.Branch + " into " + wt.BaseBranch
-			err := git.MergeWorktree(activeRepo, wt, message)
-			return mergeCompleteMsg{err: err}
-		}
-	case mergeCompleteMsg:
-		if msg.err != nil {
-			a.merge.errMsg = msg.err.Error()
-			return a, nil
-		}
-		// Merge succeeded — clean up the entire session.
-		// Collect agent IDs before KillSession clears the agents map.
-		sess := a.dashboard.selectedSession()
-		if sess != nil {
-			sessID := sess.ID
-			for _, ag := range sess.Agents() {
-				delete(a.lastKnownStatus, ag.ID)
-			}
-			item := a.dashboard.selectedItem()
-			if item != nil {
-				mgr := a.managers[item.repoPath]
-				if mgr != nil {
-					_ = mgr.KillSession(sessID)
-				}
-			}
-			delete(a.diffStatsCache, sessID)
-			delete(a.prCache, sessID)
-			delete(a.prPollStates, sessID)
-			a.refreshAgentList()
-			a.updateDashboardDiffStats()
-			a.updateDashboardPRCache()
-		}
-		a.view = ViewDashboard
-		return a, nil
-	}
-
-	var cmd tea.Cmd
-	a.merge, cmd = a.merge.Update(msg)
 	return a, cmd
 }
 
@@ -1521,8 +1302,6 @@ func (a App) View() tea.View {
 		}
 		statusbar := renderStatusBar(hints, a.width)
 		content = lipgloss.JoinVertical(lipgloss.Left, body, statusbar)
-	case ViewMerge:
-		content = a.merge.View()
 	case ViewFileBrowser:
 		body := a.repoBrowser.View()
 		statusbar := renderStatusBar(repoBrowsingHints, a.width)
@@ -1537,7 +1316,7 @@ func (a App) View() tea.View {
 
 	// Show quit confirmation.
 	if a.confirmQuit {
-		confirmLine := StyleWarning.Render("Agents are running. q to detach (resume later), Q to quit and clean up, any key to cancel.")
+		confirmLine := StyleWarning.Render("Agents are running. Press q again to detach, any other key to cancel.")
 		content = lipgloss.JoinVertical(lipgloss.Left, confirmLine, content)
 	}
 
@@ -1549,7 +1328,7 @@ func (a App) View() tea.View {
 
 	v := tea.NewView(content)
 	v.AltScreen = true
-	if a.view == ViewDashboard {
+	if a.view == ViewDashboard && a.dashboard.panelFocus != focusTerminal {
 		v.MouseMode = tea.MouseModeCellMotion
 	}
 	return v

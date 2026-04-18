@@ -6,7 +6,6 @@ type ViewMode int
 const (
 	ViewDashboard ViewMode = iota
 	ViewDiff
-	ViewMerge        // overlay
 	ViewFileBrowser  // overlay: browse filesystem to add a repo
 	ViewGlobalConfig // overlay: edit global settings
 	ViewBranchPicker // overlay: pick branch/PR to open session on

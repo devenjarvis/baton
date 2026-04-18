@@ -25,15 +25,13 @@ var (
 		{"d", "diff/remove"},
 		{"x", "kill agent"},
 		{"X", "kill session"},
-		{"p", "PR"},
 		{"f", "fix checks"},
-		{"m", "merge"},
-		{"q", "detach"},
-		{"Q", "quit"},
+		{"q", "quit"},
 	}
 
 	focusTerminalHints = []keyHint{
 		{"enter", "send"},
+		{"drag", "select text"},
 		{"pgup/pgdn", "scroll"},
 		{"home", "live"},
 		{"esc", "back"},

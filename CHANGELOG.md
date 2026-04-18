@@ -13,6 +13,11 @@ Every PR should update the `[Unreleased]` section with a short entry describing 
 
 - IDE editor dropdown in global and per-repo settings. On macOS, probes `/Applications` and `~/Applications` for a curated list of editors (Zed, VS Code, Cursor, JetBrains IDEs) and generates `open -a "<App>"` invocations that take focus and support opening additional worktrees alongside an already-running editor window. Custom Command option preserves free-text entry; legacy stored values load unchanged.
 
+### Changed
+
+- Dashboard keybindings pruned: removed `p` (PR create/open), `m` (merge), and the force-quit `Q`. The remaining `q` handles the detach-and-exit flow; per-session cleanup stays on `X`. PR polling, status indicators, and `f` (fix checks) are unchanged.
+- Focus terminal view now releases mouse capture so the host terminal's native click-and-drag text selection works. Mouse-wheel scrollback in focus mode is replaced by keyboard scrollback (`pgup` / `pgdn` / `home`).
+
 ### Fixed
 
 - Startup splash text artifacts when Claude Code enters its TUI (alt-screen transition detection replaces 500ms delayed resize heuristic).

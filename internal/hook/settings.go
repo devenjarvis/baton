@@ -45,9 +45,11 @@ func WriteHooksFile(path string) error {
 
 	schema := settingsSchema{
 		Hooks: map[string][]hookMatcher{
-			"SessionStart": {{Hooks: []hookCommand{{Type: "command", Command: batonPath + " hook session-start"}}}},
-			"Stop":         {{Hooks: []hookCommand{{Type: "command", Command: batonPath + " hook stop"}}}},
-			"SessionEnd":   {{Hooks: []hookCommand{{Type: "command", Command: batonPath + " hook session-end"}}}},
+			"SessionStart":     {{Hooks: []hookCommand{{Type: "command", Command: batonPath + " hook session-start"}}}},
+			"Stop":             {{Hooks: []hookCommand{{Type: "command", Command: batonPath + " hook stop"}}}},
+			"SessionEnd":       {{Hooks: []hookCommand{{Type: "command", Command: batonPath + " hook session-end"}}}},
+			"Notification":     {{Hooks: []hookCommand{{Type: "command", Command: batonPath + " hook notification"}}}},
+			"UserPromptSubmit": {{Hooks: []hookCommand{{Type: "command", Command: batonPath + " hook user-prompt-submit"}}}},
 		},
 	}
 

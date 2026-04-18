@@ -43,6 +43,10 @@ func runHook(cmd *cobra.Command, args []string) error {
 		kind = hook.KindStop
 	case "session-end":
 		kind = hook.KindSessionEnd
+	case "notification":
+		kind = hook.KindNotification
+	case "user-prompt-submit":
+		kind = hook.KindUserPromptSubmit
 	default:
 		return nil
 	}
@@ -62,10 +66,12 @@ func runHook(cmd *cobra.Command, args []string) error {
 	}
 
 	// Parse just the fields we route on; keep the rest in Raw so the server
-	// can inspect extras if it cares later.
+	// can inspect extras if it cares later. `message` is only populated by
+	// Notification payloads — other kinds will leave it empty.
 	var payload struct {
 		SessionID string `json:"session_id"`
 		CWD       string `json:"cwd"`
+		Message   string `json:"message"`
 	}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &payload); err != nil {
@@ -79,6 +85,7 @@ func runHook(cmd *cobra.Command, args []string) error {
 		AgentID:   agentID,
 		SessionID: payload.SessionID,
 		CWD:       payload.CWD,
+		Message:   payload.Message,
 		Raw:       json.RawMessage(raw),
 	}
 
