@@ -701,6 +701,133 @@ func TestMouseWheelScrollInFocusTerminal(t *testing.T) {
 	}
 }
 
+// waitForAltScreen polls ag.IsAltScreen() until true or the timeout expires.
+func waitForAltScreen(t *testing.T, ag *agent.Agent) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if ag.IsAltScreen() {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("agent did not enter alt-screen within timeout")
+}
+
+// altScreenBashCmd emits DECSET 1049 (alt-screen) + 1002 (button-event mouse)
+// + 1006 (SGR ext encoding) so the agent both enters alt-screen AND accepts
+// SendMouse events, then sleeps so the process stays alive.
+func altScreenBashCmd(_ string) *exec.Cmd {
+	return exec.Command("bash", "-c", `printf '\033[?1049h\033[?1002h\033[?1006h'; sleep 10`)
+}
+
+func TestMouseWheelForwardsInAltScreen(t *testing.T) {
+	dir, err := os.MkdirTemp("", "baton-alt-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+
+	run := func(args ...string) {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("cmd %v: %v\n%s", args, err, out)
+		}
+	}
+	run("git", "init")
+	run("git", "config", "commit.gpgsign", "false")
+	run("git", "commit", "--allow-empty", "-m", "init")
+
+	mgr := agent.NewManager(dir, config.Resolve(nil, nil))
+	defer mgr.Shutdown()
+
+	sess, ag, err := mgr.CreateSessionWithCommand(agent.Config{
+		Name: "alt-wheel", Task: "test", RepoPath: dir, Rows: 24, Cols: 80,
+	}, altScreenBashCmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForAltScreen(t, ag)
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.managers[dir] = mgr
+	app.activeRepo = dir
+	app.dashboard.items = []listItem{
+		{kind: listItemAgent, repoPath: dir, session: sess, agent: ag},
+	}
+	app.dashboard.panelFocus = focusTerminal
+
+	// Set a non-zero offset so we can tell the wheel branch didn't mutate it.
+	app.dashboard.scrollOffset = 5
+	model, _ := app.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp, X: 40, Y: 10})
+	app = model.(App)
+	if app.dashboard.scrollOffset != 5 {
+		t.Fatalf("expected scrollOffset untouched (=5) when agent is in alt-screen, got %d", app.dashboard.scrollOffset)
+	}
+
+	model, _ = app.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown, X: 40, Y: 10})
+	app = model.(App)
+	if app.dashboard.scrollOffset != 5 {
+		t.Fatalf("expected scrollOffset untouched on WheelDown in alt-screen, got %d", app.dashboard.scrollOffset)
+	}
+}
+
+func TestScrollOffsetResetsOnAltScreenEntry(t *testing.T) {
+	dir, err := os.MkdirTemp("", "baton-alt-reset-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+
+	run := func(args ...string) {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("cmd %v: %v\n%s", args, err, out)
+		}
+	}
+	run("git", "init")
+	run("git", "config", "commit.gpgsign", "false")
+	run("git", "commit", "--allow-empty", "-m", "init")
+
+	mgr := agent.NewManager(dir, config.Resolve(nil, nil))
+	defer mgr.Shutdown()
+
+	sess, ag, err := mgr.CreateSessionWithCommand(agent.Config{
+		Name: "alt-reset", Task: "test", RepoPath: dir, Rows: 24, Cols: 80,
+	}, altScreenBashCmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForAltScreen(t, ag)
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.managers[dir] = mgr
+	app.activeRepo = dir
+	app.dashboard.items = []listItem{
+		{kind: listItemAgent, repoPath: dir, session: sess, agent: ag},
+	}
+	app.dashboard.selected = 0
+	app.dashboard.scrollOffset = 42
+
+	// A tickMsg drives the alt-screen-entered consumer. Since selected==ag,
+	// the transition should reset scrollOffset to 0.
+	model, _ := app.Update(tickMsg(time.Now()))
+	app = model.(App)
+	if app.dashboard.scrollOffset != 0 {
+		t.Fatalf("expected scrollOffset reset to 0 after alt-screen entry tick, got %d", app.dashboard.scrollOffset)
+	}
+}
+
 func TestErrorPersistsAcrossTicks(t *testing.T) {
 	app := NewApp()
 	app.width = 120

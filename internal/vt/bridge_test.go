@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	xvt "github.com/charmbracelet/x/vt"
 )
 
 func TestWriteAndRender(t *testing.T) {
@@ -419,6 +421,87 @@ func TestAltScreenEnteredNoSpuriousTransition(t *testing.T) {
 	_, _ = term.Write([]byte("more content in alt screen"))
 	if term.AltScreenEntered() {
 		t.Error("AltScreenEntered() should be false when already in alt screen (no new transition)")
+	}
+}
+
+// readAllAvailable drains up to bufsz bytes from term.Read in the background.
+// Used by tests that need to assert what bytes the emulator wrote to the PTY
+// side after a SendKey/SendMouse call.
+func readAllAvailable(t *testing.T, term *Terminal) []byte {
+	t.Helper()
+	type res struct {
+		data []byte
+		err  error
+	}
+	ch := make(chan res, 1)
+	go func() {
+		buf := make([]byte, 1024)
+		n, err := term.Read(buf)
+		ch <- res{buf[:n], err}
+	}()
+	select {
+	case r := <-ch:
+		if r.err != nil {
+			t.Fatalf("Read failed: %v", r.err)
+		}
+		return r.data
+	case <-time.After(2 * time.Second):
+		t.Fatal("Read timed out after 2 seconds")
+		return nil
+	}
+}
+
+func TestSendMouseEmitsSGRWhenReportingEnabled(t *testing.T) {
+	term := New(80, 24)
+	defer term.Close()
+
+	// Enable button-event mouse reporting (DECSET 1002) + SGR ext mode (1006).
+	// Without this pair the emulator emits nothing, matching real terminals
+	// that only forward mouse bytes to apps that opted in.
+	_, _ = term.Write([]byte("\x1b[?1002h\x1b[?1006h"))
+
+	term.SendMouse(xvt.MouseWheel{X: 5, Y: 7, Button: xvt.MouseWheelUp})
+
+	got := string(readAllAvailable(t, term))
+	// SGR wheel-up: ESC [ < 64 ; X+1 ; Y+1 M  (coords are 1-based)
+	want := "\x1b[<64;6;8M"
+	if got != want {
+		t.Errorf("SendMouse wheel-up SGR: got %q, want %q", got, want)
+	}
+}
+
+func TestSendMouseNoOpWhenReportingDisabled(t *testing.T) {
+	term := New(80, 24)
+	defer term.Close()
+
+	// Kick the bridgeRead goroutine by writing a harmless byte we can drain.
+	// Without any reporting mode enabled, SendMouse must not emit anything —
+	// so we use SendText after to verify nothing from SendMouse is lurking.
+	term.SendMouse(xvt.MouseWheel{X: 1, Y: 1, Button: xvt.MouseWheelDown})
+	term.SendText("x")
+
+	got := string(readAllAvailable(t, term))
+	if got != "x" {
+		t.Errorf("expected only SendText bytes %q after no-reporting SendMouse, got %q", "x", got)
+	}
+}
+
+func TestIsAltScreen(t *testing.T) {
+	term := New(80, 24)
+	defer term.Close()
+
+	if term.IsAltScreen() {
+		t.Error("expected IsAltScreen() false before any writes")
+	}
+
+	_, _ = term.Write([]byte("\x1b[?1049h"))
+	if !term.IsAltScreen() {
+		t.Error("expected IsAltScreen() true after DECSET 1049")
+	}
+
+	_, _ = term.Write([]byte("\x1b[?1049l"))
+	if term.IsAltScreen() {
+		t.Error("expected IsAltScreen() false after DECRST 1049")
 	}
 }
 

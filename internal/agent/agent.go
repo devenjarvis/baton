@@ -487,6 +487,21 @@ func (a *Agent) SendKey(key xvt.KeyPressEvent) {
 	a.terminal.SendKey(key)
 }
 
+// SendMouse forwards a mouse event to the VT terminal. The terminal's emulator
+// only emits bytes to the PTY when the running program has enabled mouse
+// reporting (DECSET 1000/1002/1003 + SGR 1006), so this is a no-op when the
+// agent hasn't opted in. Used to drive Claude Code's `/tui fullscreen` scrollback.
+func (a *Agent) SendMouse(m xvt.Mouse) {
+	a.terminal.SendMouse(m)
+}
+
+// IsAltScreen reports whether the agent's terminal is currently rendering into
+// the alternate screen buffer (DECSET 1049). True while Claude is in
+// `/tui fullscreen`; false for normal line-mode Claude.
+func (a *Agent) IsAltScreen() bool {
+	return a.terminal.IsAltScreen()
+}
+
 // SendText forwards text input to the VT terminal.
 func (a *Agent) SendText(text string) {
 	a.mu.Lock()
