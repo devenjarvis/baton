@@ -120,12 +120,13 @@ func hookSocketPath(repoPath string) string {
 func (m *Manager) dispatchHookEvents() {
 	defer m.hookDispatcher.Done()
 	for e := range m.hookServer.Events() {
-		a, sessID := m.findAgent(e.AgentID)
+		a, sess := m.findAgentAndSession(e.AgentID)
 		if a == nil {
 			// This can happen if an agent has already been killed but Claude's
 			// final Stop/SessionEnd hook is still in flight. Drop silently.
 			continue
 		}
+		sessID := sess.ID
 		if changed := a.OnHookEvent(e); changed {
 			m.emit(Event{
 				Type:      EventStatusChanged,
@@ -134,20 +135,67 @@ func (m *Manager) dispatchHookEvents() {
 				Status:    a.Status(),
 			})
 		}
+
+		// First meaningful user prompt in a session renames its random
+		// adjective-noun branch to a slug derived from the prompt. Failures
+		// are logged and dropped so the user's turn is never blocked.
+		if e.Kind == hook.KindUserPromptSubmit {
+			m.maybeRenameFromPrompt(sess, e.Prompt)
+		}
 	}
 }
 
-// findAgent locates an agent across all sessions and returns it with the
-// containing session ID.
-func (m *Manager) findAgent(agentID string) (*Agent, string) {
+// maybeRenameFromPrompt renames the session's branch based on the user's
+// first real prompt. Idempotent: sessions that already have a Claude-derived
+// name are skipped, and prompts that slugify to empty (e.g. "/clear") leave
+// the flag unset so the next prompt can try again.
+func (m *Manager) maybeRenameFromPrompt(sess *Session, prompt string) {
+	if sess == nil || sess.HasClaudeName() {
+		return
+	}
+	suffix := suffixFromPrompt(prompt)
+	if suffix == "" {
+		return
+	}
+
+	m.mu.RLock()
+	prefix := m.settings.BranchPrefix
+	m.mu.RUnlock()
+	newBranch := config.ExpandBranchPrefix(prefix) + suffix
+
+	// Best effort: on failure, hasClaudeName stays false so the next prompt
+	// will retry. Writing to stderr during an active TUI alt-screen scrambles
+	// the rendered UI, so the error is swallowed here — users see the
+	// unchanged branch label in the preview as the implicit signal.
+	if _, err := sess.RenameBranch(m.repoPath, newBranch); err != nil {
+		return
+	}
+
+	// Let the UI pick up the new branch/name on its next tick. We emit a
+	// status-changed event against any agent in the session so the TUI
+	// refresh path runs.
+	if agents := sess.Agents(); len(agents) > 0 {
+		lead := agents[0]
+		m.emit(Event{
+			Type:      EventStatusChanged,
+			AgentID:   lead.ID,
+			SessionID: sess.ID,
+			Status:    lead.Status(),
+		})
+	}
+}
+
+// findAgentAndSession locates an agent across all sessions and returns it
+// alongside its containing session.
+func (m *Manager) findAgentAndSession(agentID string) (*Agent, *Session) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for _, s := range m.sessions {
 		if a := s.GetAgent(agentID); a != nil {
-			return a, s.ID
+			return a, s
 		}
 	}
-	return nil, ""
+	return nil, nil
 }
 
 // UpdateSettings replaces the manager's resolved settings.
@@ -281,7 +329,7 @@ func (m *Manager) createSessionOnBranchWorktree(branch, baseBranch string, cfg C
 	m.mu.Lock()
 	existing := make([]string, 0, len(m.sessions))
 	for _, s := range m.sessions {
-		existing = append(existing, s.Name)
+		existing = append(existing, s.CurrentName())
 	}
 	name := slugifyBranchName(branch, existing)
 	m.nextID++
@@ -307,6 +355,9 @@ func (m *Manager) createSessionOnBranchWorktree(branch, baseBranch string, cfg C
 	sess := newSession(id, name, wt)
 	sess.hookSocketPath = m.hookSocketPath
 	// ownsBranch stays false — we didn't create this branch.
+	// Attached sessions already have a meaningful branch name (the one the
+	// user picked), so skip the first-prompt rename heuristic.
+	sess.SetClaudeName(true)
 
 	m.mu.Lock()
 	m.sessions[id] = sess
@@ -343,7 +394,7 @@ func (m *Manager) createSessionWorktree(cfg Config) (*Session, error) {
 	m.mu.Lock()
 	existing := make([]string, 0, len(m.sessions))
 	for _, s := range m.sessions {
-		existing = append(existing, s.Name)
+		existing = append(existing, s.CurrentName())
 	}
 	name := RandomName(existing)
 	m.nextID++
@@ -373,7 +424,7 @@ func (m *Manager) createSessionWorktree(cfg Config) (*Session, error) {
 		}
 	}
 
-	wt, err := git.CreateWorktree(m.repoPath, name, settings.BranchPrefix, settings.WorktreeDir, baseBranch, startPoint)
+	wt, err := git.CreateWorktree(m.repoPath, name, config.ExpandBranchPrefix(settings.BranchPrefix), settings.WorktreeDir, baseBranch, startPoint)
 	if err != nil {
 		return nil, fmt.Errorf("creating worktree: %w", err)
 	}
@@ -673,13 +724,14 @@ func (m *Manager) Detach() *state.BatonState {
 	sessionStates := make([]state.SessionState, 0, len(sessions))
 	for _, s := range sessions {
 		ss := state.SessionState{
-			ID:           s.ID,
-			Name:         s.Name,
-			DisplayName:  s.GetDisplayName(),
-			WorktreePath: s.Worktree.Path,
-			Branch:       s.Worktree.Branch,
-			BaseBranch:   s.Worktree.BaseBranch,
-			OwnsBranch:   s.ownsBranch,
+			ID:            s.ID,
+			Name:          s.CurrentName(),
+			DisplayName:   s.GetDisplayName(),
+			WorktreePath:  s.Worktree.Path,
+			Branch:        s.Branch(),
+			BaseBranch:    s.Worktree.BaseBranch,
+			OwnsBranch:    s.ownsBranch,
+			HasClaudeName: s.HasClaudeName(),
 		}
 		for _, a := range s.Agents() {
 			as := state.AgentState{
@@ -744,6 +796,7 @@ func (m *Manager) ResumeSession(ss state.SessionState, cfg Config) error {
 	sess := newSession(ss.ID, ss.Name, wt)
 	sess.hookSocketPath = m.hookSocketPath
 	sess.ownsBranch = ss.OwnsBranch
+	sess.SetClaudeName(ss.HasClaudeName)
 	if ss.DisplayName != "" && ss.DisplayName != ss.Name {
 		sess.SetDisplayName(ss.DisplayName)
 	}

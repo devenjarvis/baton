@@ -24,14 +24,16 @@ const (
 // SessionID and CWD come straight from the Claude JSON payload; AgentID is
 // supplied by the CLI wrapper from the BATON_AGENT_ID environment variable
 // so the server can dispatch to the right agent. Message is populated from
-// Notification payloads (empty for other kinds). Raw preserves the original
-// Claude JSON for forward-compatibility with fields the server doesn't
-// currently consume.
+// Notification payloads (empty for other kinds). Prompt carries the user's
+// text from UserPromptSubmit payloads (empty for other kinds). Raw preserves
+// the original Claude JSON for forward-compatibility with fields the server
+// doesn't currently consume.
 type Event struct {
 	Kind      Kind            `json:"kind"`
 	AgentID   string          `json:"agent_id"`
 	SessionID string          `json:"session_id,omitempty"`
 	CWD       string          `json:"cwd,omitempty"`
 	Message   string          `json:"message,omitempty"`
+	Prompt    string          `json:"prompt,omitempty"`
 	Raw       json.RawMessage `json:"raw,omitempty"`
 }

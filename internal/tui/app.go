@@ -719,7 +719,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			activeBranches := make(map[string]bool)
 			if mgr != nil {
 				for _, sess := range mgr.ListSessions() {
-					activeBranches[sess.Worktree.Branch] = true
+					activeBranches[sess.Branch()] = true
 				}
 			}
 			a.branchPicker = newBranchPickerModel()
@@ -1501,7 +1501,7 @@ outer:
 						continue
 					}
 					ps.lastSHACheck = now
-					sha := getRemoteSHA(repo.Path, sess.Worktree.Branch)
+					sha := getRemoteSHA(repo.Path, sess.Branch())
 					if sha != "" && sha != ps.lastRemoteSHA {
 						ps.lastRemoteSHA = sha
 						// Push detected — fall through to schedule an immediate poll.
@@ -1516,7 +1516,7 @@ outer:
 			ps.lastPoll = now
 			ps.inFlight = true
 			a.prPollsInFlight++
-			cmds = append(cmds, a.refreshPRStatusForSession(sess.ID, sess.Worktree.Branch, repo.Path))
+			cmds = append(cmds, a.refreshPRStatusForSession(sess.ID, sess.Branch(), repo.Path))
 		}
 	}
 	return cmds

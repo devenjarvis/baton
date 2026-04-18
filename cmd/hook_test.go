@@ -54,6 +54,7 @@ func TestHookSubcommandForwards(t *testing.T) {
 		wantSession string
 		wantCWD     string
 		wantMessage string
+		wantPrompt  string
 	}{
 		{
 			subcmd:      "session-start",
@@ -83,8 +84,17 @@ func TestHookSubcommandForwards(t *testing.T) {
 		{
 			subcmd:      "user-prompt-submit",
 			wantKind:    hook.KindUserPromptSubmit,
-			stdin:       `{"session_id":"uuid-xyz"}`,
+			stdin:       `{"session_id":"uuid-xyz","prompt":"add dark mode"}`,
 			wantSession: "uuid-xyz",
+			wantPrompt:  "add dark mode",
+		},
+		{
+			// Prompt on a non-UserPromptSubmit kind must be ignored.
+			subcmd:      "notification",
+			wantKind:    hook.KindNotification,
+			stdin:       `{"session_id":"uuid-xyz","message":"perm","prompt":"shouldn't leak"}`,
+			wantSession: "uuid-xyz",
+			wantMessage: "perm",
 		},
 	}
 
@@ -134,6 +144,9 @@ func TestHookSubcommandForwards(t *testing.T) {
 				}
 				if e.Message != tc.wantMessage {
 					t.Errorf("message: got %q, want %q", e.Message, tc.wantMessage)
+				}
+				if e.Prompt != tc.wantPrompt {
+					t.Errorf("prompt: got %q, want %q", e.Prompt, tc.wantPrompt)
 				}
 			case <-time.After(3 * time.Second):
 				t.Fatal("timed out waiting for hook event")

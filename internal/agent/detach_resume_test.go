@@ -423,6 +423,87 @@ func TestDetachResumePreservesOwnsBranch(t *testing.T) {
 	}
 }
 
+func TestDetachResumePreservesHasClaudeName(t *testing.T) {
+	if _, err := exec.LookPath("claude"); err != nil {
+		t.Skip("claude not in PATH")
+	}
+	repo := setupTestRepo(t)
+
+	mgr1 := NewManager(repo, defaultTestSettings())
+	cfg := Config{Task: "test", Rows: 24, Cols: 80}
+	sess, _, err := mgr1.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 60")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Rename the branch before detaching.
+	if _, err := sess.RenameBranch(repo, "baton/add-feature"); err != nil {
+		t.Fatal(err)
+	}
+	if !sess.HasClaudeName() {
+		t.Fatal("expected HasClaudeName true after rename")
+	}
+
+	sessID := sess.ID
+	bs := mgr1.Detach()
+	if bs == nil {
+		t.Fatal("expected non-nil BatonState")
+	}
+
+	if !bs.Sessions[0].HasClaudeName {
+		t.Error("detached state should record HasClaudeName=true")
+	}
+	if bs.Sessions[0].Branch != "baton/add-feature" {
+		t.Errorf("detached state branch = %q, want baton/add-feature", bs.Sessions[0].Branch)
+	}
+
+	// Resume.
+	mgr2 := NewManager(repo, defaultTestSettings())
+	defer mgr2.Shutdown()
+
+	if err := mgr2.ResumeSession(bs.Sessions[0], Config{Rows: 24, Cols: 80}); err != nil {
+		t.Fatal(err)
+	}
+
+	resumed := mgr2.GetSession(sessID)
+	if resumed == nil {
+		t.Fatal("resumed session not found")
+	}
+	if !resumed.HasClaudeName() {
+		t.Error("resumed session should have HasClaudeName=true")
+	}
+	if resumed.Worktree.Branch != "baton/add-feature" {
+		t.Errorf("resumed branch = %q, want baton/add-feature", resumed.Worktree.Branch)
+	}
+
+	// A subsequent UserPromptSubmit must NOT trigger another rename.
+	prevBranch := resumed.Worktree.Branch
+	agents := resumed.Agents()
+	if len(agents) == 0 {
+		t.Fatal("resumed session has no agents")
+	}
+	ag := agents[0]
+	select {
+	case <-mgr2.Events():
+	case <-time.After(time.Second):
+		// Drain is best-effort; resume may not emit if the agent immediately fails.
+	}
+
+	if mgr2.HookSocketPath() != "" {
+		_ = mgr2.HookSocketPath()
+	}
+	// Directly invoke the rename path since the Claude binary may not be
+	// genuinely running — the check is purely about state.
+	mgr2.maybeRenameFromPrompt(resumed, "now change the layout")
+	if resumed.Worktree.Branch != prevBranch {
+		t.Errorf("resumed session should not rename again; got %q, want %q",
+			resumed.Worktree.Branch, prevBranch)
+	}
+	_ = ag
+}
+
 func TestParseSessionNum(t *testing.T) {
 	tests := []struct {
 		input string

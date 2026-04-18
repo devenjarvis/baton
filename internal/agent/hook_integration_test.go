@@ -290,6 +290,86 @@ func TestDoneAgentIgnoresLateUserPromptSubmit(t *testing.T) {
 	}
 }
 
+// TestUserPromptSubmitRenamesBranch verifies the first UserPromptSubmit with
+// real prompt text renames the session's random branch to a prompt-derived
+// slug, and a second prompt is a no-op because HasClaudeName is now set.
+func TestUserPromptSubmitRenamesBranch(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	cfg := Config{Name: "warm-ibis", Task: "test", Rows: 24, Cols: 80}
+	sess, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-mgr.Events():
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for EventCreated")
+	}
+
+	originalBranch := sess.Worktree.Branch
+
+	// Slash-only prompt does not trigger a rename.
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindUserPromptSubmit,
+		AgentID: ag.ID,
+		Prompt:  "/clear",
+	}); err != nil {
+		t.Fatalf("SendEvent slash: %v", err)
+	}
+	time.Sleep(150 * time.Millisecond)
+	if sess.HasClaudeName() {
+		t.Error("slash-only prompt should not flip HasClaudeName")
+	}
+	if sess.Worktree.Branch != originalBranch {
+		t.Errorf("slash-only prompt should not rename; got %q", sess.Worktree.Branch)
+	}
+
+	// Real prompt triggers rename.
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindUserPromptSubmit,
+		AgentID: ag.ID,
+		Prompt:  "add dark mode to dashboard",
+	}); err != nil {
+		t.Fatalf("SendEvent prompt: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if sess.HasClaudeName() {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !sess.HasClaudeName() {
+		t.Fatal("expected HasClaudeName true after prompt")
+	}
+	if sess.Worktree.Branch != "baton/add-dark-mode-to-dashboard" {
+		t.Errorf("expected branch baton/add-dark-mode-to-dashboard, got %q", sess.Worktree.Branch)
+	}
+	if sess.Name != "add-dark-mode-to-dashboard" {
+		t.Errorf("expected Name add-dark-mode-to-dashboard, got %q", sess.Name)
+	}
+
+	// Second real prompt is a no-op.
+	prevBranch := sess.Worktree.Branch
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindUserPromptSubmit,
+		AgentID: ag.ID,
+		Prompt:  "now add light mode too",
+	}); err != nil {
+		t.Fatalf("SendEvent second: %v", err)
+	}
+	time.Sleep(150 * time.Millisecond)
+	if sess.Worktree.Branch != prevBranch {
+		t.Errorf("second prompt should be no-op; got %q, want %q", sess.Worktree.Branch, prevBranch)
+	}
+}
+
 // waitForStatus polls the agent status up to d for the desired value.
 func waitForStatus(t *testing.T, a *Agent, want Status, d time.Duration) bool {
 	t.Helper()

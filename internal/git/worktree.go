@@ -2,6 +2,7 @@ package git
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -17,9 +18,15 @@ type WorktreeInfo struct {
 
 // runGit executes a git command in the given directory and returns its output.
 // On error, the returned error includes stderr for debugging.
+//
+// LC_ALL=C pins git's messages to English so code that inspects stderr for
+// well-known substrings (e.g. RenameBranch's collision detection) works on
+// hosts with localized git. Porcelain output is already locale-independent,
+// so this has no effect on other callers.
 func runGit(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
@@ -264,4 +271,46 @@ func ListWorktrees(repoPath, branchPrefix string) ([]*WorktreeInfo, error) {
 // GetRemoteURL returns the URL for the "origin" remote of the repo at repoPath.
 func GetRemoteURL(repoPath string) (string, error) {
 	return runGit(repoPath, "remote", "get-url", "origin")
+}
+
+// RenameBranch renames oldBranch to newBranch via `git branch -m`. The rename
+// is atomic and git automatically updates HEAD symrefs in any worktree that
+// has the branch checked out, so callers do not need to pause a running
+// worktree process.
+//
+// If newBranch already exists, the function retries with "-2", "-3", ...
+// suffixes up to "-9" before giving up. The actual new branch name (which may
+// include a collision suffix) is returned so callers can update their own
+// metadata accurately. Non-collision errors (missing source branch, invalid
+// refname, etc.) are returned immediately without retrying.
+func RenameBranch(repoPath, oldBranch, newBranch string) (string, error) {
+	if newBranch == "" {
+		return "", fmt.Errorf("new branch name is empty")
+	}
+	if oldBranch == newBranch {
+		return newBranch, nil
+	}
+
+	candidate := newBranch
+	for i := 1; i <= 9; i++ {
+		_, err := runGit(repoPath, "branch", "-m", oldBranch, candidate)
+		if err == nil {
+			return candidate, nil
+		}
+		if !isBranchCollisionErr(err) {
+			return "", fmt.Errorf("rename branch %q -> %q: %w", oldBranch, candidate, err)
+		}
+		candidate = fmt.Sprintf("%s-%d", newBranch, i+1)
+	}
+	return "", fmt.Errorf("rename branch %q -> %q: all collision candidates up to %q are taken", oldBranch, newBranch, candidate)
+}
+
+// isBranchCollisionErr reports whether err from `git branch -m` indicates the
+// destination branch already exists (as opposed to other failure modes).
+func isBranchCollisionErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "already exists") || strings.Contains(msg, "already used")
 }
