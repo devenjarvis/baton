@@ -52,6 +52,7 @@ Always run `go test -race ./...` before committing — concurrency bugs have bee
 - **Shutdown sequence**: close `m.done` → kill agents → wait for watcher goroutines → close events channel. Agent kill: close PTY → close terminal (unblocks writeLoop) → wait for writeLoopDone.
 - **Hooks**: Baton writes a per-session settings JSON and launches `claude --settings <path>` so each hook invocation carries `BATON_HOOK_SOCKET` and `BATON_AGENT_ID` env, routing events back over a unix socket. Running `claude` outside baton exits the hook CLI silently.
 - **Status detection**: visual-stability detection + hook-driven signals classify agents as idle / active / waiting / done / error. `StatusWaiting` is distinct (permission prompts, input blocks) and surfaces in a dashboard accent color.
+- **Branch naming**: sessions are created on a random adjective-noun branch under the configured `BranchPrefix` (default `baton/`). On the first `user-prompt-submit` hook, the manager slugifies the prompt and calls `git branch -m` to rename the branch in place — the worktree's HEAD symref updates atomically, Claude's cwd stays valid, and `Session.hasClaudeName` flips so the rename is one-shot. Slash commands and empty slugs are skipped. Sessions started on an existing branch via `CreateSessionOnBranch*` set `hasClaudeName=true` at creation so they keep their original branch. `BranchPrefix` supports `{user}` (slugified `git config user.name` → `$USER` fallback) and `{date}` (`YYYY-MM-DD`) tokens, resolved in `config.ExpandBranchPrefix`.
 
 ## Testing
 

@@ -1,6 +1,10 @@
 package agent
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/devenjarvis/baton/internal/git"
+)
 
 func TestSlugify(t *testing.T) {
 	tests := []struct {
@@ -48,5 +52,78 @@ func TestSessionGetDisplayName_Fallback(t *testing.T) {
 
 	if !s.HasDisplayName() {
 		t.Error("HasDisplayName() should be true after SetDisplayName")
+	}
+}
+
+func TestSessionRenameBranch(t *testing.T) {
+	repo := setupTestRepo(t)
+
+	wt, err := git.CreateWorktree(repo, "warm-ibis", "", "", "")
+	if err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+
+	s := newSession("session-1", "warm-ibis", wt)
+
+	if s.HasClaudeName() {
+		t.Error("HasClaudeName() should be false before rename")
+	}
+
+	actual, err := s.RenameBranch(repo, "baton/add-dark-mode")
+	if err != nil {
+		t.Fatalf("RenameBranch: %v", err)
+	}
+	if actual != "baton/add-dark-mode" {
+		t.Errorf("expected branch %q, got %q", "baton/add-dark-mode", actual)
+	}
+	if s.Worktree.Branch != "baton/add-dark-mode" {
+		t.Errorf("Worktree.Branch = %q, want %q", s.Worktree.Branch, "baton/add-dark-mode")
+	}
+	if s.Name != "add-dark-mode" {
+		t.Errorf("Session.Name = %q, want %q", s.Name, "add-dark-mode")
+	}
+	if !s.HasClaudeName() {
+		t.Error("HasClaudeName() should be true after rename")
+	}
+
+	// Second rename is a no-op.
+	second, err := s.RenameBranch(repo, "baton/second-attempt")
+	if err != nil {
+		t.Fatalf("second RenameBranch: %v", err)
+	}
+	if second != "baton/add-dark-mode" {
+		t.Errorf("second rename should be no-op, got %q", second)
+	}
+	if s.Name != "add-dark-mode" {
+		t.Errorf("second rename should not change Name, got %q", s.Name)
+	}
+}
+
+func TestSessionRenameBranch_FailureLeavesStateUnchanged(t *testing.T) {
+	repo := setupTestRepo(t)
+
+	wt, err := git.CreateWorktree(repo, "warm-ibis", "", "", "")
+	if err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+	s := newSession("session-1", "warm-ibis", wt)
+	origBranch := wt.Branch
+	origName := s.Name
+
+	// Pin git config so rename would otherwise succeed, then sabotage via an
+	// empty target which RenameBranch rejects without touching state.
+	_, err = s.RenameBranch(repo, "")
+	if err == nil {
+		t.Fatal("expected error for empty target")
+	}
+
+	if s.Worktree.Branch != origBranch {
+		t.Errorf("Worktree.Branch changed on failure: got %q, want %q", s.Worktree.Branch, origBranch)
+	}
+	if s.Name != origName {
+		t.Errorf("Session.Name changed on failure: got %q, want %q", s.Name, origName)
+	}
+	if s.HasClaudeName() {
+		t.Error("HasClaudeName() should stay false on failure")
 	}
 }

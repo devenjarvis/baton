@@ -543,6 +543,116 @@ func TestListRemoteBranches(t *testing.T) {
 	}
 }
 
+func TestRenameBranch(t *testing.T) {
+	repo := initTestRepo(t)
+
+	wt, err := git.CreateWorktree(repo, "agent1", "", "", "")
+	if err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+
+	got, err := git.RenameBranch(repo, wt.Branch, "baton/renamed")
+	if err != nil {
+		t.Fatalf("RenameBranch: %v", err)
+	}
+	if got != "baton/renamed" {
+		t.Errorf("expected returned name %q, got %q", "baton/renamed", got)
+	}
+
+	// Old branch should no longer exist.
+	cmd := exec.Command("git", "branch", "--list", wt.Branch)
+	cmd.Dir = repo
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git branch --list: %v", err)
+	}
+	if strings.Contains(string(out), wt.Branch) {
+		t.Errorf("old branch %q should be gone, branch list: %s", wt.Branch, out)
+	}
+
+	// New branch should exist.
+	cmd = exec.Command("git", "branch", "--list", "baton/renamed")
+	cmd.Dir = repo
+	out, err = cmd.Output()
+	if err != nil {
+		t.Fatalf("git branch --list renamed: %v", err)
+	}
+	if !strings.Contains(string(out), "baton/renamed") {
+		t.Errorf("new branch baton/renamed not found: %s", out)
+	}
+
+	// Worktree metadata should reflect the new branch.
+	cmd = exec.Command("git", "worktree", "list", "--porcelain")
+	cmd.Dir = repo
+	out, err = cmd.Output()
+	if err != nil {
+		t.Fatalf("git worktree list: %v", err)
+	}
+	if !strings.Contains(string(out), "refs/heads/baton/renamed") {
+		t.Errorf("worktree list should reference refs/heads/baton/renamed, got:\n%s", out)
+	}
+}
+
+func TestRenameBranch_CollisionFallback(t *testing.T) {
+	repo := initTestRepo(t)
+
+	// Pre-create the target branch so the primary rename collides.
+	cmd := exec.Command("git", "branch", "baton/taken")
+	cmd.Dir = repo
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git branch: %v\n%s", err, out)
+	}
+
+	wt, err := git.CreateWorktree(repo, "agent1", "", "", "")
+	if err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+
+	got, err := git.RenameBranch(repo, wt.Branch, "baton/taken")
+	if err != nil {
+		t.Fatalf("RenameBranch should fall back on collision: %v", err)
+	}
+	if got != "baton/taken-2" {
+		t.Errorf("expected fallback to %q, got %q", "baton/taken-2", got)
+	}
+}
+
+func TestRenameBranch_NonCollisionErrorDoesNotRetry(t *testing.T) {
+	repo := initTestRepo(t)
+
+	// Source branch does not exist — git will fail with "no branch named",
+	// which is NOT a collision. The function should return the original error
+	// immediately without cycling through -2..-9 suffixes.
+	_, err := git.RenameBranch(repo, "baton/does-not-exist", "baton/target")
+	if err == nil {
+		t.Fatalf("RenameBranch with missing source should error, got nil")
+	}
+	// Error message should mention the original target, not a -N suffix.
+	if !strings.Contains(err.Error(), `"baton/target"`) {
+		t.Errorf("expected error to reference baton/target, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "baton/target-") {
+		t.Errorf("non-collision error should not have cycled through suffixes, got: %v", err)
+	}
+}
+
+func TestRenameBranch_Idempotent(t *testing.T) {
+	repo := initTestRepo(t)
+
+	wt, err := git.CreateWorktree(repo, "agent1", "", "", "")
+	if err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+
+	got, err := git.RenameBranch(repo, wt.Branch, wt.Branch)
+	if err != nil {
+		t.Fatalf("RenameBranch same-name: %v", err)
+	}
+	if got != wt.Branch {
+		t.Errorf("expected %q unchanged, got %q", wt.Branch, got)
+	}
+}
+
 func TestCreateWorktreeWithStartPoint(t *testing.T) {
 	work, bare := initTestRepoWithRemote(t)
 

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os/exec"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,6 +22,7 @@ type Session struct {
 	agents         map[string]*Agent
 	nextAgentNum   int
 	displayName    string
+	hasClaudeName  bool   // true once the session's branch has been renamed from its random placeholder
 	ownsBranch     bool   // true if this session created the branch (cleanup should delete it)
 	hookSocketPath string // absolute path to the manager's hook socket ("" disables hooks)
 }
@@ -318,6 +320,78 @@ func (s *Session) HasDisplayName() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.displayName != ""
+}
+
+// HasClaudeName reports whether this session's branch has been renamed from
+// its initial random placeholder to one derived from the user's first prompt.
+func (s *Session) HasClaudeName() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.hasClaudeName
+}
+
+// SetClaudeName marks whether this session has a Claude-derived branch name.
+func (s *Session) SetClaudeName(v bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.hasClaudeName = v
+}
+
+// RenameBranch renames the session's git branch to newBranch. If the rename
+// succeeds, Session.Worktree.Branch, Session.Name, and hasClaudeName are
+// updated atomically under the session mutex. The actual new name (which may
+// include a collision suffix from git.RenameBranch) is returned.
+//
+// If the session already has a Claude-derived name, this is a no-op and
+// returns the current branch.
+//
+// The session mutex is held across the git subprocess call so concurrent
+// callers observe a consistent view and cannot both attempt a rename.
+func (s *Session) RenameBranch(repoPath, newBranch string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.hasClaudeName {
+		return s.Worktree.Branch, nil
+	}
+
+	actual, err := git.RenameBranch(repoPath, s.Worktree.Branch, newBranch)
+	if err != nil {
+		return "", err
+	}
+
+	s.Worktree.Branch = actual
+	if last := lastBranchSegment(actual); last != "" {
+		s.Name = last
+	}
+	s.hasClaudeName = true
+
+	return actual, nil
+}
+
+// Branch returns the session's current git branch, safe for concurrent reads
+// while RenameBranch may be mutating it.
+func (s *Session) Branch() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.Worktree.Branch
+}
+
+// CurrentName returns the session's current Name, safe for concurrent reads.
+func (s *Session) CurrentName() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.Name
+}
+
+func lastBranchSegment(branch string) string {
+	parts := strings.Split(branch, "/")
+	for i := len(parts) - 1; i >= 0; i-- {
+		if parts[i] != "" {
+			return parts[i]
+		}
+	}
+	return ""
 }
 
 // Elapsed returns how long the session has been running.

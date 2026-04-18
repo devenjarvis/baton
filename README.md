@@ -98,6 +98,17 @@ The first run auto-registers the current directory as a repo and adds `.baton/` 
 
 Click support on the dashboard: click a row in the list to select it; click in the preview panel to enter focus mode.
 
+### Branch naming
+
+New sessions start on a random adjective-noun branch (e.g. `baton/warm-ibis`) so Claude can launch immediately. On the first real `user-prompt-submit`, the branch is renamed in place — `git branch -m` atomically updates the worktree's HEAD symref — to a slug of the prompt, e.g. `baton/add-dark-mode-to-dashboard`. Slash commands (`/clear`, `/help`) are skipped, so the next real prompt still triggers the rename. Sessions started on an existing branch (`o`) keep that branch as-is.
+
+The prefix is configurable via `BranchPrefix` in global or per-repo settings, and supports two template variables:
+
+- `{user}` — slugified `git config user.name` (falls back to `$USER`)
+- `{date}` — today's date in `YYYY-MM-DD`
+
+Unknown `{tokens}` are left literal. Example: `BranchPrefix: "{user}/"` produces `dj/add-dark-mode` after the first-prompt rename.
+
 ## How It Works
 
 When you create a session, Baton:

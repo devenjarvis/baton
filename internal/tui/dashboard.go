@@ -536,7 +536,8 @@ func (d dashboardModel) renderPreview(width int) string {
 
 	sessionInfo := ""
 	if item.session != nil {
-		sessionInfo = StyleSubtle.Render(fmt.Sprintf(" Session: %s  Worktree: %s", item.session.GetDisplayName(), item.session.Worktree.Path))
+		sessionInfo = StyleSubtle.Render(fmt.Sprintf(" Session: %s  Branch: %s  Worktree: %s",
+			item.session.GetDisplayName(), item.session.Branch(), item.session.Worktree.Path))
 	}
 	var prInfo string
 	if item.session != nil {

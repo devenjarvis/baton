@@ -90,8 +90,17 @@ func TestHookSubcommandForwards(t *testing.T) {
 			name:        "user-prompt-submit",
 			subcmd:      "user-prompt-submit",
 			wantKind:    hook.KindUserPromptSubmit,
-			stdin:       `{"session_id":"uuid-xyz"}`,
+			stdin:       `{"session_id":"uuid-xyz","prompt":"add dark mode"}`,
 			wantSession: "uuid-xyz",
+			wantPrompt:  "add dark mode",
+		},
+		{
+			// Prompt on a non-UserPromptSubmit kind must be ignored.
+			subcmd:      "notification",
+			wantKind:    hook.KindNotification,
+			stdin:       `{"session_id":"uuid-xyz","message":"perm","prompt":"shouldn't leak"}`,
+			wantSession: "uuid-xyz",
+			wantMessage: "perm",
 		},
 		{
 			name:        "user-prompt-submit-with-prompt",
