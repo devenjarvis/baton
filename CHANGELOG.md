@@ -15,6 +15,7 @@ Every PR should update the `[Unreleased]` section with a short entry describing 
 
 ### Changed
 
+- `x` (kill agent) and `X` (kill session) now tear down off the UI thread and mark the affected row as `closing…` until the worktree teardown completes, so the dashboard stays interactive while Claude exits and `git worktree remove --force` runs.
 - Reverted "Release mouse capture in focus terminal view": the focus terminal view now re-captures the mouse. Text selection via the host terminal's drag was unreliable (copied text included the surrounding TUI frame), and capturing the mouse restores consistent keybinding/scroll behavior in focus mode.
 
 ### Fixed
