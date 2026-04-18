@@ -9,6 +9,10 @@ Every PR should update the `[Unreleased]` section with a short entry describing 
 
 ## [Unreleased]
 
+### Added
+
+- GoReleaser config and release workflow: pushing a `v*` tag builds darwin/linux amd64+arm64 archives, publishes a GitHub release, and updates the `devenjarvis/homebrew-tap` formula.
+
 ## [0.1.0] — 2026-04-18
 
 Initial public release.
