@@ -191,7 +191,9 @@ func (s *Session) Status() Status {
 		nonShellCount++
 		st := a.Status()
 		switch st {
-		case StatusActive:
+		case StatusActive, StatusWaiting:
+			// Waiting rolls up as Active at the session header so a session
+			// with any waiting agent still reads as attention-worthy.
 			return StatusActive
 		case StatusStarting:
 			hasStarting = true

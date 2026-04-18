@@ -62,11 +62,12 @@ func repoRoot() string {
 
 // Session wraps a tu CLI session for e2e testing.
 type Session struct {
-	t       *testing.T
-	name    string
-	tempDir string // parent temp dir
-	home    string // fake HOME
-	repoDir string // temp git repo (also CWD for baton)
+	t        *testing.T
+	name     string
+	tempDir  string   // parent temp dir
+	home     string   // fake HOME
+	repoDir  string   // temp git repo (also CWD for baton)
+	extraEnv []string // additional "K=V" env entries to pass through tu to baton
 }
 
 // newSession creates an isolated test environment and launches baton via tu.
@@ -147,18 +148,27 @@ func (s *Session) Start() {
 	// developer's real ~/.gitconfig (signing keys, hooks, templates) doesn't
 	// leak in. We deliberately do NOT set GIT_DIR/GIT_WORK_TREE — those would
 	// override git's repo discovery and break it.
-	cmd := exec.Command("tu", "run",
+	args := []string{
+		"run",
 		"--name", s.name,
 		"--size", "120x40",
-		"--env", "HOME="+s.home,
-		"--env", "XDG_CONFIG_HOME="+filepath.Join(s.home, ".config"),
-		"--env", "XDG_DATA_HOME="+filepath.Join(s.home, ".local", "share"),
-		"--env", "XDG_CACHE_HOME="+filepath.Join(s.home, ".cache"),
-		"--env", "GIT_CONFIG_GLOBAL="+filepath.Join(s.home, ".gitconfig"),
+		"--env", "HOME=" + s.home,
+		"--env", "XDG_CONFIG_HOME=" + filepath.Join(s.home, ".config"),
+		"--env", "XDG_DATA_HOME=" + filepath.Join(s.home, ".local", "share"),
+		"--env", "XDG_CACHE_HOME=" + filepath.Join(s.home, ".cache"),
+		"--env", "GIT_CONFIG_GLOBAL=" + filepath.Join(s.home, ".gitconfig"),
 		"--env", "GIT_CONFIG_SYSTEM=/dev/null",
-		"--cwd", s.repoDir,
-		"--", batonBin,
-	)
+		// Scrub parent baton hook wiring so running these tests from inside
+		// another baton session doesn't leak a live socket into the child's
+		// env (the stub would forward hook events to the wrong socket).
+		"--env", "BATON_HOOK_SOCKET=",
+		"--env", "BATON_AGENT_ID=",
+	}
+	for _, kv := range s.extraEnv {
+		args = append(args, "--env", kv)
+	}
+	args = append(args, "--cwd", s.repoDir, "--", batonBin)
+	cmd := exec.Command("tu", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		s.t.Fatalf("e2e: tu run failed: %v\n%s", err, out)

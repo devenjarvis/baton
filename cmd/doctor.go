@@ -4,9 +4,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/devenjarvis/baton/internal/hook"
 	"github.com/spf13/cobra"
 )
 
@@ -56,11 +59,23 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	}
 
 	// Baton's own binary path — hooks commands reference it.
-	if exe, err := os.Executable(); err != nil {
+	batonExe, err := resolveBatonBinary()
+	if err != nil {
 		fmt.Printf("  [FAIL] baton binary: unresolved (%v)\n", err)
 		allOk = false
 	} else {
-		fmt.Printf("  [OK]   baton binary: %s\n", exe)
+		fmt.Printf("  [OK]   baton binary: %s\n", batonExe)
+	}
+
+	// Hook pipeline round-trip: spin up a temporary socket, invoke
+	// `baton hook session-start` against it, and confirm the event arrives.
+	if batonExe != "" {
+		if err := checkHookPipeline(batonExe); err != nil {
+			fmt.Printf("  [FAIL] hook pipeline: %v\n", err)
+			allOk = false
+		} else {
+			fmt.Println("  [OK]   hook pipeline: socket round-trip ok")
+		}
 	}
 
 	// Check git repo
@@ -126,4 +141,72 @@ func supportsSettingsFlag(claudePath string) bool {
 		return false
 	}
 	return strings.Contains(string(out), "--settings")
+}
+
+// resolveBatonBinary returns the baton binary path, preferring the resolved
+// symlink target. Mirrors the logic in internal/agent so doctor invokes the
+// same binary the hooks file would invoke.
+func resolveBatonBinary() (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	return exe, nil
+}
+
+// checkHookPipeline exercises the socket round-trip: it spins up a hook
+// server on a short temp path, runs `baton hook session-start` with the
+// socket env wired up, and confirms the event arrives within 2 seconds.
+// Returns a descriptive error on failure so users can act on it.
+func checkHookPipeline(batonExe string) error {
+	// macOS caps unix socket paths at 104 bytes. Use os.TempDir with a short
+	// name and surface a friendly error if it still won't fit.
+	sockDir, err := os.MkdirTemp("", "bd")
+	if err != nil {
+		return fmt.Errorf("temp dir: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(sockDir) }()
+
+	socket := filepath.Join(sockDir, "h.sock")
+	if len(socket) > 103 {
+		return fmt.Errorf("socket path too long for this platform (%d bytes)", len(socket))
+	}
+
+	srv, err := hook.NewServer(socket)
+	if err != nil {
+		return fmt.Errorf("socket bind: %w", err)
+	}
+	defer func() { _ = srv.Close() }()
+
+	cmd := exec.Command(batonExe, "hook", "session-start")
+	// Scrub any BATON_* env inherited from a parent baton session — the
+	// check must exercise *this* temp socket, not a lingering one.
+	baseEnv := make([]string, 0, len(os.Environ()))
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "BATON_HOOK_SOCKET=") || strings.HasPrefix(kv, "BATON_AGENT_ID=") {
+			continue
+		}
+		baseEnv = append(baseEnv, kv)
+	}
+	cmd.Env = append(baseEnv,
+		"BATON_HOOK_SOCKET="+socket,
+		"BATON_AGENT_ID=doctor",
+	)
+	cmd.Stdin = strings.NewReader(`{"session_id":"doctor","cwd":"/"}`)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("hook cli: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+
+	select {
+	case e := <-srv.Events():
+		if e.Kind != hook.KindSessionStart || e.AgentID != "doctor" {
+			return fmt.Errorf("unexpected event: kind=%q agent=%q", e.Kind, e.AgentID)
+		}
+		return nil
+	case <-time.After(2 * time.Second):
+		return fmt.Errorf("event not received within 2s")
+	}
 }

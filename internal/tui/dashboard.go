@@ -14,6 +14,11 @@ import (
 	"github.com/devenjarvis/baton/internal/github"
 )
 
+// ColorWaiting is the accent used for agents in StatusWaiting (permission
+// prompts, input blocks). Scoped to the dashboard because no other view
+// needs it today — add to theme.go if another view ever surfaces waiting.
+var ColorWaiting = lipgloss.Color("#D946EF")
+
 // listItemKind distinguishes repo headers, session rows, and agent rows in the dashboard list.
 type listItemKind int
 
@@ -288,6 +293,8 @@ func (d dashboardModel) renderList(width int) string {
 			switch status {
 			case agent.StatusActive:
 				symbolStyle = lipgloss.NewStyle().Foreground(ColorSecondary)
+			case agent.StatusWaiting:
+				symbolStyle = lipgloss.NewStyle().Foreground(ColorWaiting)
 			case agent.StatusDone:
 				symbolStyle = lipgloss.NewStyle().Foreground(ColorSuccess)
 			case agent.StatusError:
@@ -361,6 +368,8 @@ func (d dashboardModel) renderList(width int) string {
 				switch status {
 				case agent.StatusActive:
 					style = lipgloss.NewStyle().Foreground(ColorSecondary)
+				case agent.StatusWaiting:
+					style = lipgloss.NewStyle().Foreground(ColorWaiting)
 				case agent.StatusDone:
 					style = lipgloss.NewStyle().Foreground(ColorSuccess)
 				case agent.StatusError:

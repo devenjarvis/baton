@@ -105,6 +105,144 @@ func TestSocketPathPerRepo(t *testing.T) {
 	}
 }
 
+// TestManagerDispatchesNotificationAndStop verifies the Notification hook drives
+// the agent to StatusWaiting and a subsequent Stop returns it to StatusIdle.
+func TestManagerDispatchesNotificationAndStop(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	cfg := Config{Name: "notif-dispatch", Task: "test", Rows: 24, Cols: 80}
+	_, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Drain EventCreated.
+	select {
+	case <-mgr.Events():
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for EventCreated")
+	}
+
+	// SessionStart → Active.
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindSessionStart,
+		AgentID: ag.ID,
+	}); err != nil {
+		t.Fatalf("SendEvent SessionStart: %v", err)
+	}
+	if !waitForStatus(t, ag, StatusActive, 2*time.Second) {
+		t.Fatalf("expected Active after SessionStart, got %s", ag.Status())
+	}
+
+	// Notification → Waiting.
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindNotification,
+		AgentID: ag.ID,
+		Message: "Claude needs your permission to use Bash",
+	}); err != nil {
+		t.Fatalf("SendEvent Notification: %v", err)
+	}
+	if !waitForStatus(t, ag, StatusWaiting, 2*time.Second) {
+		t.Fatalf("expected Waiting after Notification, got %s", ag.Status())
+	}
+
+	// Stop → Idle.
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindStop,
+		AgentID: ag.ID,
+	}); err != nil {
+		t.Fatalf("SendEvent Stop: %v", err)
+	}
+	if !waitForStatus(t, ag, StatusIdle, 2*time.Second) {
+		t.Fatalf("expected Idle after Stop, got %s", ag.Status())
+	}
+}
+
+// TestManagerUserPromptSubmitRearmsChime verifies UserPromptSubmit both
+// re-arms the chime flag and transitions Idle→Active.
+func TestManagerUserPromptSubmitRearmsChime(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	cfg := Config{Name: "ups-dispatch", Task: "test", Rows: 24, Cols: 80}
+	_, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-mgr.Events():
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for EventCreated")
+	}
+
+	// Seed: agent is Idle and the chime has already fired this turn.
+	ag.mu.Lock()
+	ag.status = StatusIdle
+	ag.chimedForTurn = true
+	ag.mu.Unlock()
+
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindUserPromptSubmit,
+		AgentID: ag.ID,
+	}); err != nil {
+		t.Fatalf("SendEvent UserPromptSubmit: %v", err)
+	}
+
+	if !waitForStatus(t, ag, StatusActive, 2*time.Second) {
+		t.Fatalf("expected Active after UserPromptSubmit, got %s", ag.Status())
+	}
+	if ag.ChimedForTurn() {
+		t.Error("expected chimedForTurn to be reset by UserPromptSubmit")
+	}
+}
+
+// TestDoneAgentIgnoresLateNotification verifies a Done agent stays Done
+// when a late Notification event arrives (e.g. race between Claude emitting
+// a prompt and the agent process having already been killed/finished).
+func TestDoneAgentIgnoresLateNotification(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	cfg := Config{Name: "done-ignore", Task: "test", Rows: 24, Cols: 80}
+	_, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-mgr.Events():
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for EventCreated")
+	}
+
+	// Force the agent to Done.
+	ag.mu.Lock()
+	ag.status = StatusDone
+	ag.mu.Unlock()
+
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindNotification,
+		AgentID: ag.ID,
+	}); err != nil {
+		t.Fatalf("SendEvent Notification: %v", err)
+	}
+
+	// Give the dispatcher time to process — the status must remain Done.
+	time.Sleep(200 * time.Millisecond)
+	if got := ag.Status(); got != StatusDone {
+		t.Errorf("expected Done to be preserved, got %s", got)
+	}
+}
+
 // waitForStatus polls the agent status up to d for the desired value.
 func waitForStatus(t *testing.T, a *Agent, want Status, d time.Duration) bool {
 	t.Helper()

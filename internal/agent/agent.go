@@ -399,6 +399,30 @@ func (a *Agent) OnHookEvent(e hook.Event) (statusChanged bool) {
 		// through the PTY close path (readLoop -> close(done)).
 		a.cleanExit = true
 		return false
+
+	case hook.KindNotification:
+		// Claude is waiting for the user (typically a permission prompt).
+		// Only override Active/Waiting so a late Notification can't revive a
+		// Done or Error agent, and don't clobber Idle either — if Claude sent
+		// Stop already, a trailing Notification shouldn't re-attention the row.
+		if a.status == StatusActive || a.status == StatusWaiting {
+			if a.status != StatusWaiting {
+				a.status = StatusWaiting
+				return true
+			}
+		}
+		return false
+
+	case hook.KindUserPromptSubmit:
+		// User just submitted a new turn. Re-arm the chime and drive the
+		// agent back to Active — this is the authoritative re-arm signal
+		// alongside the existing SendKey(Enter) path.
+		a.chimedForTurn = false
+		if a.status != StatusActive {
+			a.status = StatusActive
+			return true
+		}
+		return false
 	}
 	return false
 }
