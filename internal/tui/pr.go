@@ -16,13 +16,6 @@ type prPollMsg struct {
 	reviews   *github.ReviewStatus
 }
 
-// prCreateMsg carries the result of async PR creation.
-type prCreateMsg struct {
-	sessionID string
-	pr        *github.PRState
-	err       error
-}
-
 // fixChecksMsg carries the result of dispatching fix-checks to an agent.
 type fixChecksMsg struct {
 	sessionID string

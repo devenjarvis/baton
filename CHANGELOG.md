@@ -9,6 +9,10 @@ Every PR should update the `[Unreleased]` section with a short entry describing 
 
 ## [Unreleased]
 
+### Changed
+
+- Dashboard keybindings pruned: removed `p` (PR create/open), `m` (merge), and the force-quit `Q`. The remaining `q` handles the detach-and-exit flow; per-session cleanup stays on `X`. PR polling, status indicators, and `f` (fix checks) are unchanged.
+
 ### Fixed
 
 - Startup splash text artifacts when Claude Code enters its TUI (alt-screen transition detection replaces 500ms delayed resize heuristic).

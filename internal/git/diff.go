@@ -375,12 +375,3 @@ func parseNameStatus(output string, fileMap map[string]*FileStat) {
 		}
 	}
 }
-
-// MergeWorktree merges the worktree branch into the base branch using --no-ff.
-// Returns an error if there are merge conflicts.
-func MergeWorktree(repoPath string, wt *WorktreeInfo, message string) error {
-	if _, err := runGit(repoPath, "merge", "--no-ff", "-m", message, wt.Branch); err != nil {
-		return fmt.Errorf("merging worktree: %w", err)
-	}
-	return nil
-}
