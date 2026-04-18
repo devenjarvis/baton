@@ -48,6 +48,7 @@ func TestHookSubcommandForwards(t *testing.T) {
 	bin := buildBaton(t)
 
 	cases := []struct {
+		name        string
 		subcmd      string
 		wantKind    hook.Kind
 		stdin       string
@@ -57,6 +58,7 @@ func TestHookSubcommandForwards(t *testing.T) {
 		wantPrompt  string
 	}{
 		{
+			name:        "session-start",
 			subcmd:      "session-start",
 			wantKind:    hook.KindSessionStart,
 			stdin:       `{"session_id":"uuid-xyz","cwd":"/tmp/wt"}`,
@@ -64,17 +66,20 @@ func TestHookSubcommandForwards(t *testing.T) {
 			wantCWD:     "/tmp/wt",
 		},
 		{
+			name:        "stop",
 			subcmd:      "stop",
 			wantKind:    hook.KindStop,
 			stdin:       `{"session_id":"uuid-xyz"}`,
 			wantSession: "uuid-xyz",
 		},
 		{
+			name:     "session-end",
 			subcmd:   "session-end",
 			wantKind: hook.KindSessionEnd,
 			stdin:    `{}`,
 		},
 		{
+			name:        "notification",
 			subcmd:      "notification",
 			wantKind:    hook.KindNotification,
 			stdin:       `{"session_id":"uuid-xyz","message":"Claude needs your permission to use Bash"}`,
@@ -82,6 +87,7 @@ func TestHookSubcommandForwards(t *testing.T) {
 			wantMessage: "Claude needs your permission to use Bash",
 		},
 		{
+			name:        "user-prompt-submit",
 			subcmd:      "user-prompt-submit",
 			wantKind:    hook.KindUserPromptSubmit,
 			stdin:       `{"session_id":"uuid-xyz","prompt":"add dark mode"}`,
@@ -96,10 +102,26 @@ func TestHookSubcommandForwards(t *testing.T) {
 			wantSession: "uuid-xyz",
 			wantMessage: "perm",
 		},
+		{
+			name:        "user-prompt-submit-with-prompt",
+			subcmd:      "user-prompt-submit",
+			wantKind:    hook.KindUserPromptSubmit,
+			stdin:       `{"session_id":"uuid-xyz","prompt":"investigate flaky checkout test"}`,
+			wantSession: "uuid-xyz",
+			wantPrompt:  "investigate flaky checkout test",
+		},
+		{
+			name:        "notification-ignores-prompt",
+			subcmd:      "notification",
+			wantKind:    hook.KindNotification,
+			stdin:       `{"session_id":"uuid-xyz","prompt":"should be dropped","message":"perm"}`,
+			wantSession: "uuid-xyz",
+			wantMessage: "perm",
+		},
 	}
 
 	for _, tc := range cases {
-		t.Run(tc.subcmd, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			// macOS caps unix socket paths at 104 bytes — t.TempDir() under the
 			// test name is too long, so use a short dir under os.TempDir().

@@ -16,6 +16,7 @@ const (
 	KindSessionEnd       Kind = "session-end"
 	KindNotification     Kind = "notification"
 	KindUserPromptSubmit Kind = "user-prompt-submit"
+	KindPreToolUse       Kind = "pre-tool-use"
 )
 
 // Event is the wire-format payload sent from the baton-hook CLI to the
@@ -24,10 +25,10 @@ const (
 // SessionID and CWD come straight from the Claude JSON payload; AgentID is
 // supplied by the CLI wrapper from the BATON_AGENT_ID environment variable
 // so the server can dispatch to the right agent. Message is populated from
-// Notification payloads (empty for other kinds). Prompt carries the user's
-// text from UserPromptSubmit payloads (empty for other kinds). Raw preserves
-// the original Claude JSON for forward-compatibility with fields the server
-// doesn't currently consume.
+// Notification payloads (empty for other kinds). Prompt is populated from
+// UserPromptSubmit payloads (empty for other kinds). Raw preserves the original
+// Claude JSON for forward-compatibility with fields the server doesn't
+// currently consume.
 type Event struct {
 	Kind      Kind            `json:"kind"`
 	AgentID   string          `json:"agent_id"`

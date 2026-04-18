@@ -39,6 +39,26 @@ type createResultMsg struct {
 	err       error
 }
 
+// killScope distinguishes an agent-level kill from a session-level kill so the
+// result handler knows which closing set to clean up.
+type killScope int
+
+const (
+	killScopeAgent killScope = iota
+	killScopeSession
+)
+
+// killResultMsg carries the result of an async KillAgent/KillSession call.
+// agentID is empty for session-scoped kills; the closing-set cleanup iterates
+// the manager to find stale IDs instead.
+type killResultMsg struct {
+	scope     killScope
+	sessionID string
+	agentID   string
+	agentIDs  []string // for session scope: all agent IDs that were in the session
+	err       error
+}
+
 // diffStatsMsg carries the result of an async diff stats refresh.
 type diffStatsMsg struct {
 	sessionID string
@@ -89,6 +109,12 @@ type App struct {
 	lastKnownStatus map[string]agent.Status
 	audioPlayer     *audio.Player
 
+	// closingAgents and closingSessions track in-flight kill requests so the
+	// dashboard can render a "closing…" indicator while the async teardown runs.
+	// Lives in the TUI because it's purely a UI concern.
+	closingAgents   map[string]bool
+	closingSessions map[string]bool
+
 	diffStatsCache      map[string]*diffStatsEntry // keyed by session ID
 	diffRefreshInFlight bool
 
@@ -109,6 +135,8 @@ func NewApp() App {
 		diffStatsCache:  make(map[string]*diffStatsEntry),
 		prCache:         make(map[string]*prCacheEntry),
 		prPollStates:    make(map[string]*prSessionState),
+		closingAgents:   make(map[string]bool),
+		closingSessions: make(map[string]bool),
 	}
 }
 
@@ -301,12 +329,20 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		fixedW := a.dashboard.fixedTermWidth()
 		fixedH := a.dashboard.fixedTermHeight()
 		if fixedW > 0 && fixedH > 0 {
+			selected := a.dashboard.selectedAgent()
 			for _, item := range a.dashboard.items {
 				if item.kind != listItemAgent || item.agent == nil {
 					continue
 				}
 				if item.agent.AltScreenEntered() {
 					item.agent.Resize(fixedH, fixedW)
+					// VT history is cleared on alt-screen entry; any prior
+					// scrollOffset now indexes into an empty buffer and would
+					// leave the preview visually frozen until the user hits
+					// home. Snap the currently focused agent back to live.
+					if item.agent == selected {
+						a.dashboard.scrollOffset = 0
+					}
 				}
 			}
 		}
@@ -399,6 +435,28 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// transition detector in the tick handler will fire a follow-up resize
 		// once Claude's TUI enters alternate screen mode.
 		a.resizeSelectedForDashboard()
+		return a, nil
+
+	case killResultMsg:
+		// Clean up closing-set entries regardless of error so the UI never
+		// gets stuck rendering "closing…" on a row whose kill failed.
+		switch msg.scope {
+		case killScopeAgent:
+			delete(a.closingAgents, msg.agentID)
+			delete(a.lastKnownStatus, msg.agentID)
+		case killScopeSession:
+			delete(a.closingSessions, msg.sessionID)
+			for _, id := range msg.agentIDs {
+				delete(a.closingAgents, id)
+				delete(a.lastKnownStatus, id)
+			}
+			delete(a.diffStatsCache, msg.sessionID)
+		}
+		if msg.err != nil {
+			a.setError(msg.err.Error())
+		}
+		a.refreshAgentList()
+		a.updateDashboardDiffStats()
 		return a, nil
 
 	case diffStatsMsg:
@@ -814,7 +872,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 
 		case "x":
-			// Kill the selected agent.
+			// Kill the selected agent asynchronously so the UI stays responsive.
 			item := a.dashboard.selectedItem()
 			if item == nil || item.kind != listItemAgent || item.agent == nil || item.session == nil {
 				return a, nil
@@ -823,15 +881,26 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if mgr == nil {
 				return a, nil
 			}
-			if err := mgr.KillAgent(item.session.ID, item.agent.ID); err != nil {
-				a.setError(err.Error())
+			agentID := item.agent.ID
+			sessionID := item.session.ID
+			// Already dispatched — no-op to avoid double-kills.
+			if a.closingAgents[agentID] {
+				return a, nil
 			}
-			delete(a.lastKnownStatus, item.agent.ID)
+			a.closingAgents[agentID] = true
 			a.refreshAgentList()
-			return a, nil
+			return a, func() tea.Msg {
+				err := mgr.KillAgent(sessionID, agentID)
+				return killResultMsg{
+					scope:     killScopeAgent,
+					sessionID: sessionID,
+					agentID:   agentID,
+					err:       err,
+				}
+			}
 
 		case "X":
-			// Kill the entire parent session of the selected agent.
+			// Kill the entire parent session of the selected agent asynchronously.
 			item := a.dashboard.selectedItem()
 			if item == nil || item.session == nil {
 				return a, nil
@@ -841,16 +910,26 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, nil
 			}
 			sessID := item.session.ID
+			// Already dispatched — no-op.
+			if a.closingSessions[sessID] {
+				return a, nil
+			}
+			var agentIDs []string
 			for _, ag := range item.session.Agents() {
-				delete(a.lastKnownStatus, ag.ID)
+				agentIDs = append(agentIDs, ag.ID)
+				a.closingAgents[ag.ID] = true
 			}
-			if err := mgr.KillSession(sessID); err != nil {
-				a.setError(err.Error())
-			}
-			delete(a.diffStatsCache, sessID)
+			a.closingSessions[sessID] = true
 			a.refreshAgentList()
-			a.updateDashboardDiffStats()
-			return a, nil
+			return a, func() tea.Msg {
+				err := mgr.KillSession(sessID)
+				return killResultMsg{
+					scope:     killScopeSession,
+					sessionID: sessID,
+					agentIDs:  agentIDs,
+					err:       err,
+				}
+			}
 
 		case "f":
 			// Fix failing checks: fetch logs and send to an idle agent.
@@ -966,6 +1045,15 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.dashboard.panelFocus == focusTerminal {
 			ag := a.dashboard.selectedAgent()
 			if ag != nil {
+				// Alt-screen apps (Claude's /tui fullscreen, vim, less) redraw
+				// the viewport instead of scrolling — baton's scrollback is
+				// inert for them. Forward the wheel event so the app can drive
+				// its own scrollback. SendMouse is a no-op unless the app has
+				// enabled mouse reporting.
+				if ag.IsAltScreen() {
+					a.forwardWheelToAgent(ag, msg)
+					return a, nil
+				}
 				switch msg.Button {
 				case tea.MouseWheelUp:
 					a.dashboard.scrollOffset += 3
@@ -1214,7 +1302,56 @@ func (a *App) setError(msg string) {
 	a.errTicks = 30
 }
 
+// forwardWheelToAgent encodes a mouse wheel event and feeds it to the agent's
+// terminal. Coordinates are translated from dashboard-screen space to cells
+// relative to the agent's PTY viewport and clamped to [0,W)×[0,H). The
+// emulator only emits bytes when the running program has enabled mouse
+// reporting (DECSET 1000/1002/1003 + SGR 1006).
+func (a *App) forwardWheelToAgent(ag *agent.Agent, msg tea.MouseWheelMsg) {
+	// Row/col offsets to the terminal viewport's top-left cell in screen
+	// space. Mirrors the hardcoded layout assumed by fixedTermHeight
+	// (contentHeight − 4 metadata rows − 2 border rows) plus whatever banner
+	// rows the app layer has pushed the dashboard down by. Exact precision
+	// isn't critical — most alt-screen apps treat wheel events as
+	// direction-only — but translating keeps the coords inside the viewport.
+	dashboardTopY := 0
+	if a.err != "" {
+		dashboardTopY++
+	}
+	if a.confirmQuit {
+		dashboardTopY++
+	}
+	const (
+		previewColOffset    = 32 // list panel width + list-panel right border
+		previewLeftBorder   = 1
+		previewTopBorder    = 1
+		previewMetadataRows = 4 // title, sessionInfo, taskInfo, blank separator
+	)
+	termX := msg.X - previewColOffset - previewLeftBorder
+	if termX < 0 {
+		termX = 0
+	}
+	if w := a.dashboard.fixedTermWidth(); w > 0 && termX >= w {
+		termX = w - 1
+	}
+	termY := msg.Y - dashboardTopY - previewTopBorder - previewMetadataRows
+	if termY < 0 {
+		termY = 0
+	}
+	if h := a.dashboard.fixedTermHeight(); h > 0 && termY >= h {
+		termY = h - 1
+	}
+	ag.SendMouse(xvt.MouseWheel{
+		X:      termX,
+		Y:      termY,
+		Button: xvt.MouseButton(msg.Button),
+		Mod:    xvt.KeyMod(msg.Mod),
+	})
+}
+
 func (a *App) refreshAgentList() {
+	a.dashboard.closingAgents = a.closingAgents
+	a.dashboard.closingSessions = a.closingSessions
 	if a.cfg == nil {
 		// Fallback used in tests that set up managers directly without cfg.
 		if mgr := a.managers[a.activeRepo]; mgr != nil {

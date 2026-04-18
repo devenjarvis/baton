@@ -50,6 +50,7 @@ func WriteHooksFile(path string) error {
 			"SessionEnd":       {{Hooks: []hookCommand{{Type: "command", Command: batonPath + " hook session-end"}}}},
 			"Notification":     {{Hooks: []hookCommand{{Type: "command", Command: batonPath + " hook notification"}}}},
 			"UserPromptSubmit": {{Hooks: []hookCommand{{Type: "command", Command: batonPath + " hook user-prompt-submit"}}}},
+			"PreToolUse":       {{Hooks: []hookCommand{{Type: "command", Command: batonPath + " hook pre-tool-use"}}}},
 		},
 	}
 

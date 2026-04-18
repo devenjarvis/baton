@@ -225,6 +225,20 @@ func (t *Terminal) SendKey(key xvt.KeyPressEvent) {
 	t.emu.SendKey(key)
 }
 
+// SendMouse forwards a mouse event to the emulator. The emulator only emits
+// encoded bytes when the app has enabled mouse reporting (DECSET 1000/1002/1003
+// plus an extended-encoding mode like SGR 1006); otherwise this is a no-op —
+// which is the desired behavior for agents that haven't opted into mouse input.
+func (t *Terminal) SendMouse(m xvt.Mouse) {
+	t.emu.SendMouse(m)
+}
+
+// IsAltScreen reports whether the emulator is currently in alternate-screen
+// mode. Safe to call concurrently with Write.
+func (t *Terminal) IsAltScreen() bool {
+	return t.emu.IsAltScreen()
+}
+
 // SendText forwards text input to the emulator.
 func (t *Terminal) SendText(text string) {
 	t.emu.SendText(text)

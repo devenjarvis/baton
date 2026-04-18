@@ -116,7 +116,9 @@ func hookSocketPath(repoPath string) string {
 }
 
 // dispatchHookEvents reads hook events from the server and routes each to the
-// agent named by AgentID. Unknown agent IDs are logged and dropped.
+// agent named by AgentID. Unknown agent IDs are dropped silently. On the
+// first UserPromptSubmit for an agent, the prompt is slugified and applied
+// as the auto-generated display name on both the agent and its session.
 func (m *Manager) dispatchHookEvents() {
 	defer m.hookDispatcher.Done()
 	for e := range m.hookServer.Events() {
@@ -136,10 +138,14 @@ func (m *Manager) dispatchHookEvents() {
 			})
 		}
 
-		// First meaningful user prompt in a session renames its random
-		// adjective-noun branch to a slug derived from the prompt. Failures
-		// are logged and dropped so the user's turn is never blocked.
+		// First meaningful user prompt drives two one-shot renames:
+		//   - applyAutoName sets human-readable display names on the agent
+		//     and (if unset) session, gated by Agent.HasClaudeName.
+		//   - maybeRenameFromPrompt renames the session's git branch in
+		//     place, gated by Session.HasClaudeName.
+		// Failures are dropped so the user's turn is never blocked.
 		if e.Kind == hook.KindUserPromptSubmit {
+			m.applyAutoName(a, sessID, e.Prompt)
 			m.maybeRenameFromPrompt(sess, e.Prompt)
 		}
 	}
@@ -183,6 +189,31 @@ func (m *Manager) maybeRenameFromPrompt(sess *Session, prompt string) {
 			Status:    lead.Status(),
 		})
 	}
+}
+
+// applyAutoName derives a display name from the first UserPromptSubmit prompt
+// and applies it to the agent and (if unset) the session. One-shot: once
+// Agent.HasClaudeName is true the agent is never renamed again, even when the
+// first prompt slugifies to empty — mirrors the old Claude-session-file
+// auto-name behavior so we don't silently overwrite a user-accepted name
+// later in the session.
+//
+// Mirrors OnHookEvent's late-event guard: a stray UserPromptSubmit arriving
+// after the agent reached Done or Error must not rename a terminal row.
+func (m *Manager) applyAutoName(a *Agent, sessID, prompt string) {
+	if a.HasClaudeName() {
+		return
+	}
+	if st := a.Status(); st == StatusDone || st == StatusError {
+		return
+	}
+	if slug := slugify(prompt); slug != "" {
+		a.SetDisplayName(slug)
+		if sess := m.GetSession(sessID); sess != nil && !sess.HasDisplayName() {
+			sess.SetDisplayName(slug)
+		}
+	}
+	a.SetClaudeName(true)
 }
 
 // findAgentAndSession locates an agent across all sessions and returns it

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"testing"
@@ -700,6 +701,133 @@ func TestMouseWheelScrollInFocusTerminal(t *testing.T) {
 	}
 }
 
+// waitForAltScreen polls ag.IsAltScreen() until true or the timeout expires.
+func waitForAltScreen(t *testing.T, ag *agent.Agent) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if ag.IsAltScreen() {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("agent did not enter alt-screen within timeout")
+}
+
+// altScreenBashCmd emits DECSET 1049 (alt-screen) + 1002 (button-event mouse)
+// + 1006 (SGR ext encoding) so the agent both enters alt-screen AND accepts
+// SendMouse events, then sleeps so the process stays alive.
+func altScreenBashCmd(_ string) *exec.Cmd {
+	return exec.Command("bash", "-c", `printf '\033[?1049h\033[?1002h\033[?1006h'; sleep 10`)
+}
+
+func TestMouseWheelForwardsInAltScreen(t *testing.T) {
+	dir, err := os.MkdirTemp("", "baton-alt-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+
+	run := func(args ...string) {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("cmd %v: %v\n%s", args, err, out)
+		}
+	}
+	run("git", "init")
+	run("git", "config", "commit.gpgsign", "false")
+	run("git", "commit", "--allow-empty", "-m", "init")
+
+	mgr := agent.NewManager(dir, config.Resolve(nil, nil))
+	defer mgr.Shutdown()
+
+	sess, ag, err := mgr.CreateSessionWithCommand(agent.Config{
+		Name: "alt-wheel", Task: "test", RepoPath: dir, Rows: 24, Cols: 80,
+	}, altScreenBashCmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForAltScreen(t, ag)
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.managers[dir] = mgr
+	app.activeRepo = dir
+	app.dashboard.items = []listItem{
+		{kind: listItemAgent, repoPath: dir, session: sess, agent: ag},
+	}
+	app.dashboard.panelFocus = focusTerminal
+
+	// Set a non-zero offset so we can tell the wheel branch didn't mutate it.
+	app.dashboard.scrollOffset = 5
+	model, _ := app.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp, X: 40, Y: 10})
+	app = model.(App)
+	if app.dashboard.scrollOffset != 5 {
+		t.Fatalf("expected scrollOffset untouched (=5) when agent is in alt-screen, got %d", app.dashboard.scrollOffset)
+	}
+
+	model, _ = app.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown, X: 40, Y: 10})
+	app = model.(App)
+	if app.dashboard.scrollOffset != 5 {
+		t.Fatalf("expected scrollOffset untouched on WheelDown in alt-screen, got %d", app.dashboard.scrollOffset)
+	}
+}
+
+func TestScrollOffsetResetsOnAltScreenEntry(t *testing.T) {
+	dir, err := os.MkdirTemp("", "baton-alt-reset-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+
+	run := func(args ...string) {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("cmd %v: %v\n%s", args, err, out)
+		}
+	}
+	run("git", "init")
+	run("git", "config", "commit.gpgsign", "false")
+	run("git", "commit", "--allow-empty", "-m", "init")
+
+	mgr := agent.NewManager(dir, config.Resolve(nil, nil))
+	defer mgr.Shutdown()
+
+	sess, ag, err := mgr.CreateSessionWithCommand(agent.Config{
+		Name: "alt-reset", Task: "test", RepoPath: dir, Rows: 24, Cols: 80,
+	}, altScreenBashCmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForAltScreen(t, ag)
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.managers[dir] = mgr
+	app.activeRepo = dir
+	app.dashboard.items = []listItem{
+		{kind: listItemAgent, repoPath: dir, session: sess, agent: ag},
+	}
+	app.dashboard.selected = 0
+	app.dashboard.scrollOffset = 42
+
+	// A tickMsg drives the alt-screen-entered consumer. Since selected==ag,
+	// the transition should reset scrollOffset to 0.
+	model, _ := app.Update(tickMsg(time.Now()))
+	app = model.(App)
+	if app.dashboard.scrollOffset != 0 {
+		t.Fatalf("expected scrollOffset reset to 0 after alt-screen entry tick, got %d", app.dashboard.scrollOffset)
+	}
+}
+
 func TestErrorPersistsAcrossTicks(t *testing.T) {
 	app := NewApp()
 	app.width = 120
@@ -841,6 +969,183 @@ func TestMouseClickSessionSnapsToAgent(t *testing.T) {
 	// Should snap from session to the nearest agent.
 	if app.dashboard.items[app.dashboard.selected].kind == listItemSession {
 		t.Fatalf("Expected selection to snap away from session row, but selected=%d is a session", app.dashboard.selected)
+	}
+}
+
+// TestKillAgentAsyncMarksClosing verifies that pressing 'x' marks the agent in
+// closingAgents and returns a non-nil Cmd without having called KillAgent
+// synchronously — so the UI stays responsive while the teardown runs in a
+// goroutine.
+func TestKillAgentAsyncMarksClosing(t *testing.T) {
+	dir, err := os.MkdirTemp("", "baton-killasync-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+
+	run := func(args ...string) {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("cmd %v: %v\n%s", args, err, out)
+		}
+	}
+	run("git", "init")
+	run("git", "config", "commit.gpgsign", "false")
+	run("git", "commit", "--allow-empty", "-m", "init")
+
+	mgr := agent.NewManager(dir, config.Resolve(nil, nil))
+	defer mgr.Shutdown()
+
+	// Create a long-running bash agent (sleep 999) so KillAgent has real work
+	// to do and the async path is exercised.
+	sess, ag, err := mgr.CreateSessionWithCommand(
+		agent.Config{Name: "kill-async", Task: "test", Rows: 24, Cols: 80},
+		func(_ string) *exec.Cmd { return exec.Command("bash", "-c", "sleep 999") },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.managers[dir] = mgr
+	app.activeRepo = dir
+	app.refreshAgentList()
+
+	// Select the agent row.
+	for i, it := range app.dashboard.items {
+		if it.kind == listItemAgent && it.agent != nil && it.agent.ID == ag.ID {
+			app.dashboard.selected = i
+			break
+		}
+	}
+
+	// Press 'x' — should mark closing and return a non-nil cmd. The agent
+	// must still be present in the manager because the kill is now async.
+	model, cmd := app.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
+	app = model.(App)
+
+	if cmd == nil {
+		t.Fatal("Expected non-nil cmd from 'x' (async kill), got nil")
+	}
+	if !app.closingAgents[ag.ID] {
+		t.Fatalf("Expected closingAgents[%s]=true, got %v", ag.ID, app.closingAgents)
+	}
+	// Dashboard should see the closing flag too.
+	if !app.dashboard.closingAgents[ag.ID] {
+		t.Fatalf("Expected dashboard.closingAgents[%s]=true", ag.ID)
+	}
+	// The manager still has the agent because the goroutine hasn't run yet.
+	if mgr.Get(ag.ID) == nil {
+		t.Fatalf("Expected agent still present in manager before cmd runs, got nil")
+	}
+
+	// Second press on the same agent is a no-op: must return nil cmd so we
+	// don't double-dispatch.
+	_, cmd2 := app.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
+	if cmd2 != nil {
+		t.Fatal("Expected nil cmd from second 'x' on same agent (no double-dispatch)")
+	}
+
+	// Run the kill cmd; it should return a killResultMsg.
+	msg := cmd()
+	kr, ok := msg.(killResultMsg)
+	if !ok {
+		t.Fatalf("Expected killResultMsg from cmd, got %T", msg)
+	}
+	if kr.scope != killScopeAgent || kr.agentID != ag.ID || kr.sessionID != sess.ID {
+		t.Fatalf("Unexpected killResultMsg: %+v", kr)
+	}
+
+	// Feed the killResultMsg back into the app — closing set should clear
+	// and refreshAgentList should drop the agent from dashboard items.
+	model, _ = app.Update(kr)
+	app = model.(App)
+	if app.closingAgents[ag.ID] {
+		t.Fatalf("Expected closingAgents[%s] cleared after killResultMsg, still set", ag.ID)
+	}
+	for _, it := range app.dashboard.items {
+		if it.kind == listItemAgent && it.agent != nil && it.agent.ID == ag.ID {
+			t.Fatalf("Expected agent %s removed from dashboard after killResultMsg", ag.ID)
+		}
+	}
+}
+
+// TestKillResultMsgClearsClosingSet verifies the session-scope killResultMsg
+// path: closingSessions and closingAgents are both cleared, diff stats cache
+// is invalidated, and refreshAgentList runs.
+func TestKillResultMsgClearsClosingSet(t *testing.T) {
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+
+	// Pre-populate closing sets and diff cache as if 'X' had dispatched.
+	app.closingSessions["sess-1"] = true
+	app.closingAgents["agent-a"] = true
+	app.closingAgents["agent-b"] = true
+	app.lastKnownStatus["agent-a"] = agent.StatusActive
+	app.lastKnownStatus["agent-b"] = agent.StatusActive
+	app.diffStatsCache["sess-1"] = &diffStatsEntry{}
+
+	model, _ := app.Update(killResultMsg{
+		scope:     killScopeSession,
+		sessionID: "sess-1",
+		agentIDs:  []string{"agent-a", "agent-b"},
+	})
+	app = model.(App)
+
+	if app.closingSessions["sess-1"] {
+		t.Fatal("Expected closingSessions[sess-1] cleared")
+	}
+	if app.closingAgents["agent-a"] || app.closingAgents["agent-b"] {
+		t.Fatal("Expected closingAgents cleared for both agents")
+	}
+	if _, ok := app.diffStatsCache["sess-1"]; ok {
+		t.Fatal("Expected diffStatsCache[sess-1] removed")
+	}
+	if _, ok := app.lastKnownStatus["agent-a"]; ok {
+		t.Fatal("Expected lastKnownStatus cleared for agent-a")
+	}
+	// Dashboard should also see the cleared maps (refreshAgentList was called).
+	if app.dashboard.closingSessions == nil {
+		t.Fatal("Expected dashboard.closingSessions wired up after refresh")
+	}
+	if app.dashboard.closingSessions["sess-1"] {
+		t.Fatal("Expected dashboard.closingSessions[sess-1] cleared after refresh")
+	}
+}
+
+// TestKillResultMsgClearsClosingSetOnError verifies that if KillAgent returns
+// an error, the closing-set entry is still cleared (so the row doesn't get
+// stuck rendering "closing…") and the error is surfaced via setError.
+func TestKillResultMsgClearsClosingSetOnError(t *testing.T) {
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+
+	app.closingAgents["agent-x"] = true
+
+	model, _ := app.Update(killResultMsg{
+		scope:     killScopeAgent,
+		sessionID: "sess-1",
+		agentID:   "agent-x",
+		err:       errors.New("kill failed"),
+	})
+	app = model.(App)
+
+	if app.closingAgents["agent-x"] {
+		t.Fatal("Expected closingAgents[agent-x] cleared even on error")
+	}
+	if app.err != "kill failed" {
+		t.Fatalf("Expected err %q, got %q", "kill failed", app.err)
 	}
 }
 
