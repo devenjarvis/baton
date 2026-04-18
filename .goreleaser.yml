@@ -51,6 +51,7 @@ brews:
       owner: devenjarvis
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
     homepage: "https://github.com/devenjarvis/baton"
     description: "Terminal-native TUI for orchestrating multiple Claude Code agents in parallel"
     license: "MIT"
