@@ -28,7 +28,7 @@ func TestNoFragmentsExitsNonZero(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := run(changelog, fragmentsDir, "0.2.0", time.Date(2026, 4, 19, 0, 0, 0, 0, time.UTC))
+	err := run(changelog, fragmentsDir, "0.2.0", "", time.Date(2026, 4, 19, 0, 0, 0, 0, time.UTC))
 	if err == nil {
 		t.Fatal("expected non-nil error when no fragments exist, got nil")
 	}
@@ -64,7 +64,7 @@ func TestBasicAssembly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := run(changelog, fragmentsDir, "0.2.0", time.Date(2026, 4, 19, 0, 0, 0, 0, time.UTC))
+	err := run(changelog, fragmentsDir, "0.2.0", "", time.Date(2026, 4, 19, 0, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

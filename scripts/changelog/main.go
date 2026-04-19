@@ -29,6 +29,7 @@ var sectionOrder = []string{
 
 func main() {
 	version := flag.String("version", "", "version to release (e.g. 0.2.0)")
+	notesFile := flag.String("notes-file", "", "optional path to write the release notes section")
 	flag.Parse()
 
 	if *version == "" {
@@ -48,14 +49,14 @@ func main() {
 	changelog := filepath.Join(cwd, "CHANGELOG.md")
 	fragmentsDir := filepath.Join(cwd, "changelog.d")
 
-	if err := run(changelog, fragmentsDir, *version, time.Now()); err != nil {
+	if err := run(changelog, fragmentsDir, *version, *notesFile, time.Now()); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 }
 
 // run is the testable core of the tool.
-func run(changelogPath, fragmentsDir, version string, now time.Time) error {
+func run(changelogPath, fragmentsDir, version, notesFile string, now time.Time) error {
 	// 1. Collect fragment files (skip .gitkeep and hidden files).
 	entries, err := os.ReadDir(fragmentsDir)
 	if err != nil {
@@ -205,12 +206,19 @@ func run(changelogPath, fragmentsDir, version string, now time.Time) error {
 		)
 	}
 
-	// 7. Write updated CHANGELOG.md.
+	// 7. Optionally write just the new version section to a release-notes file.
+	if notesFile != "" {
+		if err := os.WriteFile(notesFile, []byte(newSection), 0o644); err != nil {
+			return fmt.Errorf("writing notes file: %w", err)
+		}
+	}
+
+	// 8. Write updated CHANGELOG.md.
 	if err := os.WriteFile(changelogPath, []byte(updated), 0o644); err != nil {
 		return fmt.Errorf("writing CHANGELOG.md: %w", err)
 	}
 
-	// 8. Delete processed fragment files (leave .gitkeep).
+	// 9. Delete processed fragment files (leave .gitkeep).
 	for _, path := range fragmentFiles {
 		if err := os.Remove(path); err != nil {
 			return fmt.Errorf("removing fragment %s: %w", path, err)
