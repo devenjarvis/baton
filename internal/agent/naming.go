@@ -14,11 +14,18 @@ func suffixFromPrompt(prompt string) string {
 	if trimmed == "" {
 		return ""
 	}
-	// Skip pure slash commands like "/clear" or "/help <args>". Claude's
-	// UserPromptSubmit hook fires for those, but they don't describe work
-	// worth renaming the branch for.
+	// For slash commands like "/plan-it add dark mode", use only the argument
+	// text after the command. Pure commands with no arguments (e.g. "/clear",
+	// "/help") have no meaningful work description, so return "".
 	if strings.HasPrefix(trimmed, "/") {
-		return ""
+		idx := strings.IndexAny(trimmed, " \t")
+		if idx < 0 {
+			return ""
+		}
+		trimmed = strings.TrimSpace(trimmed[idx+1:])
+		if trimmed == "" {
+			return ""
+		}
 	}
 	if len(trimmed) > maxPromptBytesForSuffix {
 		trimmed = trimmed[:maxPromptBytesForSuffix]

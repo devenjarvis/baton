@@ -11,6 +11,7 @@ Every PR should update the `[Unreleased]` section with a short entry describing 
 
 ### Fixed
 
+- Branch rename now uses argument text from skill invocations (e.g. `/plan-it add dark mode` → `add-dark-mode`) instead of keeping the placeholder name. Pure slash commands with no arguments (e.g. `/clear`) still skip the rename.
 - Diff view no longer crashes with "fragment header miscounts lines: -1 old, -1 new" when a hunk ends with an empty context line. `git.Diff` now uses `runGitRaw` instead of `runGit` so trailing whitespace (space-prefixed empty lines) is preserved for go-gitdiff's line-count validation.
 - Side-by-side diff no longer "line dances" on tab-indented code. Tabs are now expanded to 4 spaces before width measurement so `ansi.StringWidth` returns the correct display width. Side-by-side mode also switches from wrapping to truncation, so each diff row always occupies exactly one physical terminal line and the `│` separator stays stable while scrolling.
 

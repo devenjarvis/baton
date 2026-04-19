@@ -485,6 +485,51 @@ func TestUserPromptSubmitRenamesBranch(t *testing.T) {
 	}
 }
 
+// TestUserPromptSubmitSlashWithArgRenamesBranch verifies that a skill
+// invocation like "/plan-it add dark mode" renames the branch using the
+// argument text, while a pure slash command like "/clear" still does not.
+func TestUserPromptSubmitSlashWithArgRenamesBranch(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	cfg := Config{Name: "cold-ferret", Task: "test", Rows: 24, Cols: 80}
+	sess, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-mgr.Events():
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for EventCreated")
+	}
+
+	// Slash command with argument triggers rename using the argument text.
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindUserPromptSubmit,
+		AgentID: ag.ID,
+		Prompt:  "/plan-it add dark mode",
+	}); err != nil {
+		t.Fatalf("SendEvent slash+arg: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if sess.HasClaudeName() {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !sess.HasClaudeName() {
+		t.Fatal("expected HasClaudeName true after slash+arg prompt")
+	}
+	if got := sess.Branch(); got != "baton/add-dark-mode" {
+		t.Errorf("expected branch baton/add-dark-mode, got %q", got)
+	}
+}
+
 // waitForStatus polls the agent status up to d for the desired value.
 func waitForStatus(t *testing.T, a *Agent, want Status, d time.Duration) bool {
 	t.Helper()
