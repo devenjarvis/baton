@@ -72,4 +72,4 @@ Always run `go test -race ./...` before committing — concurrency bugs have bee
 - `.baton/` is gitignored (auto-added to the repo's `.gitignore` on first run).
 - Errors display briefly in the TUI and clear on next tick; no modal error dialogs.
 - Claude hook CLI (`baton hook`) is silent on stdout and always exits 0 — Claude interprets stdout as hook feedback.
-- Changelog: every PR should add a line under `[Unreleased]` in `CHANGELOG.md`.
+- Changelog: every PR should add a fragment file under `changelog.d/` (e.g. `changelog.d/fix-login-redirect.md`) using `### Added`, `### Fixed`, etc. section headers. A release script assembles fragments into `CHANGELOG.md` when a version is cut.
