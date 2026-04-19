@@ -213,9 +213,9 @@ func (r *Renderer) writeUnifiedLine(b *strings.Builder, l diffmodel.Line, width,
 
 func (r *Renderer) renderSideBySide(width int) string {
 	// Column layout: [numL:5][space][markL:1][cellL:content][sep:" │ "][numR:5][space][markR:1][cellR:content]
-	numW := 5
-	markW := 1
-	sepW := 3
+	const numW = 5
+	const markW = 1
+	const sepW = 3
 	fixed := 2*(numW+1+markW) + sepW
 	content := (width - fixed) / 2
 	if content < 4 {
@@ -234,7 +234,7 @@ func (r *Renderer) renderSideBySide(width int) string {
 			if row.HunkHeader {
 				continue
 			}
-			r.writeSideBySideRow(&b, row, numW, markW, content, sepW)
+			r.writeSideBySideRow(&b, row, numW, content)
 		}
 	}
 	return strings.TrimRight(b.String(), "\n")
@@ -242,7 +242,7 @@ func (r *Renderer) renderSideBySide(width int) string {
 
 func (r *Renderer) writeSideBySideRow(
 	b *strings.Builder, row diffmodel.Row,
-	numW, markW, content, sepW int,
+	numW, content int,
 ) {
 	// Build left cell.
 	leftMark, leftStyle, leftNum, leftText := cellParts(
@@ -318,8 +318,6 @@ func (r *Renderer) writeSideBySideRow(
 		}
 
 		sep := styleGutter.Render(" │ ")
-		_ = markW
-		_ = sepW
 		b.WriteString(leftBlock + sep + rightBlock + "\n")
 	}
 }

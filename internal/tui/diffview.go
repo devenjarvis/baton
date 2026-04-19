@@ -7,6 +7,7 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/devenjarvis/baton/internal/diffmodel"
 	"github.com/devenjarvis/baton/internal/tui/diff"
@@ -271,9 +272,8 @@ func (d diffModel) renderHeader() string {
 		)
 	}
 	line := title + sub
-	// Truncate header to width.
-	if w := lipgloss.Width(line); w > d.width {
-		line = line[:0] + title // fall back to title-only
+	if lipgloss.Width(line) > d.width {
+		line = ansi.Truncate(line, d.width, "…")
 	}
 	return line + strings.Repeat(" ", max(0, d.width-lipgloss.Width(line)))
 }

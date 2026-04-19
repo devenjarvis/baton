@@ -6,7 +6,6 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/x/ansi"
 
 	"github.com/devenjarvis/baton/internal/diffmodel"
 )
@@ -161,7 +160,6 @@ func (t *Tree) collapseOrStepUp() {
 	}
 	// Otherwise step the cursor to the parent folder.
 	parentPath := parentPath(n.Path)
-	t.rebuild()
 	for i, node := range t.flat {
 		if !node.IsLeaf && node.Path == parentPath {
 			t.cursor = i
@@ -324,15 +322,11 @@ func (t *Tree) renderNode(n *diffmodel.FileNode, isCursor bool, width int) strin
 		body = indent + treeStyleFolderTag.Render(glyph) + n.Name
 	}
 	if isCursor {
-		// Overlay cursor style: render the stripped text in bold secondary.
-		plain := ansi.Strip(body)
 		body = treeStyleCursor.Render("▍ ") + body
-		body = truncateVisible(body, width)
-		_ = plain
 	} else {
 		body = treeStyleNormal.Render("  ") + body
-		body = truncateVisible(body, width)
 	}
+	body = truncateVisible(body, width)
 	return padTo(body, width)
 }
 
