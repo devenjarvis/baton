@@ -14,9 +14,13 @@ type DiffStats struct {
 	Deletions  int
 }
 
-// Diff returns the full diff between the base branch and the worktree branch.
-func Diff(repoPath string, wt *WorktreeInfo) (string, error) {
-	out, err := runGit(repoPath, "diff", wt.BaseBranch+"..."+wt.Branch)
+// Diff returns the full unified diff between the base branch and the worktree's
+// current state (committed + staged + unstaged changes). It runs from inside
+// the worktree so uncommitted work is included — the repoPath parameter is
+// accepted for API compatibility but unused. Uses --diff-filter=AMD so the file
+// list matches GetPerFileDiffStats.
+func Diff(_ string, wt *WorktreeInfo) (string, error) {
+	out, err := runGit(wt.Path, "diff", "--diff-filter=AMD", wt.BaseBranch)
 	if err != nil {
 		return "", fmt.Errorf("getting diff: %w", err)
 	}
