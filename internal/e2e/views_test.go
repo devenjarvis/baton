@@ -51,10 +51,9 @@ func TestDiffView(t *testing.T) {
 	s.Press("Escape")
 	s.WaitForText(listFocusAnchor, 5000)
 
-	// Press "d" to open diff view; wait for the diff summary status bar hint
-	// (only rendered in the diff view).
+	// Press "d" to open diff view; wait for a status bar hint unique to it.
 	s.Press("d")
-	s.WaitForText("top/bot", 5000)
+	s.WaitForText("side-by-side", 5000)
 	s.AssertScreenContains("file.txt")
 
 	// Exit diff view.

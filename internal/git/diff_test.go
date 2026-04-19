@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/devenjarvis/baton/internal/git"
@@ -511,6 +512,60 @@ func TestGetPerFileDiffStats_UncommittedChanges(t *testing.T) {
 	// uncommitted.txt should appear from working tree diff.
 	if _, ok := byPath["uncommitted.txt"]; !ok {
 		t.Error("expected uncommitted.txt in results from working tree changes")
+	}
+}
+
+func TestDiff_IncludesCommittedAndUncommitted(t *testing.T) {
+	repo := initTestRepo(t)
+
+	wt, err := git.CreateWorktree(repo, "wip-agent", "", "", "")
+	if err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+
+	// Committed change.
+	if err := os.WriteFile(filepath.Join(wt.Path, "committed.txt"), []byte("line1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitInDir(t, wt.Path, "add", "committed.txt")
+	gitInDir(t, wt.Path, "commit", "-m", "add committed file")
+
+	// Uncommitted staged change.
+	if err := os.WriteFile(filepath.Join(wt.Path, "staged.txt"), []byte("staged\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitInDir(t, wt.Path, "add", "staged.txt")
+
+	// Uncommitted unstaged change to the committed file.
+	if err := os.WriteFile(filepath.Join(wt.Path, "committed.txt"), []byte("line1\nline2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Uncommitted untracked file — git diff with --diff-filter=AMD should not
+	// include this (it has no tracked side), so we don't assert on it.
+
+	raw, err := git.Diff(repo, wt)
+	if err != nil {
+		t.Fatalf("Diff: %v", err)
+	}
+
+	if !strings.Contains(raw, "committed.txt") {
+		t.Errorf("diff missing committed.txt:\n%s", raw)
+	}
+	if !strings.Contains(raw, "staged.txt") {
+		t.Errorf("diff missing staged.txt:\n%s", raw)
+	}
+	if !strings.Contains(raw, "+line2") {
+		t.Errorf("diff missing uncommitted +line2 addition:\n%s", raw)
+	}
+	if !strings.Contains(raw, "+staged") {
+		t.Errorf("diff missing +staged addition:\n%s", raw)
+	}
+
+	// Parseable as a unified diff.
+	files := git.ParseDiffFiles(raw)
+	if len(files) < 2 {
+		t.Errorf("expected at least 2 files in parsed diff, got %d", len(files))
 	}
 }
 
