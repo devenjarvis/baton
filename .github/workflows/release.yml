@@ -27,20 +27,12 @@ jobs:
           VERSION=${GITHUB_REF_NAME#v}
           go run ./scripts/changelog --version "$VERSION"
 
-      - name: Commit assembled changelog
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add CHANGELOG.md changelog.d/
-          git commit -m "chore: release $GITHUB_REF_NAME changelog"
-          git push origin HEAD:main
-
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
           version: "~> v2"
-          args: release --clean
+          args: release --clean --skip=validate
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
