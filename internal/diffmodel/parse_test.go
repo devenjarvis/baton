@@ -373,3 +373,37 @@ func TestParse_OnlyDeletions(t *testing.T) {
 		t.Errorf("counts: %d+/%d-", f.Insertions, f.Deletions)
 	}
 }
+
+func TestParse_TrailingEmptyContextLine(t *testing.T) {
+	// Regression: git.Diff previously used strings.TrimSpace which stripped
+	// trailing " \n" context lines (empty source lines). go-gitdiff then saw
+	// one fewer line than the header declared and returned
+	// "fragment header miscounts lines: -1 old, -1 new".
+	raw := "diff --git a/foo.go b/foo.go\n" +
+		"index abc..def 100644\n" +
+		"--- a/foo.go\n" +
+		"+++ b/foo.go\n" +
+		"@@ -1,4 +1,5 @@\n" +
+		" package main\n" +
+		" \n" +
+		"+// added\n" +
+		" func main() {}\n" +
+		" \n" // trailing empty context line — stripped by TrimSpace before the fix
+	m, err := diffmodel.Parse(raw)
+	if err != nil {
+		t.Fatalf("Parse rejected diff ending with empty context line: %v", err)
+	}
+	if len(m.Files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(m.Files))
+	}
+	f := m.Files[0]
+	if f.Insertions != 1 || f.Deletions != 0 {
+		t.Errorf("counts: %d+/%d-", f.Insertions, f.Deletions)
+	}
+	if len(f.Hunks) != 1 {
+		t.Fatalf("expected 1 hunk, got %d", len(f.Hunks))
+	}
+	if len(f.Hunks[0].Lines) != 5 {
+		t.Errorf("expected 5 hunk lines (4 original + 1 added), got %d", len(f.Hunks[0].Lines))
+	}
+}

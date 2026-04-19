@@ -20,7 +20,7 @@ type DiffStats struct {
 // accepted for API compatibility but unused. Uses --diff-filter=AMD so the file
 // list matches GetPerFileDiffStats.
 func Diff(_ string, wt *WorktreeInfo) (string, error) {
-	out, err := runGit(wt.Path, "diff", "--diff-filter=AMD", wt.BaseBranch)
+	out, err := runGitRaw(wt.Path, "diff", "--diff-filter=AMD", wt.BaseBranch)
 	if err != nil {
 		return "", fmt.Errorf("getting diff: %w", err)
 	}

@@ -34,6 +34,21 @@ func runGit(dir string, args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+// runGitRaw is like runGit but returns the output without trimming whitespace.
+// Use this for commands like git diff where trailing whitespace is meaningful
+// (context lines representing empty source lines start with a space character
+// and would be corrupted by TrimSpace).
+func runGitRaw(dir string, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	}
+	return string(out), nil
+}
+
 // IsRepo reports whether path is inside a git repository.
 // It runs `git rev-parse --git-dir` in path and returns true on success.
 func IsRepo(path string) bool {
