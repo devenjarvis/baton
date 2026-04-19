@@ -62,7 +62,7 @@ func run(changelogPath, fragmentsDir, version string, now time.Time) error {
 		return fmt.Errorf("reading changelog.d: %w", err)
 	}
 
-	var fragmentFiles []string
+	fragmentFiles := make([]string, 0, len(entries))
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
