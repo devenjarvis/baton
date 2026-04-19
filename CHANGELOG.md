@@ -5,43 +5,6 @@ All notable changes to Baton will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-Every PR should update the `[Unreleased]` section with a short entry describing the change.
-
-## [Unreleased]
-
-### Fixed
-
-- Branch rename now uses argument text from skill invocations (e.g. `/plan-it add dark mode` → `add-dark-mode`) instead of keeping the placeholder name. Pure slash commands with no arguments (e.g. `/clear`) still skip the rename.
-- Diff view no longer crashes with "fragment header miscounts lines: -1 old, -1 new" when a hunk ends with an empty context line. `git.Diff` now uses `runGitRaw` instead of `runGit` so trailing whitespace (space-prefixed empty lines) is preserved for go-gitdiff's line-count validation.
-- Side-by-side diff no longer "line dances" on tab-indented code. Tabs are now expanded to 4 spaces before width measurement so `ansi.StringWidth` returns the correct display width. Side-by-side mode also switches from wrapping to truncation, so each diff row always occupies exactly one physical terminal line and the `│` separator stays stable while scrolling.
-
-### Removed
-
-- `f` fix-checks command. Fetching failed check annotations and dispatching them to an idle agent has been removed from the TUI, along with the supporting `GetFailedCheckLogs` client call and `FailedCheck` / `CheckStatus.FailedChecks` types.
-
-### Added
-
-- `baton version` command prints the current version (injected via ldflags at release build time; defaults to `dev`).
-- `p` key and left-panel click on the PR/checks summary section now open the session's pull request in the default browser (`open` on macOS, `xdg-open` on Linux, `start` on Windows).
-- Rebuilt diff view with stable side-by-side layout, syntax highlighting, word-level intra-line diff, file-tree picker, and live (uncommitted) diff support. `git.Diff` now runs from inside the worktree against the base branch (`--diff-filter=AMD`), mirroring the sidebar stats so the detail view populates before the agent commits. The renderer is a fresh `internal/diffmodel` + `internal/tui/diff` stack with ANSI-aware width measurement, wrap-with-`↵` markers for long lines, and a `s` key to toggle side-by-side on demand. Side-by-side threshold dropped from 120 to 100 cols; keys `n/p` were replaced by the tree (`j/k/h/l/enter`).
-- Branch renaming now uses `claude -p --model claude-haiku-4-5` to summarize the first prompt into a 3-5 word slug; falls back to the old slugify on failure. Toggle via `smart_branch_names`. Session display name now updates to match the Haiku-generated slug after the async rename completes.
-- Meaningful branch names derived from the user's first prompt. Sessions still start on a random adjective-noun branch so Claude can launch immediately, but on the first real `user-prompt-submit` hook the branch is renamed in place (via `git branch -m`, which atomically updates the worktree's HEAD symref) to a slug of the prompt — e.g. `baton/warm-ibis` becomes `baton/add-dark-mode-to-dashboard`. Slash commands like `/clear` are skipped so the next real prompt still triggers the rename. Attached sessions and resumed sessions are exempt, since their branch name is already meaningful. The preview header now surfaces `Branch:` alongside the session display name so the rename is visible.
-- `{user}` and `{date}` template variables in `BranchPrefix`. `{user}` resolves from `git config user.name` (falling back to `$USER`), slugified; `{date}` resolves to today's `YYYY-MM-DD`. Unknown `{tokens}` are left literal so existing prefixes with braces are unaffected. Example: `BranchPrefix: "{user}/"` produces `dj/add-dark-mode` for a first-prompt rename.
-- GoReleaser config and release workflow: pushing a `v*` tag builds darwin/linux amd64+arm64 archives, publishes a GitHub release, and updates the `devenjarvis/homebrew-tap` formula.
-
-### Changed
-
-- `x` (kill agent) and `X` (kill session) now tear down off the UI thread and mark the affected row as `closing…` until the worktree teardown completes, so the dashboard stays interactive while Claude exits and `git worktree remove --force` runs.
-- Reverted "Release mouse capture in focus terminal view": the focus terminal view now re-captures the mouse. Text selection via the host terminal's drag was unreliable (copied text included the surrounding TUI frame), and capturing the mouse restores consistent keybinding/scroll behavior in focus mode.
-
-### Fixed
-
-- Stale-text artifacts overlaying the agent preview (most visible on Claude plan-approval prompts and between normal Q&A turns). Fixed by padding every VT render line to the full viewport width with a terminating style reset (`RenderPadded`) so previous-frame trailing cells are overwritten, invalidating the `StableRender` cache on resize and alt-screen entry, taking atomic scrollback+viewport snapshots under a single lock, and aligning the preview box's inner height to the VT dimensions.
-- Permission-prompt approvals now clear the waiting indicator immediately via Claude's `PreToolUse` hook, instead of lingering yellow until the turn ends.
-- GoReleaser now publishes the Homebrew formula into the tap's `Formula/` directory (via `directory: Formula`). v0.1.0 landed `baton.rb` at the tap repo root, where newer Homebrew versions don't discover it — installs with `brew install devenjarvis/tap/baton` would fail with "No available formula."
-- Restore auto-naming of sessions and agents from the first Claude prompt (was broken in 0.1.0 hook refactor). The dashboard now relabels a fresh agent's random `adjective-noun` placeholder to a slugified version of the user's first prompt as soon as the `UserPromptSubmit` hook fires; sessions that already have a display name (branch-derived or restored from state) are preserved.
-- Mouse-wheel scrolling now works inside Claude Code's `/tui fullscreen` mode. When the focused agent is in alt-screen, wheel events are forwarded to the agent (so Claude's internal scrollback handles them) instead of being consumed by baton's own scrollback buffer, which is inert for alt-screen apps. Exiting fullscreen restores baton's scrollback. Entering fullscreen while scrolled back snaps the preview back to live.
-
 ## [0.1.0] — 2026-04-18
 
 Initial public release.
@@ -66,5 +29,4 @@ Initial public release.
 - Virtual terminal bridge built on `charmbracelet/x/vt` for thread-safe rendering of agent output.
 - Optional audio chimes for status transitions.
 
-[Unreleased]: https://github.com/devenjarvis/baton/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/devenjarvis/baton/releases/tag/v0.1.0
