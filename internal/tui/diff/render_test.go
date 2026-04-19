@@ -111,6 +111,7 @@ func TestRender_BinaryFile(t *testing.T) {
 }
 
 func TestRender_WrapsLongLine(t *testing.T) {
+	// Unified mode wraps long lines and emits WrapMarker; side-by-side uses truncation instead.
 	long := strings.Repeat("x", 200)
 	raw := "diff --git a/foo.txt b/foo.txt\n" +
 		"index abc..def 100644\n" +
@@ -135,6 +136,58 @@ func TestRender_WrapsLongLine(t *testing.T) {
 	// There must be wrap markers somewhere.
 	if !strings.Contains(out, diffmodel.WrapMarker) {
 		t.Errorf("expected wrap marker in output, got:\n%s", out)
+	}
+}
+
+func TestRender_SideBySideNoWrapMarker(t *testing.T) {
+	long := strings.Repeat("x", 200)
+	raw := "diff --git a/foo.txt b/foo.txt\n" +
+		"index abc..def 100644\n" +
+		"--- a/foo.txt\n" +
+		"+++ b/foo.txt\n" +
+		"@@ -1 +1 @@\n" +
+		"-old\n" +
+		"+" + long + "\n"
+	f := parseOrFail(t, raw)
+	r := diff.NewRenderer(f)
+
+	out := r.Render(120, true)
+	if out == "" {
+		t.Fatal("empty render")
+	}
+	if strings.Contains(out, diffmodel.WrapMarker) {
+		t.Errorf("side-by-side must not contain WrapMarker:\n%s", out)
+	}
+	for i, line := range strings.Split(out, "\n") {
+		if w := ansi.StringWidth(line); w > 120 {
+			t.Errorf("line %d width %d > 120", i, w)
+		}
+	}
+}
+
+func TestRender_SideBySideTabExpansion(t *testing.T) {
+	raw := "diff --git a/foo.go b/foo.go\n" +
+		"index abc..def 100644\n" +
+		"--- a/foo.go\n" +
+		"+++ b/foo.go\n" +
+		"@@ -1,2 +1,2 @@\n" +
+		"-\tfunc Old()\n" +
+		"+\tfunc New()\n" +
+		" \tbody\n"
+	f := parseOrFail(t, raw)
+	r := diff.NewRenderer(f)
+
+	out := r.Render(120, true)
+	if out == "" {
+		t.Fatal("empty render")
+	}
+	if strings.Contains(stripped(out), "\t") {
+		t.Errorf("output should not contain raw tabs after expansion")
+	}
+	for i, line := range strings.Split(out, "\n") {
+		if w := ansi.StringWidth(line); w > 120 {
+			t.Errorf("line %d width %d > 120 (tab expansion may be missing)", i, w)
+		}
 	}
 }
 

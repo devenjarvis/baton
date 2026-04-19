@@ -187,7 +187,8 @@ func (r *Renderer) writeUnifiedLine(b *strings.Builder, l diffmodel.Line, width,
 		markStyle = styleCtxMark
 	}
 
-	colored := r.colorize(l.Text, content)
+	text := expandTabs(l.Text)
+	colored := r.colorize(text, content)
 	wrapped := diffmodel.WrapCell(colored, content)
 	numStr := formatGutter(num, gutter-1)
 
@@ -244,13 +245,15 @@ func (r *Renderer) writeSideBySideRow(
 	b *strings.Builder, row diffmodel.Row,
 	numW, content int,
 ) {
-	// Build left cell.
 	leftMark, leftStyle, leftNum, leftText := cellParts(
 		row.LeftBlank, row.LeftKind, row.LeftNum, row.LeftText,
 	)
 	rightMark, rightStyle, rightNum, rightText := cellParts(
 		row.RightBlank, row.RightKind, row.RightNum, row.RightText,
 	)
+
+	leftText = expandTabs(leftText)
+	rightText = expandTabs(rightText)
 
 	var leftColored, rightColored string
 	if !row.LeftBlank {
@@ -267,59 +270,50 @@ func (r *Renderer) writeSideBySideRow(
 		leftColored, rightColored = overlayWordDiff(leftColored, leftText, rightColored, rightText)
 	}
 
-	leftLines := diffmodel.WrapCell(leftColored, content)
-	rightLines := diffmodel.WrapCell(rightColored, content)
+	// Side-by-side truncates to exactly one physical terminal line per row,
+	// eliminating wrap-count mismatches between the two panes.
+	var leftCell, rightCell string
 	if row.LeftBlank {
-		leftLines = []string{""}
+		leftCell = strings.Repeat(" ", content)
+	} else {
+		leftCell = padTo(truncateVisible(leftColored, content), content)
 	}
 	if row.RightBlank {
-		rightLines = []string{""}
+		rightCell = strings.Repeat(" ", content)
+	} else {
+		rightCell = padTo(truncateVisible(rightColored, content), content)
 	}
-	l, r2 := diffmodel.ZipWrappedRow(leftLines, rightLines)
 
-	for i := range l {
-		var lNumStr, rNumStr string
-		if i == 0 && !row.LeftBlank {
-			lNumStr = formatGutter(leftNum, numW)
-		} else {
-			lNumStr = strings.Repeat(" ", numW)
-		}
-		if i == 0 && !row.RightBlank {
-			rNumStr = formatGutter(rightNum, numW)
-		} else {
-			rNumStr = strings.Repeat(" ", numW)
-		}
-
-		lMarkRendered := ""
-		rMarkRendered := ""
-		if !row.LeftBlank {
-			lMarkRendered = leftStyle.Render(leftMark)
-		} else {
-			lMarkRendered = " "
-		}
-		if !row.RightBlank {
-			rMarkRendered = rightStyle.Render(rightMark)
-		} else {
-			rMarkRendered = " "
-		}
-
-		leftCell := padTo(l[i], content)
-		rightCell := padTo(r2[i], content)
-
-		leftBlock := styleGutter.Render(lNumStr) + " " + lMarkRendered + leftCell
-		rightBlock := styleGutter.Render(rNumStr) + " " + rMarkRendered + rightCell
-
-		// Apply row backgrounds per side.
-		if !row.LeftBlank {
-			leftBlock = applyRowBg(row.LeftKind, leftBlock)
-		}
-		if !row.RightBlank {
-			rightBlock = applyRowBg(row.RightKind, rightBlock)
-		}
-
-		sep := styleGutter.Render(" │ ")
-		b.WriteString(leftBlock + sep + rightBlock + "\n")
+	lNumStr := strings.Repeat(" ", numW)
+	rNumStr := strings.Repeat(" ", numW)
+	if !row.LeftBlank {
+		lNumStr = formatGutter(leftNum, numW)
 	}
+	if !row.RightBlank {
+		rNumStr = formatGutter(rightNum, numW)
+	}
+
+	lMarkRendered := " "
+	rMarkRendered := " "
+	if !row.LeftBlank {
+		lMarkRendered = leftStyle.Render(leftMark)
+	}
+	if !row.RightBlank {
+		rMarkRendered = rightStyle.Render(rightMark)
+	}
+
+	leftBlock := styleGutter.Render(lNumStr) + " " + lMarkRendered + leftCell
+	rightBlock := styleGutter.Render(rNumStr) + " " + rMarkRendered + rightCell
+
+	if !row.LeftBlank {
+		leftBlock = applyRowBg(row.LeftKind, leftBlock)
+	}
+	if !row.RightBlank {
+		rightBlock = applyRowBg(row.RightKind, rightBlock)
+	}
+
+	sep := styleGutter.Render(" │ ")
+	b.WriteString(leftBlock + sep + rightBlock + "\n")
 }
 
 func cellParts(blank bool, kind diffmodel.LineKind, num int, text string) (mark string, ms lipgloss.Style, n int, t string) {
@@ -508,6 +502,14 @@ func isSGRReset(seq string) bool {
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
+
+const tabSize = 4
+
+// expandTabs replaces tab characters with spaces so ansi.StringWidth measures
+// the correct display width before any wrapping or truncation occurs.
+func expandTabs(s string) string {
+	return strings.ReplaceAll(s, "\t", strings.Repeat(" ", tabSize))
+}
 
 // padTo pads s with spaces on the right until its visible width reaches n.
 func padTo(s string, n int) string {
