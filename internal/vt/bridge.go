@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
 	xvt "github.com/charmbracelet/x/vt"
 )
 
@@ -44,8 +45,11 @@ type Terminal struct {
 	lastWriteNano atomic.Int64
 
 	// stableRender caches the last Render() snapshot for StableRender().
-	// Only accessed from StableRender() on the Bubble Tea main goroutine.
-	stableRender string
+	// Protected by stableRenderMu: read/written by StableRender() (Bubble Tea
+	// main goroutine) and invalidated by Resize() and Write()'s alt-screen
+	// transition (agent.readLoop goroutine).
+	stableRender   string
+	stableRenderMu sync.Mutex
 
 	// wasAltScreen tracks the previous alt-screen state for transition detection.
 	// Only accessed from Write() (agent.readLoop goroutine), no mutex needed.
@@ -148,6 +152,13 @@ func (t *Terminal) Write(p []byte) (int, error) {
 			t.altScreenEntered = true
 			t.history = nil
 			t.historyMu.Unlock()
+			// Invalidate the StableRender cache so the first post-transition
+			// read surfaces the new alt-screen content, not the pre-transition
+			// snapshot. Done with a separate lock because stableRender is
+			// independently serialized from historyMu.
+			t.stableRenderMu.Lock()
+			t.stableRender = ""
+			t.stableRenderMu.Unlock()
 		}
 		t.wasAltScreen = isAlt
 	}
@@ -162,15 +173,80 @@ func (t *Terminal) Render() string {
 
 // StableRender returns a cached render if the terminal was written to within the
 // last 16ms (mid-repaint), otherwise snapshots a fresh Render(). This avoids
-// showing torn/partial frames during rapid emulator updates.
-// Only called from Bubble Tea's main goroutine (View cycle).
+// showing torn/partial frames during rapid emulator updates. The cache is
+// invalidated on Resize() and on alt-screen entry so transitions never leak a
+// snapshot at the wrong dimensions.
 func (t *Terminal) StableRender() string {
+	t.stableRenderMu.Lock()
+	defer t.stableRenderMu.Unlock()
 	lastWrite := t.lastWriteNano.Load()
-	if lastWrite > 0 && time.Since(time.Unix(0, lastWrite)) < 16*time.Millisecond {
+	if t.stableRender != "" && lastWrite > 0 && time.Since(time.Unix(0, lastWrite)) < 16*time.Millisecond {
 		return t.stableRender
 	}
 	t.stableRender = t.emu.Render()
 	return t.stableRender
+}
+
+// RenderPadded returns exactly `height` lines, each exactly `width` display
+// cells wide, separated by `\n`. Each line ends with an ANSI style reset so
+// trailing cells don't carry a lingering SGR into the next line. The emulator's
+// renderLine trims trailing empty cells, which is the root cause of preview
+// artifacts — this method re-adds those trailing spaces so every frame fully
+// overwrites the previous one.
+func (t *Terminal) RenderPadded(width, height int) string {
+	if width <= 0 || height <= 0 {
+		return ""
+	}
+	raw := t.emu.Render()
+	return padFrame(raw, width, height)
+}
+
+// padFrame right-pads every line in `raw` (a `\n`-separated render) to `width`
+// cells and forces the output to exactly `height` lines.
+func padFrame(raw string, width, height int) string {
+	lines := strings.Split(raw, "\n")
+	var b strings.Builder
+	b.Grow(height * (width + 8))
+	pad := func(n int) {
+		if n <= 0 {
+			return
+		}
+		b.WriteString(strings.Repeat(" ", n))
+	}
+	for i := 0; i < height; i++ {
+		var line string
+		if i < len(lines) {
+			line = lines[i]
+		}
+		b.WriteString(line)
+		visible := ansi.StringWidth(line)
+		pad(width - visible)
+		b.WriteString("\x1b[0m")
+		if i < height-1 {
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
+}
+
+// Snapshot returns a consistent view of scrollback and the current viewport
+// under a single lock on the history buffer. Callers that splice scrollback
+// and viewport together (e.g., dashboard preview during pgup scroll) must use
+// this to avoid racing the Write goroutine between the two reads.
+//
+// Lock order: historyMu.RLock is held across emu.Render(). Safe because
+// emu.Render() acquires only the emulator's internal lock, and Write() always
+// calls emu.Write() before acquiring historyMu — so there is no cycle between
+// historyMu and the emulator lock.
+func (t *Terminal) Snapshot(width, height int) (scrollback []string, viewport string) {
+	t.historyMu.RLock()
+	defer t.historyMu.RUnlock()
+	if len(t.history) > 0 {
+		scrollback = make([]string, len(t.history))
+		copy(scrollback, t.history)
+	}
+	viewport = padFrame(t.emu.Render(), width, height)
+	return scrollback, viewport
 }
 
 // AltScreenEntered returns true if a false->true alt-screen transition has been
@@ -215,9 +291,14 @@ func (t *Terminal) RenderRegion(startRow, endRow int) string {
 	return strings.Join(lines[startRow:endRow+1], "\n")
 }
 
-// Resize changes the terminal dimensions.
+// Resize changes the terminal dimensions. Invalidates the StableRender cache
+// so the next read returns a fresh snapshot at the new dimensions.
 func (t *Terminal) Resize(width, height int) {
 	t.emu.Resize(width, height)
+	t.stableRenderMu.Lock()
+	t.stableRender = ""
+	t.stableRenderMu.Unlock()
+	t.lastWriteNano.Store(0)
 }
 
 // SendKey forwards a key event to the emulator.

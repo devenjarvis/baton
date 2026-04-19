@@ -22,6 +22,7 @@ Every PR should update the `[Unreleased]` section with a short entry describing 
 
 ### Fixed
 
+- Stale-text artifacts overlaying the agent preview (most visible on Claude plan-approval prompts and between normal Q&A turns). Fixed by padding every VT render line to the full viewport width with a terminating style reset (`RenderPadded`) so previous-frame trailing cells are overwritten, invalidating the `StableRender` cache on resize and alt-screen entry, taking atomic scrollback+viewport snapshots under a single lock, and aligning the preview box's inner height to the VT dimensions.
 - Permission-prompt approvals now clear the waiting indicator immediately via Claude's `PreToolUse` hook, instead of lingering yellow until the turn ends.
 - GoReleaser now publishes the Homebrew formula into the tap's `Formula/` directory (via `directory: Formula`). v0.1.0 landed `baton.rb` at the tap repo root, where newer Homebrew versions don't discover it — installs with `brew install devenjarvis/tap/baton` would fail with "No available formula."
 - Restore auto-naming of sessions and agents from the first Claude prompt (was broken in 0.1.0 hook refactor). The dashboard now relabels a fresh agent's random `adjective-noun` placeholder to a slugified version of the user's first prompt as soon as the `UserPromptSubmit` hook fires; sessions that already have a display name (branch-derived or restored from state) are preserved.

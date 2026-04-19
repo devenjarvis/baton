@@ -525,6 +525,18 @@ func (a *Agent) ScrollbackLines() []string {
 	return a.terminal.ScrollbackLines()
 }
 
+// RenderPadded returns a deterministic width×height rectangle of the current
+// screen with every line padded to full width. See [vt.Terminal.RenderPadded].
+func (a *Agent) RenderPadded(width, height int) string {
+	return a.terminal.RenderPadded(width, height)
+}
+
+// Snapshot returns a consistent (scrollback, viewport) pair for splice-safe
+// reads during pgup scrolling. See [vt.Terminal.Snapshot].
+func (a *Agent) Snapshot(width, height int) (scrollback []string, viewport string) {
+	return a.terminal.Snapshot(width, height)
+}
+
 // Resize updates both the VT terminal and PTY dimensions.
 func (a *Agent) Resize(rows, cols int) {
 	a.terminal.Resize(cols, rows)
