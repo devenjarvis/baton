@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"os"
@@ -53,7 +54,13 @@ type Manager struct {
 	hookServer     *hook.Server
 	hookSocketPath string
 	hookDispatcher sync.WaitGroup
+
+	branchNamer BranchNamer
 }
+
+// haikuNameTimeout bounds how long the Haiku summarization subprocess may run
+// before it's cancelled and the fallback slugify path takes over.
+const haikuNameTimeout = 15 * time.Second
 
 // NewManager creates a new agent manager for the given repo.
 //
@@ -64,11 +71,12 @@ type Manager struct {
 // out of Active.
 func NewManager(repoPath string, settings config.ResolvedSettings) *Manager {
 	m := &Manager{
-		repoPath: repoPath,
-		settings: settings,
-		sessions: make(map[string]*Session),
-		events:   make(chan Event, 64),
-		done:     make(chan struct{}),
+		repoPath:    repoPath,
+		settings:    settings,
+		sessions:    make(map[string]*Session),
+		events:      make(chan Event, 64),
+		done:        make(chan struct{}),
+		branchNamer: DefaultBranchNamer(),
 	}
 
 	batonDir := filepath.Join(repoPath, ".baton")
@@ -95,6 +103,15 @@ func NewManager(repoPath string, settings config.ResolvedSettings) *Manager {
 // listening on, or "" if the server failed to start.
 func (m *Manager) HookSocketPath() string {
 	return m.hookSocketPath
+}
+
+// SetBranchNamer overrides the BranchNamer used for smart branch renaming.
+// Intended for tests so they can stub out the Haiku subprocess. Safe to call
+// while the manager is running — the namer is swapped atomically.
+func (m *Manager) SetBranchNamer(n BranchNamer) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.branchNamer = n
 }
 
 // hookSocketPath returns the unix socket path for a given repoPath.
@@ -155,19 +172,84 @@ func (m *Manager) dispatchHookEvents() {
 // first real prompt. Idempotent: sessions that already have a Claude-derived
 // name are skipped, and prompts that slugify to empty (e.g. "/clear") leave
 // the flag unset so the next prompt can try again.
+//
+// When smart branch names are enabled, the rename runs in a goroutine: Haiku
+// is asked to summarize the prompt into a 3-5 word slug, with a 15s timeout
+// and a fallback to suffixFromPrompt on error. The in-flight gate on Session
+// ensures a second UserPromptSubmit arriving mid-Haiku is a no-op, not a
+// double-dispatch.
 func (m *Manager) maybeRenameFromPrompt(sess *Session, prompt string) {
 	if sess == nil || sess.HasClaudeName() {
-		return
-	}
-	suffix := suffixFromPrompt(prompt)
-	if suffix == "" {
 		return
 	}
 
 	m.mu.RLock()
 	prefix := m.settings.BranchPrefix
+	smart := m.settings.SmartBranchNames
+	namer := m.branchNamer
 	m.mu.RUnlock()
-	newBranch := config.ExpandBranchPrefix(prefix) + suffix
+
+	if !smart || namer == nil {
+		suffix := suffixFromPrompt(prompt)
+		if suffix == "" {
+			return
+		}
+		m.applyRename(sess, config.ExpandBranchPrefix(prefix)+suffix)
+		return
+	}
+
+	// Smart path: gate double-dispatch, then summarize asynchronously.
+	if !sess.TryStartRename() {
+		return
+	}
+
+	m.watchers.Add(1)
+	go func() {
+		defer m.watchers.Done()
+		defer sess.finishRename()
+
+		ctx, cancel := context.WithTimeout(context.Background(), haikuNameTimeout)
+		defer cancel()
+
+		// Cancel the Haiku subprocess if the manager shuts down mid-call.
+		doneCh := make(chan struct{})
+		defer close(doneCh)
+		go func() {
+			select {
+			case <-m.done:
+				cancel()
+			case <-doneCh:
+			}
+		}()
+
+		suffix, err := namer(ctx, prompt)
+		if err != nil || suffix == "" {
+			// Fall back to the legacy synchronous slugify. If the prompt
+			// itself slugifies to empty (e.g. punctuation-only), leave
+			// hasClaudeName false so the next prompt gets another shot —
+			// matches pre-Haiku behavior.
+			suffix = suffixFromPrompt(prompt)
+			if suffix == "" {
+				return
+			}
+		}
+
+		m.applyRename(sess, config.ExpandBranchPrefix(prefix)+suffix)
+	}()
+}
+
+// applyRename performs the branch rename and emits a status-changed event so
+// the TUI picks up the new branch/name on its next tick.
+func (m *Manager) applyRename(sess *Session, newBranch string) {
+	// If the session was closed while the async namer was running, skip the
+	// git op — the worktree is gone, so `git branch -m` would fail and the
+	// EventStatusChanged would reference a session no longer in m.sessions.
+	m.mu.RLock()
+	_, stillOpen := m.sessions[sess.ID]
+	m.mu.RUnlock()
+	if !stillOpen {
+		return
+	}
 
 	// Best effort: on failure, hasClaudeName stays false so the next prompt
 	// will retry. Writing to stderr during an active TUI alt-screen scrambles
@@ -177,9 +259,6 @@ func (m *Manager) maybeRenameFromPrompt(sess *Session, prompt string) {
 		return
 	}
 
-	// Let the UI pick up the new branch/name on its next tick. We emit a
-	// status-changed event against any agent in the session so the TUI
-	// refresh path runs.
 	if agents := sess.Agents(); len(agents) > 0 {
 		lead := agents[0]
 		m.emit(Event{
@@ -684,6 +763,14 @@ func (m *Manager) Events() <-chan Event {
 func (m *Manager) Shutdown() {
 	close(m.done)
 
+	// Stop the hook server first so no new rename goroutines can be spawned
+	// by late UserPromptSubmit events, then drain in-flight watchers
+	// (watchAgent + async branch-rename goroutines). Without this ordering,
+	// a rename goroutine can race Session.Cleanup and mutate Worktree state
+	// while the worktree is being removed from disk.
+	m.stopHookServer()
+	m.watchers.Wait()
+
 	m.mu.RLock()
 	sessions := make([]*Session, 0, len(m.sessions))
 	for _, s := range m.sessions {
@@ -701,9 +788,6 @@ func (m *Manager) Shutdown() {
 		}()
 	}
 	wg.Wait()
-
-	m.watchers.Wait()
-	m.stopHookServer()
 
 	m.mu.Lock()
 	m.sessions = make(map[string]*Session)
@@ -743,6 +827,11 @@ func (m *Manager) RepoPath() string {
 // worktrees, and shuts down the manager. Returns the state for persistence.
 func (m *Manager) Detach() *state.BatonState {
 	close(m.done)
+
+	// Stop hooks + drain watchers before snapshotting so any in-flight
+	// branch rename has settled and the snapshot captures the final name.
+	m.stopHookServer()
+	m.watchers.Wait()
 
 	m.mu.RLock()
 	sessions := make([]*Session, 0, len(m.sessions))
@@ -787,9 +876,6 @@ func (m *Manager) Detach() *state.BatonState {
 		}()
 	}
 	wg.Wait()
-
-	m.watchers.Wait()
-	m.stopHookServer()
 
 	m.mu.Lock()
 	m.sessions = make(map[string]*Session)

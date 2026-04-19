@@ -23,6 +23,7 @@ type Session struct {
 	nextAgentNum   int
 	displayName    string
 	hasClaudeName  bool   // true once the session's branch has been renamed from its random placeholder
+	renaming       bool   // true while an async branch-rename is in flight; gates double-dispatch
 	ownsBranch     bool   // true if this session created the branch (cleanup should delete it)
 	hookSocketPath string // absolute path to the manager's hook socket ("" disables hooks)
 }
@@ -335,6 +336,27 @@ func (s *Session) SetClaudeName(v bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.hasClaudeName = v
+}
+
+// TryStartRename atomically returns true if a branch rename should start now,
+// or false if one is already in flight or the session has already been renamed.
+// Callers that receive true must call finishRename when done.
+func (s *Session) TryStartRename() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.hasClaudeName || s.renaming {
+		return false
+	}
+	s.renaming = true
+	return true
+}
+
+// finishRename clears the in-flight rename flag. Called from the deferred
+// cleanup of the goroutine spawned after TryStartRename returns true.
+func (s *Session) finishRename() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.renaming = false
 }
 
 // RenameBranch renames the session's git branch to newBranch. If the rename
