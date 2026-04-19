@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -193,6 +194,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.repoBrowser.height = msg.Height - 1
 		a.branchPicker.width = msg.Width
 		a.branchPicker.height = msg.Height - 1
+		a.recomputePRSectionY()
 
 		// Resize agent terminals to match their current display container.
 		if a.view == ViewDashboard {
@@ -825,6 +827,18 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return createResultMsg{sessionID: sessionID, agentID: ag.ID}
 			}
 
+		case "p":
+			// Open the selected session's PR in the browser.
+			sess := a.dashboard.selectedSession()
+			if sess != nil {
+				if entry := a.prCache[sess.ID]; entry != nil && entry.pr != nil && entry.pr.URL != "" {
+					if err := openURL(entry.pr.URL); err != nil {
+						a.setError(err.Error())
+					}
+				}
+			}
+			return a, nil
+
 		case "s":
 			// Open global settings overlay.
 			a.globalConfig = newGlobalConfigModel(a.globalSettings, a.width, a.height)
@@ -944,7 +958,18 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// List panel click — map Y to item index.
 				// Subtract 2 for the SESSIONS title row and separator row.
 				itemIndex := msg.Y - dashboardTopY - 2
-				if itemIndex >= 0 && itemIndex < len(a.dashboard.items) {
+				contentY := itemIndex // content-relative, same space as prSectionY
+				if a.dashboard.prSectionY >= 0 && contentY >= a.dashboard.prSectionY {
+					// Click in the PR checks summary section — open PR in browser.
+					sess := a.dashboard.selectedSession()
+					if sess != nil {
+						if entry := a.prCache[sess.ID]; entry != nil && entry.pr != nil && entry.pr.URL != "" {
+							if err := openURL(entry.pr.URL); err != nil {
+								a.setError(err.Error())
+							}
+						}
+					}
+				} else if itemIndex >= 0 && itemIndex < len(a.dashboard.items) {
 					a.dashboard.selected = itemIndex
 					a.dashboard.clampToAgent()
 					a.dashboard.panelFocus = focusList
@@ -997,6 +1022,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 	a.dashboard, cmd = a.dashboard.Update(msg)
 	// On selection change, update diff stats from cache (or trigger refresh).
 	if a.dashboard.selected != prevSelected {
+		a.recomputePRSectionY()
 		a.updateDashboardDiffStats()
 		if sess := a.dashboard.selectedSession(); sess != nil {
 			entry := a.diffStatsCache[sess.ID]
@@ -1356,6 +1382,7 @@ func (a *App) refreshAgentList() {
 			}
 		}
 	}
+	a.recomputePRSectionY()
 }
 
 func (a App) View() tea.View {
@@ -1469,6 +1496,7 @@ func (a *App) updateDashboardDiffStats() {
 func (a *App) updateDashboardPRCache() {
 	a.dashboard.prCache = a.prCache
 	a.dashboard.prPollStates = a.prPollStates
+	a.recomputePRSectionY()
 }
 
 // repoPathForSession returns the repo path containing the given session, or "" if not found.
@@ -1663,4 +1691,50 @@ func ensureGitignore(path string) {
 		_, _ = f.WriteString("\n")
 	}
 	_, _ = f.WriteString(entry + "\n")
+}
+
+// openURL opens the given URL in the system's default browser. Fire-and-forget.
+func openURL(url string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "windows":
+		// Escape embedded quotes to avoid shell injection via cmd.exe.
+		safeURL := strings.ReplaceAll(url, `"`, `%22`)
+		cmd = exec.Command("cmd", "/c", "start", `"`+safeURL+`"`)
+	default:
+		cmd = exec.Command("xdg-open", url)
+	}
+	return cmd.Start()
+}
+
+// recomputePRSectionY updates d.prSectionY with the content-relative row index
+// (0-indexed, after the AGENTS title and separator) where the PR checks section
+// begins, or -1 when no PR section is rendered. Call after any layout change.
+func (a *App) recomputePRSectionY() {
+	d := &a.dashboard
+	d.prSectionY = -1
+
+	sess := d.selectedSession()
+	if sess == nil {
+		return
+	}
+	entry := a.prCache[sess.ID]
+	if entry == nil || entry.pr == nil {
+		return
+	}
+
+	contentH := d.contentHeight()
+	agentListHeight := len(d.items)
+	maxCheckHeight := contentH / 3
+	availCheckHeight := contentH - agentListHeight
+	if availCheckHeight > maxCheckHeight {
+		availCheckHeight = maxCheckHeight
+	}
+	if availCheckHeight < 2 {
+		return
+	}
+
+	d.prSectionY = contentH - availCheckHeight
 }

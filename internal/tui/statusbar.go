@@ -19,6 +19,7 @@ var (
 		{"c", "add agent"},
 		{"t", "shell"},
 		{"e", "open in IDE"},
+		{"p", "open PR"},
 		{"s", "settings"},
 		{"a", "add repo"},
 		{"o", "open branch"},
