@@ -71,13 +71,17 @@ type dashboardModel struct {
 	closingAgents   map[string]bool            // keyed by agent ID, passed from App
 	closingSessions map[string]bool            // keyed by session ID, passed from App
 
+	// prSectionY is the content-relative row index (0-indexed, after the AGENTS
+	// title and separator) where the PR checks summary begins, or -1 when absent.
+	prSectionY int
+
 	// Repo config form shown in the right panel when focusConfig is active.
 	repoConfigForm *configForm
 	configRepoPath string // path of the repo being configured
 }
 
 func newDashboardModel() dashboardModel {
-	return dashboardModel{}
+	return dashboardModel{prSectionY: -1}
 }
 
 func (d dashboardModel) Update(msg tea.Msg) (dashboardModel, tea.Cmd) {
