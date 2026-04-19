@@ -25,7 +25,6 @@ var (
 		{"d", "diff/remove"},
 		{"x", "kill agent"},
 		{"X", "kill session"},
-		{"f", "fix checks"},
 		{"q", "quit"},
 	}
 

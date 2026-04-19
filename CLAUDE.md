@@ -35,7 +35,7 @@ Always run `go test -race ./...` before committing — concurrency bugs have bee
 - `internal/agent/` — Composes PTY + VT + git into managed agents. Each agent has 3 goroutines: readLoop (PTY→VT), writeLoop (VT→PTY), statusLoop (idle detection). Sessions group agents sharing a worktree. Manager handles lifecycle and events.
 - `internal/tui/` — Bubble Tea v2 views: dashboard (list + preview), diff summary/detail, global/repo config forms, file browser (add repo), branch picker (session on existing branch/PR), statusbar.
 - `internal/hook/` — Unix-socket server + client for Claude hook events (`session-start`, `stop`, `session-end`, `notification`, `user-prompt-submit`) plus the settings file generator that wires Claude's hooks to `baton hook`.
-- `internal/github/` — GitHub API wrapper for PRs, checks, review status, and check-run log fetching (powers `f` fix-checks).
+- `internal/github/` — GitHub API wrapper for PRs, checks, and review status.
 - `internal/config/` — Global settings (`~/.config/baton/settings.json`) and per-repo settings (`.baton/settings.json`) plus resolution logic.
 - `internal/state/` — Session persistence so `q` detaches cleanly and a later `baton` invocation reattaches.
 - `internal/editor/` — IDE launcher helpers; macOS app probing and quote-aware tokenizer for `open -a "Visual Studio Code"` style commands.

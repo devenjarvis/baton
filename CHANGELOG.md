@@ -9,6 +9,10 @@ Every PR should update the `[Unreleased]` section with a short entry describing 
 
 ## [Unreleased]
 
+### Removed
+
+- `f` fix-checks command. Fetching failed check annotations and dispatching them to an idle agent has been removed from the TUI, along with the supporting `GetFailedCheckLogs` client call and `FailedCheck` / `CheckStatus.FailedChecks` types.
+
 ### Added
 
 - Meaningful branch names derived from the user's first prompt. Sessions still start on a random adjective-noun branch so Claude can launch immediately, but on the first real `user-prompt-submit` hook the branch is renamed in place (via `git branch -m`, which atomically updates the worktree's HEAD symref) to a slug of the prompt — e.g. `baton/warm-ibis` becomes `baton/add-dark-mode-to-dashboard`. Slash commands like `/clear` are skipped so the next real prompt still triggers the rename. Attached sessions and resumed sessions are exempt, since their branch name is already meaningful. The preview header now surfaces `Branch:` alongside the session display name so the rename is visible.

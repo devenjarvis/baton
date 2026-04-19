@@ -3,7 +3,6 @@ package github
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	gh "github.com/google/go-github/v69/github"
@@ -89,12 +88,6 @@ func (c *Client) GetChecks(ctx context.Context, owner, repo, ref string) (*Check
 			status.Passed++
 		default:
 			status.Failed++
-			status.FailedChecks = append(status.FailedChecks, FailedCheck{
-				ID:         run.GetID(),
-				Name:       run.GetName(),
-				Conclusion: conclusion,
-				DetailsURL: run.GetDetailsURL(),
-			})
 		}
 
 		cr := CheckRun{
@@ -123,31 +116,6 @@ func (c *Client) GetChecks(ctx context.Context, owner, repo, ref string) (*Check
 	}
 
 	return status, nil
-}
-
-// GetFailedCheckLogs returns the annotations/log output for a specific failed check run.
-func (c *Client) GetFailedCheckLogs(ctx context.Context, owner, repo string, checkRunID int64) (string, error) {
-	annotations, _, err := c.gh.Checks.ListCheckRunAnnotations(ctx, owner, repo, checkRunID, &gh.ListOptions{
-		PerPage: 100,
-	})
-	if err != nil {
-		return "", fmt.Errorf("listing annotations for check run %d: %w", checkRunID, err)
-	}
-
-	if len(annotations) == 0 {
-		return "(no annotations found for this check run)", nil
-	}
-
-	var b strings.Builder
-	for _, a := range annotations {
-		fmt.Fprintf(&b, "%s:%d — %s: %s\n",
-			a.GetPath(),
-			a.GetStartLine(),
-			a.GetAnnotationLevel(),
-			a.GetMessage(),
-		)
-	}
-	return b.String(), nil
 }
 
 // GetReviews returns the aggregated review status for a pull request.

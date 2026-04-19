@@ -3,7 +3,6 @@ package tui
 import (
 	"bufio"
 	"context"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -522,12 +521,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.refreshAgentList()
 		return a, nil
 
-	case fixChecksMsg:
-		if msg.err != nil {
-			a.setError(msg.err.Error())
-		}
-		return a, nil
-
 	}
 
 	// Route to the active view.
@@ -931,81 +924,6 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 
-		case "f":
-			// Fix failing checks: fetch logs and send to an idle agent.
-			if a.ghClient == nil {
-				a.setError("GitHub not configured")
-				return a, nil
-			}
-			sess := a.dashboard.selectedSession()
-			if sess == nil {
-				a.setError("No session selected")
-				return a, nil
-			}
-			entry := a.prCache[sess.ID]
-			if entry == nil || entry.pr == nil {
-				a.setError("No PR for this session")
-				return a, nil
-			}
-			if entry.checks == nil || entry.checks.Failed == 0 {
-				a.setError("No failing checks")
-				return a, nil
-			}
-			// Find first idle agent in the session.
-			var targetAgent *agent.Agent
-			for _, ag := range sess.Agents() {
-				if ag.IsShell {
-					continue
-				}
-				if ag.Status() == agent.StatusIdle {
-					targetAgent = ag
-					break
-				}
-			}
-			if targetAgent == nil {
-				a.setError("No idle agent available to fix checks")
-				return a, nil
-			}
-			repoPath := a.dashboard.selectedRepoPath()
-			sessionID := sess.ID
-			prNumber := entry.pr.Number
-			failedChecks := entry.checks.FailedChecks
-			ghClient := a.ghClient
-			ag := targetAgent
-			return a, func() tea.Msg {
-				rawURL, err := git.GetRemoteURL(repoPath)
-				if err != nil {
-					return fixChecksMsg{sessionID: sessionID, err: err}
-				}
-				owner, repo, err := github.ParseRemoteURL(rawURL)
-				if err != nil {
-					return fixChecksMsg{sessionID: sessionID, err: err}
-				}
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-
-				var msgBuilder strings.Builder
-				msgBuilder.WriteString(fmt.Sprintf("The following CI checks are failing on PR #%d. Please analyze the failures and fix them:\n\n", prNumber))
-
-				for _, fc := range failedChecks {
-					logs, err := ghClient.GetFailedCheckLogs(ctx, owner, repo, fc.ID)
-					if err != nil {
-						logs = "(failed to fetch logs: " + err.Error() + ")"
-					}
-					// Truncate very long logs.
-					if len(logs) > 4000 {
-						logs = logs[:4000] + "\n...(truncated)"
-					}
-					msgBuilder.WriteString(fmt.Sprintf("## %s\n%s\n\n", fc.Name, logs))
-				}
-
-				message := msgBuilder.String()
-				ag.SendText(message)
-				// Send Enter key to submit.
-				ag.SendKey(xvt.KeyPressEvent{Code: tea.KeyEnter})
-
-				return fixChecksMsg{sessionID: sessionID}
-			}
 		}
 	}
 

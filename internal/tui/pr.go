@@ -16,12 +16,6 @@ type prPollMsg struct {
 	reviews   *github.ReviewStatus
 }
 
-// fixChecksMsg carries the result of dispatching fix-checks to an agent.
-type fixChecksMsg struct {
-	sessionID string
-	err       error
-}
-
 // prCacheEntry holds cached PR and check status for a session.
 type prCacheEntry struct {
 	pr      *github.PRState
