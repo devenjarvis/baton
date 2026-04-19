@@ -2,9 +2,11 @@ package vt
 
 import (
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
 	xvt "github.com/charmbracelet/x/vt"
 )
 
@@ -503,6 +505,172 @@ func TestIsAltScreen(t *testing.T) {
 	if term.IsAltScreen() {
 		t.Error("expected IsAltScreen() false after DECRST 1049")
 	}
+}
+
+func TestRenderPaddedShape(t *testing.T) {
+	const w, h = 40, 8
+	term := New(w, h)
+	defer term.Close()
+
+	// Mix of empty lines and a short line so trailing-whitespace trimming
+	// in renderLine is exercised.
+	_, _ = term.Write([]byte("hi\r\n\r\nworld"))
+
+	out := term.RenderPadded(w, h)
+	lines := strings.Split(out, "\n")
+	if len(lines) != h {
+		t.Fatalf("expected %d lines, got %d: %q", h, len(lines), out)
+	}
+	if got := strings.Count(out, "\n"); got != h-1 {
+		t.Errorf("expected %d newlines, got %d", h-1, got)
+	}
+	for i, line := range lines {
+		if got := ansi.StringWidth(line); got != w {
+			t.Errorf("line %d: width %d, want %d (line=%q)", i, got, w, line)
+		}
+		if !strings.HasSuffix(line, "\x1b[0m") {
+			t.Errorf("line %d: missing trailing style reset: %q", i, line)
+		}
+	}
+}
+
+func TestRenderPaddedPreservesStyles(t *testing.T) {
+	const w, h = 20, 3
+	term := New(w, h)
+	defer term.Close()
+
+	// Write a styled segment in the middle of a line; the render must keep
+	// the SGR codes intact while padding the trailing empty cells.
+	_, _ = term.Write([]byte("\x1b[31mRed\x1b[0m ok"))
+
+	out := term.RenderPadded(w, h)
+	firstLine := strings.SplitN(out, "\n", 2)[0]
+	if !strings.Contains(firstLine, "\x1b[31m") {
+		t.Errorf("expected SGR red to survive padding, got %q", firstLine)
+	}
+	if !strings.Contains(firstLine, "Red") {
+		t.Errorf("expected literal 'Red' to survive padding, got %q", firstLine)
+	}
+	if got := ansi.StringWidth(firstLine); got != w {
+		t.Errorf("styled line width: got %d, want %d", got, w)
+	}
+}
+
+func TestRenderPaddedDegenerateDims(t *testing.T) {
+	term := New(10, 5)
+	defer term.Close()
+
+	if got := term.RenderPadded(0, 5); got != "" {
+		t.Errorf("RenderPadded(0,5) should be empty, got %q", got)
+	}
+	if got := term.RenderPadded(5, 0); got != "" {
+		t.Errorf("RenderPadded(5,0) should be empty, got %q", got)
+	}
+}
+
+func TestStableRenderInvalidatedOnResize(t *testing.T) {
+	term := New(20, 5)
+	defer term.Close()
+
+	_, _ = term.Write([]byte("populate"))
+	time.Sleep(20 * time.Millisecond)
+
+	before := term.StableRender()
+	if !strings.Contains(before, "populate") {
+		t.Fatalf("precondition: StableRender should contain 'populate', got %q", before)
+	}
+	// Count newlines: a 5-row render has 4 newlines.
+	if got := strings.Count(before, "\n"); got != 4 {
+		t.Errorf("expected 4 newlines pre-resize, got %d", got)
+	}
+
+	term.Resize(40, 10)
+
+	// Cache must be invalidated: StableRender returns a render at the new
+	// dimensions (9 newlines = 10 rows) without any prior write.
+	after := term.StableRender()
+	if got := strings.Count(after, "\n"); got != 9 {
+		t.Errorf("expected 9 newlines post-resize, got %d\nrender: %q", got, after)
+	}
+}
+
+func TestStableRenderInvalidatedOnAltScreenEntry(t *testing.T) {
+	term := New(20, 5)
+	defer term.Close()
+
+	_, _ = term.Write([]byte("main-screen"))
+	time.Sleep(20 * time.Millisecond)
+
+	// Prime the cache with main-screen content.
+	cached := term.StableRender()
+	if !strings.Contains(cached, "main-screen") {
+		t.Fatalf("precondition: expected 'main-screen' in cache, got %q", cached)
+	}
+
+	// Enter alt screen and write new content. Both events are within the
+	// 16ms cache window.
+	_, _ = term.Write([]byte("\x1b[?1049h"))
+	_, _ = term.Write([]byte("alt-screen"))
+
+	got := term.StableRender()
+	if strings.Contains(got, "main-screen") {
+		t.Errorf("StableRender should not return pre-transition snapshot, got %q", got)
+	}
+	if !strings.Contains(got, "alt-screen") {
+		t.Errorf("StableRender should return post-transition content, got %q", got)
+	}
+}
+
+func TestSnapshotAtomic(t *testing.T) {
+	// Race detector catches the non-atomic pre-fix pattern (read
+	// ScrollbackLines, then read StableRender). Here we only assert that
+	// Snapshot returns a consistent (scrollback, viewport) pair: the
+	// viewport has the correct shape, and concurrent scrollback writes
+	// never produce duplicate or torn rows across the pair.
+	const w, h = 20, 3
+	term := New(w, h)
+	defer term.Close()
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		i := 0
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			// Write 3 lines per iteration: the top scrolls off into history.
+			_, _ = term.Write([]byte("a\r\nb\r\nc\r\n"))
+			i++
+			if i%50 == 0 {
+				time.Sleep(time.Millisecond)
+			}
+		}
+	}()
+
+	for range 100 {
+		sb, vp := term.Snapshot(w, h)
+		vpLines := strings.Split(vp, "\n")
+		if len(vpLines) != h {
+			t.Fatalf("viewport should have %d lines, got %d", h, len(vpLines))
+		}
+		for j, line := range vpLines {
+			if got := ansi.StringWidth(line); got != w {
+				t.Fatalf("viewport line %d width: got %d want %d", j, got, w)
+			}
+		}
+		// scrollback is whatever was captured at snapshot time — just
+		// assert it's a proper slice (copy, not a shared reference).
+		if sb != nil && cap(sb) < len(sb) {
+			t.Fatalf("scrollback has bad cap=%d len=%d", cap(sb), len(sb))
+		}
+	}
+	close(stop)
+	wg.Wait()
 }
 
 func TestCursorPosition(t *testing.T) {

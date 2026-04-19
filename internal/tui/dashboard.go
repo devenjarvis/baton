@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -199,17 +200,27 @@ func (d dashboardModel) View() string {
 		Width(previewWidth).
 		Height(d.contentHeight())
 	if d.panelFocus == focusTerminal || d.panelFocus == focusConfig {
+		// Size the bordered box so its inner content height matches the
+		// number of rows we actually render: metadata rows + the full VT
+		// viewport. Deriving it this way keeps the VT unclipped when no PR
+		// row is present and makes the 1-row clip when PR is visible
+		// deterministic, instead of relying on lipgloss's implicit
+		// truncation to hide the mismatch.
 		previewStyle = lipgloss.NewStyle().
 			Width(d.fixedTermWidth()).
-			Height(d.contentHeight() - 2).
+			Height(d.previewMetadataRows() + d.fixedTermHeight()).
 			Border(lipgloss.NormalBorder()).
 			BorderForeground(ColorSecondary)
 	}
 
-	return lipgloss.JoinHorizontal(lipgloss.Top,
+	out := lipgloss.JoinHorizontal(lipgloss.Top,
 		listStyle.Render(list),
 		previewStyle.Render(preview),
 	)
+	if path := os.Getenv("BATON_E2E_DEBUG_DUMP"); path != "" {
+		_ = os.WriteFile(path, []byte(out), 0o644)
+	}
+	return out
 }
 
 func (d dashboardModel) contentHeight() int {
@@ -231,6 +242,22 @@ func (d dashboardModel) fixedTermWidth() int {
 // resize churn.
 func (d dashboardModel) fixedTermHeight() int {
 	return d.contentHeight() - 4 - 2 // metadata rows + focusTerminal border
+}
+
+// previewMetadataRows returns the number of non-VT rows rendered above the
+// terminal viewport in the preview panel: title, sessionInfo, taskInfo, and
+// the blank separator — plus one row for the PR info line when the selected
+// session has an open PR. Mouse coordinate translation in app.go uses a
+// hardcoded constant (see forwardWheelToAgent) and is explicitly out of scope
+// here.
+func (d dashboardModel) previewMetadataRows() int {
+	rows := 4 // title, sessionInfo, taskInfo, blank
+	if sess := d.selectedSession(); sess != nil {
+		if entry := d.prCache[sess.ID]; entry != nil && entry.pr != nil {
+			rows++
+		}
+	}
+	return rows
 }
 
 // previewTermWidth returns the terminal column count for the preview panel.
@@ -565,12 +592,13 @@ func (d dashboardModel) renderPreview(width int) string {
 	}
 
 	var render string
+	vpWidth := d.previewTermWidth()
+	vpHeight := d.previewTermHeight()
 	if d.scrollOffset > 0 {
-		sbLines := ag.ScrollbackLines()
-		vpLines := strings.Split(ag.StableRender(), "\n")
+		sbLines, viewport := ag.Snapshot(vpWidth, vpHeight)
+		vpLines := strings.Split(viewport, "\n")
 		allLines := append(sbLines, vpLines...)
 
-		vpHeight := d.previewTermHeight()
 		end := len(allLines) - d.scrollOffset
 		if end < 0 {
 			end = 0
@@ -581,7 +609,7 @@ func (d dashboardModel) renderPreview(width int) string {
 		}
 		render = strings.Join(allLines[start:end], "\n")
 	} else {
-		render = ag.StableRender()
+		render = ag.RenderPadded(vpWidth, vpHeight)
 	}
 
 	previewParts := []string{title, sessionInfo}
