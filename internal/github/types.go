@@ -16,13 +16,12 @@ type PRState struct {
 
 // CheckStatus holds the combined check/CI status for a git ref.
 type CheckStatus struct {
-	State        string // "success", "failure", "pending"
-	Total        int
-	Passed       int
-	Failed       int
-	Pending      int
-	FailedChecks []FailedCheck
-	Runs         []CheckRun
+	State   string // "success", "failure", "pending"
+	Total   int
+	Passed  int
+	Failed  int
+	Pending int
+	Runs    []CheckRun
 }
 
 // CheckRun holds details about a single check run.
@@ -32,14 +31,6 @@ type CheckRun struct {
 	Conclusion string // "success", "failure", "cancelled", "skipped", etc.
 	StartedAt  time.Time
 	Duration   time.Duration
-}
-
-// FailedCheck holds details about a single failed check run.
-type FailedCheck struct {
-	ID         int64
-	Name       string
-	Conclusion string
-	DetailsURL string
 }
 
 // ReviewStatus holds the aggregated review status for a PR.
