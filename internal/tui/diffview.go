@@ -1,199 +1,306 @@
 package tui
 
 import (
-	"sort"
+	"fmt"
+	"strings"
 
+	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
-	git "github.com/devenjarvis/baton/internal/git"
+	"github.com/charmbracelet/lipgloss"
+
+	"github.com/devenjarvis/baton/internal/diffmodel"
+	"github.com/devenjarvis/baton/internal/tui/diff"
 )
 
-// diffMode selects between the summary and detail views.
-type diffMode int
-
+// Left-pane sizing.
 const (
-	summaryMode diffMode = iota
-	detailMode
+	diffTreeMinPaneWidth = 24
+	diffTreePreferWidth  = 30
+	diffTreeHideBelow    = 80 // total terminal width below which tree is hidden
 )
-
-// diffModel drives the two-mode diff browser.
-type diffModel struct {
-	agentName string
-	files     []git.DiffFile
-	hunks     [][]git.Hunk // parallel to files; pre-parsed once
-	mode      diffMode
-	selected  int // index of selected file in summary
-	scroll    int // scroll offset in detail mode
-	width     int
-	height    int
-}
 
 type diffCloseMsg struct{}
 
-// newDiffModel constructs a diffModel. Files are sorted by total change
-// magnitude (descending, tie-break on path ascending) and hunks are
-// pre-parsed for each file.
-func newDiffModel(agentName string, files []git.DiffFile, width, height int) diffModel {
-	sorted := make([]git.DiffFile, len(files))
-	copy(sorted, files)
-	sort.SliceStable(sorted, func(i, j int) bool {
-		mi := sorted[i].Insertions + sorted[i].Deletions
-		mj := sorted[j].Insertions + sorted[j].Deletions
-		if mi != mj {
-			return mi > mj
-		}
-		return sorted[i].Path < sorted[j].Path
-	})
+// diffModel drives the new diff browser: collapsible file tree on the left,
+// syntax-highlighted diff rendered into a viewport on the right.
+type diffModel struct {
+	agentName string
+	model     *diffmodel.Model
 
-	hunks := make([][]git.Hunk, len(sorted))
-	for i, f := range sorted {
-		hunks[i] = git.ParseHunks(f)
-	}
+	tree      *diff.Tree
+	vp        viewport.Model
+	renderers map[string]*diff.Renderer
 
-	return diffModel{
-		agentName: agentName,
-		files:     sorted,
-		hunks:     hunks,
-		mode:      summaryMode,
-		width:     width,
-		height:    height,
-	}
+	// selected is the path of the file currently painted into the viewport.
+	selected   string
+	sideBySide bool
+
+	width, height int
 }
 
-// Mode exposes the current mode to callers (e.g., status-bar hint selection).
-func (d diffModel) Mode() diffMode {
-	return d.mode
+// newDiffModel constructs a diffModel from a parsed diff. `height` should be
+// the height available for the body only — the caller reserves the status bar.
+func newDiffModel(agentName string, m *diffmodel.Model, width, height int) diffModel {
+	d := diffModel{
+		agentName:  agentName,
+		model:      m,
+		tree:       diff.NewTree(m),
+		vp:         viewport.New(),
+		renderers:  make(map[string]*diff.Renderer),
+		sideBySide: true,
+		width:      width,
+		height:     height,
+	}
+	d.applySize()
+	// Auto-open whatever the tree cursor landed on.
+	if sel := d.tree.SelectedFile(); sel != nil {
+		d.openFile(sel.Path)
+	}
+	return d
 }
 
+// Update processes a message and returns the updated model plus any command.
 func (d diffModel) Update(msg tea.Msg) (diffModel, tea.Cmd) {
 	switch msg := msg.(type) {
-	case tea.KeyPressMsg:
-		if d.mode == detailMode {
-			return d.updateDetail(msg)
+	case diff.FileSelectedMsg:
+		d.openFile(msg.Path)
+		return d, nil
+	case tea.WindowSizeMsg:
+		d.width = msg.Width
+		d.height = msg.Height
+		d.applySize()
+		// Re-render current file with the new width.
+		if d.selected != "" {
+			d.refreshViewport()
 		}
-		return d.updateSummary(msg)
+		return d, nil
+	case tea.KeyPressMsg:
+		return d.updateKey(msg)
 	}
 	return d, nil
 }
 
-func (d diffModel) updateSummary(msg tea.KeyPressMsg) (diffModel, tea.Cmd) {
+func (d diffModel) updateKey(msg tea.KeyPressMsg) (diffModel, tea.Cmd) {
 	switch msg.String() {
 	case "q", "esc":
 		return d, func() tea.Msg { return diffCloseMsg{} }
-	}
-	if len(d.files) == 0 {
-		return d, nil
-	}
-	switch msg.String() {
-	case "j", "down":
-		if d.selected < len(d.files)-1 {
-			d.selected++
+	case "s":
+		d.sideBySide = !d.sideBySide
+		if d.selected != "" {
+			d.refreshViewport()
 		}
-	case "k", "up":
-		if d.selected > 0 {
-			d.selected--
-		}
-	case "g":
-		d.selected = 0
-	case "G":
-		d.selected = len(d.files) - 1
-	case "enter", "l", "right":
-		d.mode = detailMode
-		d.scroll = 0
-	}
-	return d, nil
-}
-
-func (d diffModel) updateDetail(msg tea.KeyPressMsg) (diffModel, tea.Cmd) {
-	switch msg.String() {
-	case "q":
-		return d, func() tea.Msg { return diffCloseMsg{} }
-	case "esc", "h", "left":
-		d.mode = summaryMode
-		d.scroll = 0
 		return d, nil
-	}
-	if len(d.files) == 0 {
-		return d, nil
-	}
-	switch msg.String() {
-	case "j", "down":
-		d.scroll++
-		d.clampScroll()
-	case "k", "up":
-		d.scroll--
-		if d.scroll < 0 {
-			d.scroll = 0
-		}
+	// Viewport-owned scroll keys.
 	case "d", "ctrl+d":
-		d.scroll += d.detailBodyHeight() / 2
-		d.clampScroll()
+		d.vp.HalfPageDown()
+		return d, nil
 	case "u", "ctrl+u":
-		d.scroll -= d.detailBodyHeight() / 2
-		if d.scroll < 0 {
-			d.scroll = 0
-		}
-	case "n":
-		if d.selected < len(d.files)-1 {
-			d.selected++
-			d.scroll = 0
-		}
-	case "p":
-		if d.selected > 0 {
-			d.selected--
-			d.scroll = 0
-		}
+		d.vp.HalfPageUp()
+		return d, nil
+	case "pgdown":
+		d.vp.PageDown()
+		return d, nil
+	case "pgup":
+		d.vp.PageUp()
+		return d, nil
 	}
-	return d, nil
+
+	// If no tree visible, j/k/g/G scroll the viewport; otherwise they navigate
+	// the tree (which may emit a FileSelectedMsg for us).
+	if !d.treeVisible() {
+		switch msg.String() {
+		case "j", "down":
+			d.vp.ScrollDown(1)
+			return d, nil
+		case "k", "up":
+			d.vp.ScrollUp(1)
+			return d, nil
+		case "g":
+			d.vp.GotoTop()
+			return d, nil
+		case "G":
+			d.vp.GotoBottom()
+			return d, nil
+		}
+		return d, nil
+	}
+
+	// Default: forward to the tree.
+	var cmd tea.Cmd
+	d.tree, cmd = d.tree.Update(msg)
+	return d, cmd
 }
 
-// detailBodyHeight returns the approximate height available for the detail
-// body (total minus header + blank).
-func (d diffModel) detailBodyHeight() int {
-	h := d.height - 2
+// openFile swaps the viewport content to show `path`. No-ops if path is empty.
+func (d *diffModel) openFile(path string) {
+	if path == "" || path == d.selected {
+		if path == d.selected && d.selected != "" {
+			// Same file: rewind to top for consistency.
+			d.vp.GotoTop()
+		}
+		return
+	}
+	d.selected = path
+	d.refreshViewport()
+	d.vp.GotoTop()
+}
+
+// refreshViewport re-renders the current file into the viewport using current
+// dimensions and SxS toggle.
+func (d *diffModel) refreshViewport() {
+	if d.selected == "" || d.model == nil {
+		d.vp.SetContent("")
+		return
+	}
+	f := d.findFile(d.selected)
+	if f == nil {
+		d.vp.SetContent("")
+		return
+	}
+	r, ok := d.renderers[d.selected]
+	if !ok {
+		r = diff.NewRenderer(f)
+		d.renderers[d.selected] = r
+	}
+	bodyW := d.rightPaneWidth()
+	content := r.Render(bodyW, d.sideBySide)
+	d.vp.SetContent(content)
+}
+
+// findFile returns a pointer to the File in the model with the matching path.
+func (d *diffModel) findFile(path string) *diffmodel.File {
+	if d.model == nil {
+		return nil
+	}
+	for i := range d.model.Files {
+		if d.model.Files[i].Path == path {
+			return &d.model.Files[i]
+		}
+	}
+	return nil
+}
+
+// applySize recomputes pane widths and pushes them into child components.
+func (d *diffModel) applySize() {
+	rightW := d.rightPaneWidth()
+	d.vp.SetWidth(rightW)
+	bodyH := d.bodyHeight()
+	d.vp.SetHeight(bodyH)
+}
+
+// treeVisible reports whether the left tree pane fits.
+func (d *diffModel) treeVisible() bool {
+	return d.width >= diffTreeHideBelow
+}
+
+// treePaneWidth returns the left pane width (or 0 if hidden).
+func (d *diffModel) treePaneWidth() int {
+	if !d.treeVisible() {
+		return 0
+	}
+	w := diffTreePreferWidth
+	if w > d.width/3 {
+		w = d.width / 3
+	}
+	if w < diffTreeMinPaneWidth {
+		w = diffTreeMinPaneWidth
+	}
+	return w
+}
+
+// rightPaneWidth returns the viewport's content width.
+func (d *diffModel) rightPaneWidth() int {
+	w := d.width - d.treePaneWidth()
+	// Reserve 1 col for the separator between tree and diff.
+	if d.treeVisible() {
+		w--
+	}
+	if w < 1 {
+		w = 1
+	}
+	return w
+}
+
+// bodyHeight returns the usable height (header eats 1 line).
+func (d *diffModel) bodyHeight() int {
+	h := d.height - 1
 	if h < 1 {
 		return 1
 	}
 	return h
 }
 
-// clampScroll keeps scroll within the bounds of the current file's rendered
-// detail body. It accounts for the current render mode (side-by-side vs
-// unified), since side-by-side pairs del/add runs into fewer rows.
-func (d *diffModel) clampScroll() {
-	if len(d.files) == 0 || d.selected < 0 || d.selected >= len(d.hunks) {
-		d.scroll = 0
-		return
+// View renders the tree + viewport side-by-side, preceded by a one-line header.
+func (d diffModel) View() string {
+	if d.width <= 0 || d.height <= 0 {
+		return ""
 	}
-	var total int
-	if d.width >= sideBySideMinWidth {
-		total = len(buildSideBySideRows(d.hunks[d.selected]))
+	header := d.renderHeader()
+	if d.model == nil || len(d.model.Files) == 0 {
+		empty := lipgloss.NewStyle().Foreground(ColorMuted).Render(
+			fmt.Sprintf("No changes for %s", d.agentName),
+		)
+		body := padViewBody(empty, d.width, d.bodyHeight())
+		return lipgloss.JoinVertical(lipgloss.Left, header, body)
+	}
+
+	bodyH := d.bodyHeight()
+	right := d.vp.View()
+	var body string
+	if d.treeVisible() {
+		treeView := d.tree.View(d.treePaneWidth(), bodyH)
+		sep := renderVerticalSeparator(bodyH)
+		body = lipgloss.JoinHorizontal(lipgloss.Top, treeView, sep, right)
 	} else {
-		for _, h := range d.hunks[d.selected] {
-			total += 1 + len(h.Lines) // header + lines
-		}
+		body = right
 	}
-	max := total - d.detailBodyHeight()
-	if max < 0 {
-		max = 0
-	}
-	if d.scroll > max {
-		d.scroll = max
-	}
+	return lipgloss.JoinVertical(lipgloss.Left, header, body)
 }
 
-func (d diffModel) View() string {
-	if len(d.files) == 0 {
-		return renderEmptyState(d.agentName, d.width, d.height)
-	}
-	if d.mode == detailMode {
-		return renderDetail(
-			d.agentName,
-			d.files[d.selected],
-			d.hunks[d.selected],
-			d.scroll,
-			d.width,
-			d.height,
+// renderHeader shows the agent name and the selected path (if any).
+func (d diffModel) renderHeader() string {
+	title := StyleTitle.Render(fmt.Sprintf("Diff · %s", d.agentName))
+	var sub string
+	if d.selected != "" {
+		mode := "unified"
+		if d.sideBySide && d.width >= diff.SideBySideMinWidth {
+			mode = "side-by-side"
+		}
+		sub = lipgloss.NewStyle().Foreground(ColorMuted).Render(
+			fmt.Sprintf("  %s  [%s]", d.selected, mode),
 		)
 	}
-	return renderSummary(d.agentName, d.files, d.selected, d.width, d.height)
+	line := title + sub
+	// Truncate header to width.
+	if w := lipgloss.Width(line); w > d.width {
+		line = line[:0] + title // fall back to title-only
+	}
+	return line + strings.Repeat(" ", max(0, d.width-lipgloss.Width(line)))
+}
+
+// renderVerticalSeparator returns a 1-col vertical rule of `h` rows.
+func renderVerticalSeparator(h int) string {
+	style := lipgloss.NewStyle().Foreground(ColorMuted)
+	lines := make([]string, h)
+	for i := range lines {
+		lines[i] = style.Render("│")
+	}
+	return strings.Join(lines, "\n")
+}
+
+// padViewBody pads `s` to (width × height) cells with blank lines so the
+// layout doesn't collapse when content is short.
+func padViewBody(s string, width, height int) string {
+	if height < 1 {
+		return ""
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) >= height {
+		lines = lines[:height]
+	} else {
+		for len(lines) < height {
+			lines = append(lines, strings.Repeat(" ", width))
+		}
+	}
+	return strings.Join(lines, "\n")
 }

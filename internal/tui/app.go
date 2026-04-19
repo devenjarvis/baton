@@ -17,6 +17,7 @@ import (
 	"github.com/devenjarvis/baton/internal/agent"
 	"github.com/devenjarvis/baton/internal/audio"
 	"github.com/devenjarvis/baton/internal/config"
+	"github.com/devenjarvis/baton/internal/diffmodel"
 	"github.com/devenjarvis/baton/internal/git"
 	"github.com/devenjarvis/baton/internal/github"
 	"github.com/devenjarvis/baton/internal/state"
@@ -187,8 +188,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.height = msg.Height
 		a.dashboard.width = msg.Width
 		a.dashboard.height = msg.Height - 1 // room for statusbar
-		a.diff.width = msg.Width
-		a.diff.height = msg.Height - 1
+		a.diff, _ = a.diff.Update(tea.WindowSizeMsg{Width: msg.Width, Height: msg.Height - 1})
 		a.repoBrowser.width = msg.Width
 		a.repoBrowser.height = msg.Height - 1
 		a.branchPicker.width = msg.Width
@@ -847,11 +847,13 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.setError(err.Error())
 					return a, nil
 				}
-				// Always enter the diff view; the empty state is handled by
-				// the renderer when there are no files.
-				files := git.ParseDiffFiles(rawDiff)
+				m, err := diffmodel.Parse(rawDiff)
+				if err != nil {
+					a.setError(err.Error())
+					return a, nil
+				}
 				a.view = ViewDiff
-				a.diff = newDiffModel(sess.GetDisplayName(), files, a.width, a.height-1)
+				a.diff = newDiffModel(sess.GetDisplayName(), m, a.width, a.height-1)
 				return a, nil
 			}
 			// Repo header selected — remove the repo.
@@ -1373,11 +1375,7 @@ func (a App) View() tea.View {
 		content = lipgloss.JoinVertical(lipgloss.Left, body, statusbar)
 	case ViewDiff:
 		body := a.diff.View()
-		hints := diffSummaryHints
-		if a.diff.Mode() == detailMode {
-			hints = diffDetailHints
-		}
-		statusbar := renderStatusBar(hints, a.width)
+		statusbar := renderStatusBar(diffHints, a.width)
 		content = lipgloss.JoinVertical(lipgloss.Left, body, statusbar)
 	case ViewFileBrowser:
 		body := a.repoBrowser.View()

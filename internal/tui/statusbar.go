@@ -36,18 +36,12 @@ var (
 		{"⇧esc", "interrupt"},
 	}
 
-	diffSummaryHints = []keyHint{
-		{"j/k", "files"},
-		{"enter", "open"},
-		{"g/G", "top/bot"},
-		{"q", "back"},
-	}
-
-	diffDetailHints = []keyHint{
-		{"j/k", "scroll"},
-		{"d/u", "page"},
-		{"n/p", "file"},
-		{"esc", "summary"},
+	diffHints = []keyHint{
+		{"j/k", "tree"},
+		{"h/l", "fold/open"},
+		{"enter", "view"},
+		{"d/u", "scroll"},
+		{"s", "side-by-side"},
 		{"q", "back"},
 	}
 
