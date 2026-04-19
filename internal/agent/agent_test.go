@@ -60,7 +60,12 @@ func setupTestRepo(t *testing.T) string {
 }
 
 func defaultTestSettings() config.ResolvedSettings {
-	return config.Resolve(nil, nil)
+	// Tests rely on the synchronous slugify rename path; the async Haiku
+	// path has dedicated tests in session_name_test.go and is opt-in via
+	// smart_branch_names=true in the relevant fixtures.
+	r := config.Resolve(nil, nil)
+	r.SmartBranchNames = false
+	return r
 }
 
 func TestAgentRenderContainsOutput(t *testing.T) {

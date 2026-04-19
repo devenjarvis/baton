@@ -23,6 +23,9 @@ func TestResolve_AllDefaults(t *testing.T) {
 	if r.BypassPermissions != config.DefaultBypassPermissions {
 		t.Errorf("BypassPermissions = %v, want %v", r.BypassPermissions, config.DefaultBypassPermissions)
 	}
+	if r.SmartBranchNames != config.DefaultSmartBranchNames {
+		t.Errorf("SmartBranchNames = %v, want %v", r.SmartBranchNames, config.DefaultSmartBranchNames)
+	}
 	if r.DefaultBranch != "" {
 		t.Errorf("DefaultBranch = %q, want empty", r.DefaultBranch)
 	}
@@ -121,6 +124,22 @@ func TestResolve_NilVsFalse(t *testing.T) {
 	}
 }
 
+func TestResolve_SmartBranchNames_GlobalFalse(t *testing.T) {
+	r := config.Resolve(&config.GlobalSettings{SmartBranchNames: boolPtr(false)}, nil)
+	if r.SmartBranchNames {
+		t.Error("global SmartBranchNames=false should disable smart branch names")
+	}
+}
+
+func TestResolve_SmartBranchNames_RepoOverridesGlobal(t *testing.T) {
+	g := &config.GlobalSettings{SmartBranchNames: boolPtr(true)}
+	repo := &config.RepoSettings{SmartBranchNames: boolPtr(false)}
+	r := config.Resolve(g, repo)
+	if r.SmartBranchNames {
+		t.Error("repo SmartBranchNames=false should override global=true")
+	}
+}
+
 // ---- Load/Save GlobalSettings ----
 
 func TestLoadGlobalSettings_MissingFile(t *testing.T) {
@@ -145,6 +164,7 @@ func TestSaveLoadRoundTrip_Global(t *testing.T) {
 	original := &config.GlobalSettings{
 		AudioEnabled:      boolPtr(false),
 		BypassPermissions: boolPtr(true),
+		SmartBranchNames:  boolPtr(false),
 		BranchPrefix:      strPtr("test/"),
 		AgentProgram:      strPtr("test-claude"),
 		DefaultBranch:     strPtr("develop"),
@@ -164,6 +184,9 @@ func TestSaveLoadRoundTrip_Global(t *testing.T) {
 	}
 	if loaded.BypassPermissions == nil || *loaded.BypassPermissions != true {
 		t.Error("BypassPermissions should be true after round-trip")
+	}
+	if loaded.SmartBranchNames == nil || *loaded.SmartBranchNames != false {
+		t.Error("SmartBranchNames should be false after round-trip")
 	}
 	if loaded.BranchPrefix == nil || *loaded.BranchPrefix != "test/" {
 		t.Errorf("BranchPrefix = %v, want test/", loaded.BranchPrefix)

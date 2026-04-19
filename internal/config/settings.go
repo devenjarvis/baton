@@ -12,6 +12,7 @@ import (
 const (
 	DefaultAudioEnabled      = true
 	DefaultBypassPermissions = true
+	DefaultSmartBranchNames  = true
 	DefaultBranchPrefix      = "baton/"
 	DefaultAgentProgram      = "claude"
 	DefaultWorktreeDir       = ".baton/worktrees"
@@ -22,6 +23,7 @@ const (
 type GlobalSettings struct {
 	AudioEnabled      *bool   `json:"audio_enabled,omitempty"`
 	BypassPermissions *bool   `json:"bypass_permissions,omitempty"`
+	SmartBranchNames  *bool   `json:"smart_branch_names,omitempty"`
 	DefaultBranch     *string `json:"default_branch,omitempty"`
 	BranchPrefix      *string `json:"branch_prefix,omitempty"`
 	AgentProgram      *string `json:"agent_program,omitempty"`
@@ -32,6 +34,7 @@ type GlobalSettings struct {
 // Fields here override the corresponding GlobalSettings value.
 type RepoSettings struct {
 	BypassPermissions *bool   `json:"bypass_permissions,omitempty"`
+	SmartBranchNames  *bool   `json:"smart_branch_names,omitempty"`
 	DefaultBranch     *string `json:"default_branch,omitempty"`
 	BranchPrefix      *string `json:"branch_prefix,omitempty"`
 	AgentProgram      *string `json:"agent_program,omitempty"`
@@ -44,6 +47,7 @@ type RepoSettings struct {
 type ResolvedSettings struct {
 	AudioEnabled      bool
 	BypassPermissions bool
+	SmartBranchNames  bool
 	DefaultBranch     string // "" means auto-detect
 	BranchPrefix      string
 	AgentProgram      string
@@ -57,6 +61,7 @@ func Resolve(global *GlobalSettings, repo *RepoSettings) ResolvedSettings {
 	r := ResolvedSettings{
 		AudioEnabled:      DefaultAudioEnabled,
 		BypassPermissions: DefaultBypassPermissions,
+		SmartBranchNames:  DefaultSmartBranchNames,
 		BranchPrefix:      DefaultBranchPrefix,
 		AgentProgram:      DefaultAgentProgram,
 		WorktreeDir:       DefaultWorktreeDir,
@@ -68,6 +73,9 @@ func Resolve(global *GlobalSettings, repo *RepoSettings) ResolvedSettings {
 		}
 		if global.BypassPermissions != nil {
 			r.BypassPermissions = *global.BypassPermissions
+		}
+		if global.SmartBranchNames != nil {
+			r.SmartBranchNames = *global.SmartBranchNames
 		}
 		if global.DefaultBranch != nil {
 			r.DefaultBranch = *global.DefaultBranch
@@ -86,6 +94,9 @@ func Resolve(global *GlobalSettings, repo *RepoSettings) ResolvedSettings {
 	if repo != nil {
 		if repo.BypassPermissions != nil {
 			r.BypassPermissions = *repo.BypassPermissions
+		}
+		if repo.SmartBranchNames != nil {
+			r.SmartBranchNames = *repo.SmartBranchNames
 		}
 		if repo.DefaultBranch != nil {
 			r.DefaultBranch = *repo.DefaultBranch

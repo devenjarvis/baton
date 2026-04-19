@@ -15,6 +15,7 @@ Every PR should update the `[Unreleased]` section with a short entry describing 
 
 ### Added
 
+- Branch renaming now uses `claude -p --model claude-haiku-4-5` to summarize the first prompt into a 3-5 word slug; falls back to the old slugify on failure. Toggle via `smart_branch_names`.
 - Meaningful branch names derived from the user's first prompt. Sessions still start on a random adjective-noun branch so Claude can launch immediately, but on the first real `user-prompt-submit` hook the branch is renamed in place (via `git branch -m`, which atomically updates the worktree's HEAD symref) to a slug of the prompt — e.g. `baton/warm-ibis` becomes `baton/add-dark-mode-to-dashboard`. Slash commands like `/clear` are skipped so the next real prompt still triggers the rename. Attached sessions and resumed sessions are exempt, since their branch name is already meaningful. The preview header now surfaces `Branch:` alongside the session display name so the rename is visible.
 - `{user}` and `{date}` template variables in `BranchPrefix`. `{user}` resolves from `git config user.name` (falling back to `$USER`), slugified; `{date}` resolves to today's `YYYY-MM-DD`. Unknown `{tokens}` are left literal so existing prefixes with braces are unaffected. Example: `BranchPrefix: "{user}/"` produces `dj/add-dark-mode` for a first-prompt rename.
 - GoReleaser config and release workflow: pushing a `v*` tag builds darwin/linux amd64+arm64 archives, publishes a GitHub release, and updates the `devenjarvis/homebrew-tap` formula.
