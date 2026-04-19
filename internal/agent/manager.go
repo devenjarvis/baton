@@ -255,8 +255,13 @@ func (m *Manager) applyRename(sess *Session, newBranch string) {
 	// will retry. Writing to stderr during an active TUI alt-screen scrambles
 	// the rendered UI, so the error is swallowed here — users see the
 	// unchanged branch label in the preview as the implicit signal.
-	if _, err := sess.RenameBranch(m.repoPath, newBranch); err != nil {
+	actual, err := sess.RenameBranch(m.repoPath, newBranch)
+	if err != nil {
 		return
+	}
+
+	if slug := lastBranchSegment(actual); slug != "" {
+		sess.SetDisplayName(slug)
 	}
 
 	if agents := sess.Agents(); len(agents) > 0 {
