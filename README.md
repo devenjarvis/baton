@@ -1,39 +1,61 @@
 # Baton
 
-A terminal-native tool for orchestrating multiple [Claude Code](https://docs.anthropic.com/en/docs/claude-code) agents in parallel. Each agent runs in an isolated git worktree with its own PTY, rendered via a virtual terminal emulator. Monitor agents from a single dashboard, interact in focus mode, review diffs, open PRs, fix failing CI checks, and merge results — all without leaving the terminal.
+A lightweight, TUI-first interface for running multiple [Claude Code](https://docs.anthropic.com/en/docs/claude-code) agents in parallel.
 
-No tmux dependency.
+<!-- TODO: record demo GIF and replace placeholder -->
+![Baton demo](docs/demo.gif)
 
-> ⚠️ **Alpha software — here be dragons.** Baton is on its very first public release (v0.1.0). APIs, on-disk state layout, config schema, and keybindings may change without notice between versions. The TUI, hook pipeline, and session-resume layers are still stabilizing; expect rough edges and the occasional crash. Git operations are conservative — Baton only writes to `baton/*` branches inside `.baton/worktrees/` and uses `git merge --no-ff` with explicit confirmation — but please keep your work committed and file issues when things break.
-
-## Requirements
-
-- Go 1.25+
-- Git 2.20+
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude` on PATH, with `--settings` support for hook integration)
-- Optional: `gh` CLI or `GITHUB_TOKEN` for PR creation, checks polling, and the "fix failing checks" flow
-
-Verify your environment with:
-
-```bash
-baton doctor
-```
-
-`doctor` validates git, Claude Code, the baton binary, hook-pipeline round-trip, the current directory is a git repo, and GitHub auth.
+> **Alpha software — v0.1.0 shipped.** The core loop is working and stabilizing, but rough edges remain. APIs, config schema, and keybindings may change between versions. Git operations are conservative — Baton only writes to `baton/*` branches inside `.baton/worktrees/` and uses `git merge --no-ff` with explicit confirmation — but keep your work committed and file issues when things break.
 
 ## Install
+
+**Homebrew (recommended):**
+
+```bash
+brew install devenjarvis/tap/baton
+```
+
+**Go install:**
 
 ```bash
 go install github.com/devenjarvis/baton@latest
 ```
 
-Or build from source:
+**Build from source:**
 
 ```bash
 git clone https://github.com/devenjarvis/baton.git
 cd baton
 go build -o baton .
 ```
+
+## Requirements
+
+- Git 2.20+
+- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude` on PATH, with `--settings` support for hook integration)
+- Optional: `gh` CLI or `GITHUB_TOKEN` for PR creation and checks polling
+
+Verify your environment:
+
+```bash
+baton doctor
+```
+
+`doctor` checks git, Claude Code, the baton binary, hook-pipeline round-trip, and GitHub auth.
+
+## Why Baton?
+
+If you use Claude Code regularly, you've probably wanted to run multiple tasks at once without juggling terminal windows. Baton gives you a single dashboard to manage parallel agents — each in its own isolated git worktree — and surfaces output, diffs, and status all in one place.
+
+**The core loop:**
+
+1. Run `baton` inside a git repo
+2. Press `n` to create a session and give Claude a task
+3. Watch the agent work from the dashboard (or press `⏎` to focus the terminal)
+4. Press `d` to review the diff when it finishes
+5. Merge the result back to your branch
+
+No tmux required. No context switching.
 
 ## Usage
 
@@ -43,7 +65,7 @@ Run `baton` inside a git repository:
 baton
 ```
 
-The first run auto-registers the current directory as a repo and adds `.baton/` to `.gitignore`. Additional repos can be added from the TUI (`a`).
+The first run auto-registers the current directory and adds `.baton/` to `.gitignore`. Additional repos can be added from the TUI (`a`).
 
 ### Keybindings
 
@@ -63,7 +85,6 @@ The first run auto-registers the current directory as a repo and adds `.baton/` 
 | `d`       | Diff the session's worktree, or remove selected repo       |
 | `x`       | Kill the selected agent                                    |
 | `X`       | Kill the selected agent's entire session                   |
-| `f`       | Fix failing CI checks on the session's PR                  |
 | `q`       | Detach and exit (prompts if agents are running)            |
 
 **Focus mode** (terminal preview focused):
@@ -79,22 +100,21 @@ The first run auto-registers the current directory as a repo and adds `.baton/` 
 
 **Diff summary:**
 
-| Key       | Action             |
-|-----------|--------------------|
-| `j` / `k` | Navigate files     |
-| `⏎`       | Open file detail   |
-| `g` / `G` | Top / bottom       |
-| `q`       | Back to dashboard  |
+| Key       | Action            |
+|-----------|-------------------|
+| `j` / `k` | Navigate files    |
+| `⏎`       | Open file detail  |
+| `g` / `G` | Top / bottom      |
+| `q`       | Back to dashboard |
 
 **Diff detail:**
 
-| Key       | Action              |
-|-----------|---------------------|
-| `j` / `k` | Scroll              |
-| `d` / `u` | Page down / up      |
-| `n` / `p` | Next / prev file    |
-| `esc`     | Back to summary     |
-| `q`       | Back to dashboard   |
+| Key       | Action            |
+|-----------|-------------------|
+| `j` / `k` | Scroll            |
+| `d` / `u` | Page down / up    |
+| `esc`     | Back to summary   |
+| `q`       | Back to dashboard |
 
 Click support on the dashboard: click a row in the list to select it; click in the preview panel to enter focus mode.
 
@@ -121,28 +141,11 @@ When you create a session, Baton:
 
 When you merge, Baton runs `git merge --no-ff` from the worktree branch into the session's base branch and cleans up the worktree.
 
-## Architecture
+## What's Coming
 
-```
-main.go              Entry point
-cmd/
-  root.go            Cobra root, launches TUI
-  doctor.go          Environment validation (git, claude, hook round-trip)
-  hook.go            Forwards Claude hook payloads to the running baton over a unix socket
-internal/
-  pty/               Raw PTY wrapper (creack/pty)
-  vt/                Virtual terminal bridge (x/vt SafeEmulator + io.Pipe)
-  git/               Worktree CRUD, diff, merge via exec.Command("git", ...)
-  agent/             Agent + Session + Manager (composes PTY + VT + git, runs read/write/status loops)
-  tui/               Bubble Tea v2 views (dashboard, diff, repo/global config, file/branch pickers)
-  hook/              Unix-socket server + client for Claude Code hook events
-  github/            GitHub API wrapper for PRs, checks, review status
-  config/            Global and per-repo settings (JSON on disk, resolved at runtime)
-  state/             Session persistence across baton restarts
-  editor/            IDE launcher helpers (macOS app probing, quote-aware tokenizer)
-  audio/             Optional chimes for status transitions
-  e2e/               End-to-end TUI tests (behind the `e2e` build tag)
-```
+- Support for agents beyond Claude Code (any CLI that accepts a prompt and produces output)
+- Richer merge and conflict resolution flows
+- Better multi-repo session management
 
 ## Contributing
 

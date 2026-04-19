@@ -68,4 +68,25 @@ One-liners are fine. A body is welcome when the *why* isn't obvious from the dif
 
 ## Architecture
 
-Read the Architecture section in [README.md](./README.md) and the key patterns in [`CLAUDE.md`](./CLAUDE.md) before making non-trivial changes.
+```
+main.go              Entry point
+cmd/
+  root.go            Cobra root, launches TUI
+  doctor.go          Environment validation (git, claude, hook round-trip)
+  hook.go            Forwards Claude hook payloads to the running baton over a unix socket
+internal/
+  pty/               Raw PTY wrapper (creack/pty)
+  vt/                Virtual terminal bridge (x/vt SafeEmulator + io.Pipe)
+  git/               Worktree CRUD, diff, merge via exec.Command("git", ...)
+  agent/             Agent + Session + Manager (composes PTY + VT + git, runs read/write/status loops)
+  tui/               Bubble Tea v2 views (dashboard, diff, repo/global config, file/branch pickers)
+  hook/              Unix-socket server + client for Claude Code hook events
+  github/            GitHub API wrapper for PRs, checks, review status
+  config/            Global and per-repo settings (JSON on disk, resolved at runtime)
+  state/             Session persistence across baton restarts
+  editor/            IDE launcher helpers (macOS app probing, quote-aware tokenizer)
+  audio/             Optional chimes for status transitions
+  e2e/               End-to-end TUI tests (behind the `e2e` build tag)
+```
+
+See [`CLAUDE.md`](./CLAUDE.md) for key patterns (Bubble Tea v2, thread safety, shutdown sequence, hook wiring).
