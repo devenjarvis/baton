@@ -496,7 +496,7 @@ func TestDetachResumePreservesHasClaudeName(t *testing.T) {
 	}
 	// Directly invoke the rename path since the Claude binary may not be
 	// genuinely running — the check is purely about state.
-	mgr2.maybeRenameFromPrompt(resumed, "now change the layout")
+	mgr2.maybeRenameFromPrompt(resumed, ag, "now change the layout")
 	if resumed.Worktree.Branch != prevBranch {
 		t.Errorf("resumed session should not rename again; got %q, want %q",
 			resumed.Worktree.Branch, prevBranch)

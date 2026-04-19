@@ -163,7 +163,7 @@ func (m *Manager) dispatchHookEvents() {
 		// Failures are dropped so the user's turn is never blocked.
 		if e.Kind == hook.KindUserPromptSubmit {
 			m.applyAutoName(a, sessID, e.Prompt)
-			m.maybeRenameFromPrompt(sess, e.Prompt)
+			m.maybeRenameFromPrompt(sess, a, e.Prompt)
 		}
 	}
 }
@@ -178,8 +178,13 @@ func (m *Manager) dispatchHookEvents() {
 // and a fallback to suffixFromPrompt on error. The in-flight gate on Session
 // ensures a second UserPromptSubmit arriving mid-Haiku is a no-op, not a
 // double-dispatch.
-func (m *Manager) maybeRenameFromPrompt(sess *Session, prompt string) {
+func (m *Manager) maybeRenameFromPrompt(sess *Session, a *Agent, prompt string) {
 	if sess == nil || sess.HasClaudeName() {
+		return
+	}
+	// Mirror applyAutoName's terminal-state guard: a stray UserPromptSubmit
+	// for a Done/Error agent must not trigger a branch rename.
+	if st := a.Status(); st == StatusDone || st == StatusError {
 		return
 	}
 
@@ -234,13 +239,18 @@ func (m *Manager) maybeRenameFromPrompt(sess *Session, prompt string) {
 			}
 		}
 
-		m.applyRename(sess, config.ExpandBranchPrefix(prefix)+suffix)
+		if m.applyRename(sess, config.ExpandBranchPrefix(prefix)+suffix) {
+			// Haiku produced a smarter slug than the raw prompt — update
+			// the session display name so the TUI reflects it.
+			sess.SetDisplayName(suffix)
+		}
 	}()
 }
 
 // applyRename performs the branch rename and emits a status-changed event so
-// the TUI picks up the new branch/name on its next tick.
-func (m *Manager) applyRename(sess *Session, newBranch string) {
+// the TUI picks up the new branch/name on its next tick. Returns true if the
+// rename succeeded.
+func (m *Manager) applyRename(sess *Session, newBranch string) bool {
 	// If the session was closed while the async namer was running, skip the
 	// git op — the worktree is gone, so `git branch -m` would fail and the
 	// EventStatusChanged would reference a session no longer in m.sessions.
@@ -248,7 +258,7 @@ func (m *Manager) applyRename(sess *Session, newBranch string) {
 	_, stillOpen := m.sessions[sess.ID]
 	m.mu.RUnlock()
 	if !stillOpen {
-		return
+		return false
 	}
 
 	// Best effort: on failure, hasClaudeName stays false so the next prompt
@@ -256,7 +266,7 @@ func (m *Manager) applyRename(sess *Session, newBranch string) {
 	// the rendered UI, so the error is swallowed here — users see the
 	// unchanged branch label in the preview as the implicit signal.
 	if _, err := sess.RenameBranch(m.repoPath, newBranch); err != nil {
-		return
+		return false
 	}
 
 	if agents := sess.Agents(); len(agents) > 0 {
@@ -268,6 +278,7 @@ func (m *Manager) applyRename(sess *Session, newBranch string) {
 			Status:    lead.Status(),
 		})
 	}
+	return true
 }
 
 // applyAutoName derives a display name from the first UserPromptSubmit prompt
