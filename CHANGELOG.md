@@ -20,6 +20,7 @@ Every PR should update the `[Unreleased]` section with a short entry describing 
 
 ### Added
 
+- `baton version` command prints the current version (injected via ldflags at release build time; defaults to `dev`).
 - `p` key and left-panel click on the PR/checks summary section now open the session's pull request in the default browser (`open` on macOS, `xdg-open` on Linux, `start` on Windows).
 - Rebuilt diff view with stable side-by-side layout, syntax highlighting, word-level intra-line diff, file-tree picker, and live (uncommitted) diff support. `git.Diff` now runs from inside the worktree against the base branch (`--diff-filter=AMD`), mirroring the sidebar stats so the detail view populates before the agent commits. The renderer is a fresh `internal/diffmodel` + `internal/tui/diff` stack with ANSI-aware width measurement, wrap-with-`↵` markers for long lines, and a `s` key to toggle side-by-side on demand. Side-by-side threshold dropped from 120 to 100 cols; keys `n/p` were replaced by the tree (`j/k/h/l/enter`).
 - Branch renaming now uses `claude -p --model claude-haiku-4-5` to summarize the first prompt into a 3-5 word slug; falls back to the old slugify on failure. Toggle via `smart_branch_names`. Session display name now updates to match the Haiku-generated slug after the async rename completes.

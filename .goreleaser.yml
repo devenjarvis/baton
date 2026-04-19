@@ -18,7 +18,7 @@ builds:
       - arm64
     ldflags:
       - -s -w
-      - -X main.version={{.Version}}
+      - -X github.com/devenjarvis/baton/cmd.version={{.Version}}
       - -X main.commit={{.Commit}}
       - -X main.date={{.Date}}
 
