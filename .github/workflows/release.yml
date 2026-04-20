@@ -28,7 +28,7 @@ jobs:
           go run ./scripts/changelog --version "$VERSION" --notes-file /tmp/release-notes.md
 
       - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v6
+        uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
           version: "~> v2"
