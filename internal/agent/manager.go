@@ -28,6 +28,11 @@ const (
 	EventDone
 	EventError
 	EventSessionClosed
+	// EventBranchRenamed fires after a session's branch has been renamed
+	// (e.g. by the smart-branch-name Haiku flow). Consumers should refresh
+	// any state keyed by branch name — notably PR lookups — since GitHub
+	// may still have the PR indexed under the old name until the next push.
+	EventBranchRenamed
 )
 
 // Event represents something that happened to an agent.
@@ -36,6 +41,9 @@ type Event struct {
 	AgentID   string
 	SessionID string
 	Status    Status
+	// Branch is populated only for EventBranchRenamed and carries the new
+	// branch name. Zero-value for all other event types.
+	Branch string
 }
 
 // Manager manages the lifecycle of all sessions and their agents.
@@ -278,6 +286,11 @@ func (m *Manager) applyRename(sess *Session, newBranch string) bool {
 			Status:    lead.Status(),
 		})
 	}
+	m.emit(Event{
+		Type:      EventBranchRenamed,
+		SessionID: sess.ID,
+		Branch:    newBranch,
+	})
 	return true
 }
 

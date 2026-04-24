@@ -9,11 +9,18 @@ import (
 )
 
 // prPollMsg carries the result of an async PR status poll.
+//
+// Three result shapes are possible and must be distinguished by the handler:
+//   - err != nil: the fetch failed (transient). Preserve cache; shorten next poll.
+//   - err == nil, pr == nil: the lookup succeeded and no open PR exists
+//     (newly opened session, or PR was closed/merged).
+//   - err == nil, pr != nil: update cache.
 type prPollMsg struct {
 	sessionID string
 	pr        *github.PRState
 	checks    *github.CheckStatus
 	reviews   *github.ReviewStatus
+	err       error
 }
 
 // prCacheEntry holds cached PR and check status for a session.
@@ -32,6 +39,11 @@ type prSessionState struct {
 	flashUntil     time.Time
 	flashColor     string // "success" or "error"
 	inFlight       bool
+	// burstUntil, when set in the future, causes prPollInterval to return a
+	// short (~2s) cadence so events like branch rename or new push are picked
+	// up quickly. Writes happen only from the Bubble Tea Update goroutine;
+	// no locking required.
+	burstUntil time.Time
 }
 
 // isMergeReady returns true when all conditions for merge readiness are met.

@@ -1224,3 +1224,65 @@ func TestSmartBranchRename_ShutdownCancelsInflight(t *testing.T) {
 		t.Fatal("Shutdown did not return — rename goroutine likely leaked")
 	}
 }
+
+// TestSmartBranchRename_EmitsBranchRenamedEvent asserts that a successful
+// rename via applyRename emits an EventBranchRenamed carrying the new branch
+// name. The TUI scheduler uses this event to burst-refresh PR state and
+// recover from the rename/PR race.
+func TestSmartBranchRename_EmitsBranchRenamedEvent(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, smartBranchTestSettings())
+	defer mgr.Shutdown()
+
+	stub := &stubNamer{result: "add-dark-mode"}
+	mgr.SetBranchNamer(stub.fn())
+
+	cfg := Config{Name: "rename-event", Task: "test", Rows: 24, Cols: 80}
+	sess, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Drain EventCreated.
+	select {
+	case <-mgr.Events():
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for EventCreated")
+	}
+
+	original := sess.Branch()
+
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindUserPromptSubmit,
+		AgentID: ag.ID,
+		Prompt:  "add dark mode to dashboard",
+	}); err != nil {
+		t.Fatalf("SendEvent: %v", err)
+	}
+
+	got := waitForBranchChanged(t, sess, original, 2*time.Second)
+	if got != "baton/add-dark-mode" {
+		t.Fatalf("branch = %q, want baton/add-dark-mode", got)
+	}
+
+	// Drain events until we see EventBranchRenamed. Other events
+	// (EventStatusChanged, etc.) may interleave; skip them.
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case ev := <-mgr.Events():
+			if ev.Type == EventBranchRenamed {
+				if ev.SessionID != sess.ID {
+					t.Errorf("SessionID = %q, want %q", ev.SessionID, sess.ID)
+				}
+				if ev.Branch != got {
+					t.Errorf("Branch = %q, want %q", ev.Branch, got)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("did not receive EventBranchRenamed within 2s")
+		}
+	}
+}

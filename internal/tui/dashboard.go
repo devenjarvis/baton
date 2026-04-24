@@ -495,23 +495,68 @@ func (d dashboardModel) renderList(width int) string {
 	}
 
 	// Render PR checks summary and diff stats at the bottom of the left panel.
+	// Guarantee a minimum height for the PR panel so it stays visible even
+	// when the agent list is long — truncating the list with a "+N more"
+	// indicator if necessary.
+	contentH := d.contentHeight()
 	var bottomLines []string
+
+	var prEntry *prCacheEntry
 	if sess := d.selectedSession(); sess != nil {
-		if entry := d.prCache[sess.ID]; entry != nil && entry.pr != nil {
-			contentH := d.contentHeight()
-			agentListHeight := len(lines)
-			maxCheckHeight := contentH / 3
-			availCheckHeight := contentH - agentListHeight
-			if availCheckHeight > maxCheckHeight {
-				availCheckHeight = maxCheckHeight
+		if e := d.prCache[sess.ID]; e != nil && e.pr != nil {
+			prEntry = e
+		}
+	}
+
+	// Reserve height for the PR panel up front so it survives a crowded
+	// agent list. Capped at half of contentH on narrow terminals to avoid
+	// starving the agent list entirely.
+	prBudget := 0
+	if prEntry != nil {
+		prBudget = 6
+		if half := contentH / 2; prBudget > half {
+			prBudget = half
+		}
+	}
+
+	// If the agent list + reserved PR budget would exceed contentH, truncate
+	// the list and replace the overflow with a "+N more" marker so the PR
+	// panel still renders.
+	if prBudget > 0 && len(lines) > contentH-prBudget {
+		maxList := contentH - prBudget
+		if maxList < 1 {
+			maxList = 1
+		}
+		// Keep room for the "+N more" marker itself.
+		if maxList < len(lines) {
+			kept := maxList - 1
+			if kept < 0 {
+				kept = 0
 			}
-			if availCheckHeight >= 2 {
-				bottomLines = append(bottomLines, d.renderChecksSummary(entry, width, availCheckHeight)...)
+			hidden := len(lines) - kept
+			truncated := make([]string, 0, kept+1)
+			truncated = append(truncated, lines[:kept]...)
+			truncated = append(truncated, StyleSubtle.Render(fmt.Sprintf("  +%d more", hidden)))
+			lines = truncated
+		}
+	}
+
+	if prEntry != nil {
+		avail := contentH - len(lines)
+		if avail > prBudget && prBudget > 0 {
+			// Cap at the reserved budget so diffStats has room below.
+			if avail > prBudget*2 {
+				avail = prBudget * 2
 			}
+		}
+		if maxCheck := contentH / 3; avail > maxCheck && maxCheck >= prBudget {
+			avail = maxCheck
+		}
+		if avail >= 2 {
+			bottomLines = append(bottomLines, d.renderChecksSummary(prEntry, width, avail)...)
 		}
 	}
 	if d.diffStats != nil {
-		contentH := d.contentHeight()
 		agentListHeight := len(lines) + len(bottomLines)
 		maxDiffHeight := contentH / 3
 		availHeight := contentH - agentListHeight
@@ -524,7 +569,6 @@ func (d dashboardModel) renderList(width int) string {
 		}
 	}
 	if len(bottomLines) > 0 {
-		contentH := d.contentHeight()
 		padding := contentH - len(lines) - len(bottomLines)
 		for i := 0; i < padding; i++ {
 			lines = append(lines, "")
