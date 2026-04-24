@@ -410,6 +410,24 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			a.lastKnownStatus[msg.event.AgentID] = msg.event.Status
 		}
+		// Branch rename invalidates any PR-by-branch lookup. Schedule a burst of
+		// short-interval polls so the SHA-based lookup can rediscover the PR
+		// quickly — do NOT clear the cache here; that happens only when the
+		// next poll confirms the PR is gone (handled in prPollMsg).
+		if msg.event.Type == agent.EventBranchRenamed && msg.event.SessionID != "" {
+			ps := a.prPollStates[msg.event.SessionID]
+			if ps == nil {
+				ps = &prSessionState{}
+				a.prPollStates[msg.event.SessionID] = ps
+			}
+			ps.burstUntil = time.Now().Add(60 * time.Second)
+			ps.lastPoll = time.Time{}
+			// Clearing lastRemoteSHA forces getRemoteSHA to re-check against
+			// the new branch name on the next tick instead of comparing against
+			// the SHA it read under the old branch.
+			ps.lastRemoteSHA = ""
+			ps.lastSHACheck = time.Time{}
+		}
 		// Refresh list on any agent event — all repos are visible in the dashboard.
 		a.refreshAgentList()
 		if mgr := a.managers[msg.repoPath]; mgr != nil {
@@ -483,38 +501,52 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if ps != nil {
 			ps.inFlight = false
 		}
-		// Only update cache if we got data; preserve existing cache on errors.
-		if msg.pr != nil {
-			a.prCache[msg.sessionID] = &prCacheEntry{
-				pr:      msg.pr,
-				checks:  msg.checks,
-				reviews: msg.reviews,
+		// Fetch failed: preserve cache so a transient error doesn't blank the UI.
+		if msg.err != nil {
+			return a, nil
+		}
+		// Lookup succeeded with no PR. If we had one before, the PR has been
+		// closed, merged, or its head branch was deleted — drop the stale entry
+		// so the UI reflects reality.
+		if msg.pr == nil {
+			if _, had := a.prCache[msg.sessionID]; had {
+				delete(a.prCache, msg.sessionID)
+				if ps != nil {
+					ps.lastCheckState = ""
+				}
+				a.updateDashboardPRCache()
 			}
-			// Detect check state transitions and fire notifications.
-			if ps != nil && msg.checks != nil {
-				prevState := ps.lastCheckState
-				newState := msg.checks.State
-				if prevState == "pending" && (newState == "success" || newState == "failure") {
-					// Flash the session row.
-					ps.flashUntil = time.Now().Add(2 * time.Second)
-					if newState == "success" {
-						ps.flashColor = "success"
-					} else {
-						ps.flashColor = "error"
-					}
-					// Play audio notification, gated by the session's repo AudioEnabled setting
-					// (same gate as the idle-transition notification above).
-					if a.audioPlayer != nil {
-						repoPath := a.repoPathForSession(msg.sessionID)
-						if repoPath != "" && a.resolvedCache[repoPath].AudioEnabled {
-							a.audioPlayer.Play()
-						}
+			return a, nil
+		}
+		a.prCache[msg.sessionID] = &prCacheEntry{
+			pr:      msg.pr,
+			checks:  msg.checks,
+			reviews: msg.reviews,
+		}
+		// Detect check state transitions and fire notifications.
+		if ps != nil && msg.checks != nil {
+			prevState := ps.lastCheckState
+			newState := msg.checks.State
+			if prevState == "pending" && (newState == "success" || newState == "failure") {
+				// Flash the session row.
+				ps.flashUntil = time.Now().Add(2 * time.Second)
+				if newState == "success" {
+					ps.flashColor = "success"
+				} else {
+					ps.flashColor = "error"
+				}
+				// Play audio notification, gated by the session's repo AudioEnabled setting
+				// (same gate as the idle-transition notification above).
+				if a.audioPlayer != nil {
+					repoPath := a.repoPathForSession(msg.sessionID)
+					if repoPath != "" && a.resolvedCache[repoPath].AudioEnabled {
+						a.audioPlayer.Play()
 					}
 				}
-				ps.lastCheckState = newState
 			}
-			a.updateDashboardPRCache()
+			ps.lastCheckState = newState
 		}
+		a.updateDashboardPRCache()
 		return a, nil
 
 	case resumeDoneMsg:
@@ -1599,24 +1631,24 @@ outer:
 			// Determine adaptive polling interval.
 			interval := a.prPollInterval(sess.ID, ps)
 			if now.Sub(ps.lastPoll) < interval {
-				// Check for push detection: if no PR yet, see if the remote SHA changed.
-				// Throttle git rev-parse calls to at most once every shaCheckInterval per
-				// session to avoid blocking the Bubble Tea main goroutine on every tick.
-				if a.prCache[sess.ID] == nil || a.prCache[sess.ID].pr == nil {
-					if now.Sub(ps.lastSHACheck) < shaCheckInterval {
-						continue
-					}
-					ps.lastSHACheck = now
-					sha := getRemoteSHA(repo.Path, sess.Branch())
-					if sha != "" && sha != ps.lastRemoteSHA {
-						ps.lastRemoteSHA = sha
-						// Push detected — fall through to schedule an immediate poll.
-					} else {
-						continue
-					}
-				} else {
+				// Push detection runs for every session — including those with a
+				// cached PR — so new commits, force-pushes, and rewrites get
+				// picked up promptly instead of waiting the 30s stable interval.
+				// Throttled to once per shaCheckInterval so git rev-parse does
+				// not block the Bubble Tea main goroutine on every tick.
+				if now.Sub(ps.lastSHACheck) < shaCheckInterval {
 					continue
 				}
+				ps.lastSHACheck = now
+				sha := getRemoteSHA(repo.Path, sess.Branch())
+				if sha == "" || sha == ps.lastRemoteSHA {
+					continue
+				}
+				ps.lastRemoteSHA = sha
+				// SHA changed — arm a burst so the next minute of polls runs
+				// on the short (2s) cadence, then fall through to schedule an
+				// immediate poll.
+				ps.burstUntil = now.Add(60 * time.Second)
 			}
 
 			ps.lastPoll = now
@@ -1630,6 +1662,11 @@ outer:
 
 // prPollInterval returns the adaptive polling interval for a session.
 func (a *App) prPollInterval(sessionID string, ps *prSessionState) time.Duration {
+	// Event-driven burst (branch rename, new push): poll aggressively for a
+	// short window so state transitions become visible within ~2s.
+	if ps != nil && time.Now().Before(ps.burstUntil) {
+		return 2 * time.Second
+	}
 	entry := a.prCache[sessionID]
 	// No PR found yet but branch may have been pushed.
 	if entry == nil || entry.pr == nil {
@@ -1659,24 +1696,51 @@ func getRemoteSHA(repoPath, branch string) string {
 func (a *App) refreshPRStatusForSession(sessionID, branch, repoPath string) tea.Cmd {
 	ghClient := a.ghClient
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 
 		rawURL, err := git.GetRemoteURL(repoPath)
 		if err != nil {
-			return prPollMsg{sessionID: sessionID}
+			return prPollMsg{sessionID: sessionID, err: err}
 		}
 		owner, repo, err := github.ParseRemoteURL(rawURL)
 		if err != nil {
-			return prPollMsg{sessionID: sessionID}
+			return prPollMsg{sessionID: sessionID, err: err}
 		}
 
-		pr, _ := ghClient.GetPR(ctx, owner, repo, branch)
+		// Prefer SHA-based lookup: invariant to branch renames, so a PR opened
+		// under a random baton/<adj>-<noun> name (before Haiku rename finishes)
+		// is still discovered after the rename. Fall back to branch lookup when
+		// the commit hasn't been pushed or SHA lookup returns no PR.
+		var pr *github.PRState
+		sha := getRemoteSHA(repoPath, branch)
+		if sha != "" {
+			pr, _ = ghClient.GetPRBySHA(ctx, owner, repo, sha)
+		}
+		if pr == nil {
+			var err error
+			pr, err = ghClient.GetPR(ctx, owner, repo, branch)
+			if err != nil {
+				return prPollMsg{sessionID: sessionID, err: err}
+			}
+		}
 		var checks *github.CheckStatus
 		var reviews *github.ReviewStatus
 		if pr != nil {
-			checks, _ = ghClient.GetChecks(ctx, owner, repo, branch)
-			reviews, _ = ghClient.GetReviews(ctx, owner, repo, pr.Number)
+			var err error
+			// Prefer SHA for checks when available — matches what CI ran against.
+			checkRef := branch
+			if sha != "" {
+				checkRef = sha
+			}
+			checks, err = ghClient.GetChecks(ctx, owner, repo, checkRef)
+			if err != nil {
+				return prPollMsg{sessionID: sessionID, err: err}
+			}
+			reviews, err = ghClient.GetReviews(ctx, owner, repo, pr.Number)
+			if err != nil {
+				return prPollMsg{sessionID: sessionID, err: err}
+			}
 		}
 
 		return prPollMsg{
@@ -1737,6 +1801,8 @@ func openURL(url string) error {
 // recomputePRSectionY updates d.prSectionY with the content-relative row index
 // (0-indexed, after the AGENTS title and separator) where the PR checks section
 // begins, or -1 when no PR section is rendered. Call after any layout change.
+// Must mirror the truncation logic in dashboardModel.renderList so mouse clicks
+// map to the correct visual rows.
 func (a *App) recomputePRSectionY() {
 	d := &a.dashboard
 	d.prSectionY = -1
@@ -1751,10 +1817,28 @@ func (a *App) recomputePRSectionY() {
 	}
 
 	contentH := d.contentHeight()
+	// Budget for the PR panel, matching renderList.
+	prBudget := 6
+	if half := contentH / 2; prBudget > half {
+		prBudget = half
+	}
+	if prBudget < 2 {
+		return
+	}
+
 	agentListHeight := len(d.items)
+	// Apply the same list truncation renderList performs, so availCheckHeight
+	// reflects the post-truncation list length.
+	if agentListHeight > contentH-prBudget {
+		maxList := contentH - prBudget
+		if maxList < 1 {
+			maxList = 1
+		}
+		agentListHeight = maxList
+	}
 	maxCheckHeight := contentH / 3
 	availCheckHeight := contentH - agentListHeight
-	if availCheckHeight > maxCheckHeight {
+	if availCheckHeight > maxCheckHeight && maxCheckHeight >= prBudget {
 		availCheckHeight = maxCheckHeight
 	}
 	if availCheckHeight < 2 {

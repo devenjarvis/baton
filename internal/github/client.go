@@ -2,7 +2,11 @@ package github
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"math/rand/v2"
+	"net/http"
+	"strconv"
 	"time"
 
 	gh "github.com/google/go-github/v69/github"
@@ -11,6 +15,9 @@ import (
 // Client wraps the GitHub API client with methods for PR and check operations.
 type Client struct {
 	gh *gh.Client
+	// sleep is injected for testability. Defaults to time.After-based sleep
+	// that honors ctx cancellation.
+	sleep func(ctx context.Context, d time.Duration) error
 }
 
 // NewClient creates a new GitHub API client using a token from GetToken().
@@ -21,18 +28,134 @@ func NewClient() (*Client, error) {
 	}
 
 	client := gh.NewClient(nil).WithAuthToken(token)
-	return &Client{gh: client}, nil
+	return &Client{gh: client, sleep: ctxSleep}, nil
+}
+
+// ctxSleep blocks for d or until ctx is cancelled, whichever is first.
+func ctxSleep(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+// retry budget: 1 initial attempt + up to 2 retries.
+var defaultRetryBackoffs = []time.Duration{500 * time.Millisecond, 2 * time.Second}
+
+// maxRetryWait caps server-suggested Retry-After values so an egregious
+// Retry-After header can't hang a poll for minutes.
+const maxRetryWait = 30 * time.Second
+
+// doWithRetry invokes op, retrying on 5xx, 429, and typed rate-limit errors.
+// It honors Retry-After for 429 responses and the typed errors' hints,
+// applies a small jitter to backoff, and respects ctx cancellation.
+// 4xx (other than 429) and 422 are not retried.
+func (c *Client) doWithRetry(ctx context.Context, op func() (*gh.Response, error)) error {
+	var lastErr error
+	for attempt := 0; attempt <= len(defaultRetryBackoffs); attempt++ {
+		resp, err := op()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+
+		retriable, wait := classifyRetry(resp, err)
+		if !retriable || attempt == len(defaultRetryBackoffs) {
+			return err
+		}
+
+		if wait == 0 {
+			wait = defaultRetryBackoffs[attempt]
+		}
+		// ±100ms jitter (bounded to wait).
+		jitter := time.Duration(rand.Int64N(int64(200*time.Millisecond))) - 100*time.Millisecond
+		wait += jitter
+		if wait < 0 {
+			wait = 0
+		}
+		if wait > maxRetryWait {
+			wait = maxRetryWait
+		}
+		if err := c.sleep(ctx, wait); err != nil {
+			return err
+		}
+	}
+	return lastErr
+}
+
+// classifyRetry returns whether the error is retriable and an optional
+// server-suggested wait duration.
+func classifyRetry(resp *gh.Response, err error) (retriable bool, wait time.Duration) {
+	var rate *gh.RateLimitError
+	if errors.As(err, &rate) {
+		if !rate.Rate.Reset.IsZero() {
+			wait = time.Until(rate.Rate.Reset.Time)
+			if wait < 0 {
+				wait = 0
+			}
+		}
+		return true, wait
+	}
+	var abuse *gh.AbuseRateLimitError
+	if errors.As(err, &abuse) {
+		if abuse.RetryAfter != nil {
+			wait = *abuse.RetryAfter
+		}
+		return true, wait
+	}
+	if resp == nil || resp.Response == nil {
+		// Transport-level failure (no HTTP response) — retry once.
+		return true, 0
+	}
+	switch resp.StatusCode {
+	case http.StatusTooManyRequests:
+		if ra := resp.Header.Get("Retry-After"); ra != "" {
+			if secs, perr := strconv.Atoi(ra); perr == nil {
+				wait = time.Duration(secs) * time.Second
+			}
+		}
+		return true, wait
+	case http.StatusInternalServerError,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
+		return true, 0
+	}
+	return false, 0
+}
+
+// isNotFoundOrUnprocessable returns true for 404/422 responses — used by
+// SHA-based PR lookup to treat a pre-push SHA as "no PR", not an error.
+func isNotFoundOrUnprocessable(resp *gh.Response) bool {
+	if resp == nil || resp.Response == nil {
+		return false
+	}
+	return resp.StatusCode == http.StatusNotFound ||
+		resp.StatusCode == http.StatusUnprocessableEntity
 }
 
 // GetPR finds an open pull request for the given head branch.
 // Returns nil (not an error) if no open PR exists for the branch.
 func (c *Client) GetPR(ctx context.Context, owner, repo, branch string) (*PRState, error) {
-	prs, _, err := c.gh.PullRequests.List(ctx, owner, repo, &gh.PullRequestListOptions{
-		Head:  owner + ":" + branch,
-		State: "open",
-		ListOptions: gh.ListOptions{
-			PerPage: 1,
-		},
+	var prs []*gh.PullRequest
+	err := c.doWithRetry(ctx, func() (*gh.Response, error) {
+		var resp *gh.Response
+		var err error
+		prs, resp, err = c.gh.PullRequests.List(ctx, owner, repo, &gh.PullRequestListOptions{
+			Head:  owner + ":" + branch,
+			State: "open",
+			ListOptions: gh.ListOptions{
+				PerPage: 1,
+			},
+		})
+		return resp, err
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing PRs: %w", err)
@@ -45,13 +168,74 @@ func (c *Client) GetPR(ctx context.Context, owner, repo, branch string) (*PRStat
 	return prToState(prs[0]), nil
 }
 
+// GetPRBySHA finds the PR associated with a commit SHA. This is invariant to
+// branch renames: after a local `git branch -m`, the commit's association with
+// its PR on GitHub is preserved, so SHA lookup still finds it.
+//
+// Semantics:
+//   - fork PRs (head repo != owner/repo) are filtered out.
+//   - prefers open PRs; if none are open, returns the most recent (closed/merged).
+//   - 404/422 (commit not yet pushed to GitHub) return (nil, nil), not an error.
+func (c *Client) GetPRBySHA(ctx context.Context, owner, repo, sha string) (*PRState, error) {
+	if sha == "" {
+		return nil, nil
+	}
+	var prs []*gh.PullRequest
+	var finalResp *gh.Response
+	err := c.doWithRetry(ctx, func() (*gh.Response, error) {
+		var resp *gh.Response
+		var err error
+		prs, resp, err = c.gh.PullRequests.ListPullRequestsWithCommit(ctx, owner, repo, sha, &gh.ListOptions{
+			PerPage: 10,
+		})
+		finalResp = resp
+		return resp, err
+	})
+	if err != nil {
+		if isNotFoundOrUnprocessable(finalResp) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("listing PRs for commit: %w", err)
+	}
+
+	headRepo := owner + "/" + repo
+	var openPR *gh.PullRequest
+	var mostRecent *gh.PullRequest
+	for _, pr := range prs {
+		// Drop PRs whose head is in a fork repo sharing the SHA.
+		if pr.GetHead().GetRepo().GetFullName() != headRepo {
+			continue
+		}
+		if openPR == nil && pr.GetState() == "open" {
+			openPR = pr
+		}
+		if mostRecent == nil ||
+			pr.GetUpdatedAt().After(mostRecent.GetUpdatedAt().Time) {
+			mostRecent = pr
+		}
+	}
+	if openPR != nil {
+		return prToState(openPR), nil
+	}
+	if mostRecent != nil {
+		return prToState(mostRecent), nil
+	}
+	return nil, nil
+}
+
 // ListPRs returns open pull requests for the given repository (up to 100).
 func (c *Client) ListPRs(ctx context.Context, owner, repo string) ([]*PRState, error) {
-	prs, _, err := c.gh.PullRequests.List(ctx, owner, repo, &gh.PullRequestListOptions{
-		State: "open",
-		ListOptions: gh.ListOptions{
-			PerPage: 100,
-		},
+	var prs []*gh.PullRequest
+	err := c.doWithRetry(ctx, func() (*gh.Response, error) {
+		var resp *gh.Response
+		var err error
+		prs, resp, err = c.gh.PullRequests.List(ctx, owner, repo, &gh.PullRequestListOptions{
+			State: "open",
+			ListOptions: gh.ListOptions{
+				PerPage: 100,
+			},
+		})
+		return resp, err
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing PRs: %w", err)
@@ -66,10 +250,16 @@ func (c *Client) ListPRs(ctx context.Context, owner, repo string) ([]*PRState, e
 
 // GetChecks returns the combined check status for the given git ref (SHA or branch).
 func (c *Client) GetChecks(ctx context.Context, owner, repo, ref string) (*CheckStatus, error) {
-	result, _, err := c.gh.Checks.ListCheckRunsForRef(ctx, owner, repo, ref, &gh.ListCheckRunsOptions{
-		ListOptions: gh.ListOptions{
-			PerPage: 100,
-		},
+	var result *gh.ListCheckRunsResults
+	err := c.doWithRetry(ctx, func() (*gh.Response, error) {
+		var resp *gh.Response
+		var err error
+		result, resp, err = c.gh.Checks.ListCheckRunsForRef(ctx, owner, repo, ref, &gh.ListCheckRunsOptions{
+			ListOptions: gh.ListOptions{
+				PerPage: 100,
+			},
+		})
+		return resp, err
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing check runs: %w", err)
@@ -124,7 +314,13 @@ func (c *Client) GetReviews(ctx context.Context, owner, repo string, number int)
 	var allReviews []*gh.PullRequestReview
 	opts := &gh.ListOptions{PerPage: 100}
 	for {
-		reviews, resp, err := c.gh.PullRequests.ListReviews(ctx, owner, repo, number, opts)
+		var reviews []*gh.PullRequestReview
+		var resp *gh.Response
+		err := c.doWithRetry(ctx, func() (*gh.Response, error) {
+			var err error
+			reviews, resp, err = c.gh.PullRequests.ListReviews(ctx, owner, repo, number, opts)
+			return resp, err
+		})
 		if err != nil {
 			return nil, fmt.Errorf("listing reviews: %w", err)
 		}
