@@ -11,6 +11,7 @@ import (
 
 func boolPtr(v bool) *bool    { return &v }
 func strPtr(v string) *string { return &v }
+func intPtr(v int) *int       { return &v }
 
 // ---- Resolve ----
 
@@ -428,5 +429,51 @@ func TestLoad_MigratesFromLegacyXDGPath(t *testing.T) {
 	oldPath := filepath.Join(oldDir, "repos.json")
 	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
 		t.Errorf("old path %s should be removed after migration", oldPath)
+	}
+}
+
+// ---- SidebarWidth ----
+
+func TestResolve_SidebarWidth_Default(t *testing.T) {
+	r := config.Resolve(nil, nil)
+	if r.SidebarWidth != config.DefaultSidebarWidth {
+		t.Errorf("SidebarWidth = %d, want %d", r.SidebarWidth, config.DefaultSidebarWidth)
+	}
+}
+
+func TestResolve_SidebarWidth_GlobalOverride(t *testing.T) {
+	r := config.Resolve(&config.GlobalSettings{SidebarWidth: intPtr(42)}, nil)
+	if r.SidebarWidth != 42 {
+		t.Errorf("SidebarWidth = %d, want 42", r.SidebarWidth)
+	}
+}
+
+func TestResolve_SidebarWidth_ClampedOnLoad(t *testing.T) {
+	cases := []struct {
+		in, want int
+	}{
+		{0, config.MinSidebarWidth},
+		{5, config.MinSidebarWidth},
+		{config.MinSidebarWidth, config.MinSidebarWidth},
+		{config.MaxSidebarWidth, config.MaxSidebarWidth},
+		{999, config.MaxSidebarWidth},
+	}
+	for _, c := range cases {
+		r := config.Resolve(&config.GlobalSettings{SidebarWidth: intPtr(c.in)}, nil)
+		if r.SidebarWidth != c.want {
+			t.Errorf("Resolve(SidebarWidth=%d).SidebarWidth = %d, want %d", c.in, r.SidebarWidth, c.want)
+		}
+	}
+}
+
+func TestClampSidebarWidth(t *testing.T) {
+	if got := config.ClampSidebarWidth(10); got != config.MinSidebarWidth {
+		t.Errorf("ClampSidebarWidth(10) = %d, want %d", got, config.MinSidebarWidth)
+	}
+	if got := config.ClampSidebarWidth(100); got != config.MaxSidebarWidth {
+		t.Errorf("ClampSidebarWidth(100) = %d, want %d", got, config.MaxSidebarWidth)
+	}
+	if got := config.ClampSidebarWidth(35); got != 35 {
+		t.Errorf("ClampSidebarWidth(35) = %d, want 35", got)
 	}
 }

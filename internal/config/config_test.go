@@ -313,3 +313,74 @@ func TestGetBypassPermissions_NilPointer_ReturnsTrue(t *testing.T) {
 		t.Error("GetBypassPermissions() should return true when BypassPermissions is nil")
 	}
 }
+
+// ---- Repo.DisplayName ----
+
+func TestRepo_DisplayName_NoAlias(t *testing.T) {
+	r := config.Repo{Name: "my-company-super-long-repo-name", Path: "/x"}
+	if got := r.DisplayName(); got != r.Name {
+		t.Errorf("DisplayName() = %q, want %q", got, r.Name)
+	}
+}
+
+func TestRepo_DisplayName_AliasWins(t *testing.T) {
+	r := config.Repo{Name: "my-company-super-long-repo-name", Alias: "svc", Path: "/x"}
+	if got := r.DisplayName(); got != "svc" {
+		t.Errorf("DisplayName() = %q, want %q", got, "svc")
+	}
+}
+
+// ---- SetRepoAlias ----
+
+func TestSetRepoAlias_PersistsAndRoundTrips(t *testing.T) {
+	configDirInTmp(t)
+	repoPath := initTestRepo(t)
+
+	cfg := &config.Config{}
+	if err := config.AddRepo(cfg, repoPath); err != nil {
+		t.Fatalf("AddRepo() error = %v", err)
+	}
+	if err := config.Save(cfg); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	if err := config.SetRepoAlias(repoPath, "svc"); err != nil {
+		t.Fatalf("SetRepoAlias() error = %v", err)
+	}
+
+	loaded, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(loaded.Repos) != 1 {
+		t.Fatalf("got %d repos, want 1", len(loaded.Repos))
+	}
+	if loaded.Repos[0].Alias != "svc" {
+		t.Errorf("Alias = %q, want %q", loaded.Repos[0].Alias, "svc")
+	}
+	if got := loaded.Repos[0].DisplayName(); got != "svc" {
+		t.Errorf("DisplayName() after reload = %q, want %q", got, "svc")
+	}
+
+	// Clearing should revert DisplayName to Name.
+	if err := config.SetRepoAlias(repoPath, ""); err != nil {
+		t.Fatalf("SetRepoAlias(\"\") error = %v", err)
+	}
+	loaded, err = config.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if loaded.Repos[0].Alias != "" {
+		t.Errorf("Alias = %q, want empty after clear", loaded.Repos[0].Alias)
+	}
+	if got := loaded.Repos[0].DisplayName(); got != loaded.Repos[0].Name {
+		t.Errorf("DisplayName() after clear = %q, want %q", got, loaded.Repos[0].Name)
+	}
+}
+
+func TestSetRepoAlias_UnregisteredReturnsError(t *testing.T) {
+	configDirInTmp(t)
+	if err := config.SetRepoAlias(t.TempDir(), "x"); err == nil {
+		t.Error("SetRepoAlias() expected error for unregistered repo, got nil")
+	}
+}

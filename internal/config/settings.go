@@ -16,7 +16,21 @@ const (
 	DefaultBranchPrefix      = "baton/"
 	DefaultAgentProgram      = "claude"
 	DefaultWorktreeDir       = ".baton/worktrees"
+	DefaultSidebarWidth      = 30
+	MinSidebarWidth          = 20
+	MaxSidebarWidth          = 60
 )
+
+// ClampSidebarWidth returns w constrained to [MinSidebarWidth, MaxSidebarWidth].
+func ClampSidebarWidth(w int) int {
+	if w < MinSidebarWidth {
+		return MinSidebarWidth
+	}
+	if w > MaxSidebarWidth {
+		return MaxSidebarWidth
+	}
+	return w
+}
 
 // GlobalSettings holds user-wide settings stored at ~/.baton/config.json.
 // All fields are pointers so nil means "not set, use default."
@@ -28,6 +42,7 @@ type GlobalSettings struct {
 	BranchPrefix      *string `json:"branch_prefix,omitempty"`
 	AgentProgram      *string `json:"agent_program,omitempty"`
 	IDECommand        *string `json:"ide_command,omitempty"`
+	SidebarWidth      *int    `json:"sidebar_width,omitempty"`
 }
 
 // RepoSettings holds per-repo overrides stored at <repo>/.baton/config.json.
@@ -53,6 +68,7 @@ type ResolvedSettings struct {
 	AgentProgram      string
 	IDECommand        string
 	WorktreeDir       string
+	SidebarWidth      int
 }
 
 // Resolve merges global and repo settings over built-in defaults.
@@ -65,6 +81,7 @@ func Resolve(global *GlobalSettings, repo *RepoSettings) ResolvedSettings {
 		BranchPrefix:      DefaultBranchPrefix,
 		AgentProgram:      DefaultAgentProgram,
 		WorktreeDir:       DefaultWorktreeDir,
+		SidebarWidth:      DefaultSidebarWidth,
 	}
 
 	if global != nil {
@@ -88,6 +105,9 @@ func Resolve(global *GlobalSettings, repo *RepoSettings) ResolvedSettings {
 		}
 		if global.IDECommand != nil {
 			r.IDECommand = *global.IDECommand
+		}
+		if global.SidebarWidth != nil {
+			r.SidebarWidth = ClampSidebarWidth(*global.SidebarWidth)
 		}
 	}
 

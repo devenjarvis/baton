@@ -20,7 +20,17 @@ import (
 type Repo struct {
 	Path    string    `json:"path"`
 	Name    string    `json:"name"`
+	Alias   string    `json:"alias,omitempty"`
 	AddedAt time.Time `json:"added_at"`
+}
+
+// DisplayName returns Alias when set, otherwise Name. Callers that render
+// repos in the UI should prefer this over Name directly.
+func (r Repo) DisplayName() string {
+	if r.Alias != "" {
+		return r.Alias
+	}
+	return r.Name
 }
 
 // Config is the top-level config structure persisted to disk.
@@ -186,6 +196,27 @@ func AddRepo(cfg *Config, path string) error {
 		AddedAt: time.Now(),
 	})
 	return nil
+}
+
+// SetRepoAlias updates the Alias on the registered repo matching path and
+// persists the registry. An empty alias clears the override. Returns an error
+// if the repo is not registered.
+func SetRepoAlias(path, alias string) error {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("config: resolving path %q: %w", path, err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		return err
+	}
+	for i, r := range cfg.Repos {
+		if r.Path == absPath {
+			cfg.Repos[i].Alias = alias
+			return Save(cfg)
+		}
+	}
+	return fmt.Errorf("config: repo %q is not registered", absPath)
 }
 
 // RemoveRepo removes the repo with the given path (resolved to absolute) from

@@ -10,10 +10,25 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	xvt "github.com/charmbracelet/x/vt"
 	"github.com/devenjarvis/baton/internal/agent"
+	"github.com/devenjarvis/baton/internal/config"
 	"github.com/devenjarvis/baton/internal/github"
 )
+
+// truncateVisible returns s truncated to n display cells with an ellipsis.
+// ANSI-aware; avoids the naive byte-slice truncation that can cut multi-byte
+// runes in half or miscount ANSI escape sequences.
+func truncateVisible(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	if ansi.StringWidth(s) <= n {
+		return s
+	}
+	return ansi.Truncate(s, n, "…")
+}
 
 // ColorWaiting is the accent used for agents in StatusWaiting (permission
 // prompts, input blocks). Scoped to the dashboard because no other view
@@ -63,6 +78,7 @@ type dashboardModel struct {
 	selected        int
 	width           int
 	height          int
+	sidebarWidth    int // resolved global SidebarWidth; 0 means use DefaultSidebarWidth
 	panelFocus      panelFocus
 	scrollOffset    int
 	diffStats       *diffSummaryData           // nil when no session selected or no data
@@ -183,12 +199,23 @@ func (d dashboardModel) Update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 	return d, nil
 }
 
+// listWidth returns the configured sidebar width, falling back to the default
+// when sidebarWidth has not yet been plumbed in. Both View() and
+// fixedTermWidth() must return the same value on any given frame, otherwise
+// the sidebar and the agent VT will disagree about column counts.
+func (d dashboardModel) listWidth() int {
+	if d.sidebarWidth > 0 {
+		return d.sidebarWidth
+	}
+	return config.DefaultSidebarWidth
+}
+
 func (d dashboardModel) View() string {
 	if len(d.items) == 0 {
 		return d.emptyView()
 	}
 
-	listWidth := 30
+	listWidth := d.listWidth()
 	previewWidth := d.previewTermWidth()
 
 	list := d.renderList(listWidth)
@@ -235,8 +262,7 @@ func (d dashboardModel) contentHeight() int {
 // This is always the focusTerminal width (deducting the border) regardless of
 // the current panelFocus, so that focus switches never trigger a resize.
 func (d dashboardModel) fixedTermWidth() int {
-	listWidth := 30
-	return d.width - listWidth - 1 - 2 // list border + focusTerminal border
+	return d.width - d.listWidth() - 1 - 2 // list border + focusTerminal border
 }
 
 // fixedTermHeight returns the terminal row count that all agents should use.
@@ -304,11 +330,7 @@ func (d dashboardModel) renderList(width int) string {
 		switch item.kind {
 		case listItemRepo:
 			// Repo header row.
-			name := item.repoName
-			maxLen := width - 4
-			if len(name) > maxLen {
-				name = name[:maxLen-1] + "…"
-			}
+			name := truncateVisible(item.repoName, width-4)
 			var repoStyle lipgloss.Style
 			if isSelected {
 				repoStyle = lipgloss.NewStyle().Foreground(ColorText).Bold(true)
@@ -377,9 +399,7 @@ func (d dashboardModel) renderList(width int) string {
 			if maxNameLen < 5 {
 				maxNameLen = 5
 			}
-			if len(displayName) > maxNameLen {
-				displayName = displayName[:maxNameLen-1] + "…"
-			}
+			displayName = truncateVisible(displayName, maxNameLen)
 
 			nameStyle := lipgloss.NewStyle()
 			if closing {
@@ -390,7 +410,7 @@ func (d dashboardModel) renderList(width int) string {
 				label += StyleSubtle.Render(closingTag)
 			}
 			label += " "
-			labelLen := len(symbol) + 1 + len(displayName) + 2 + prSuffixLen + closingTagLen
+			labelLen := ansi.StringWidth(symbol) + 1 + ansi.StringWidth(displayName) + 2 + prSuffixLen + closingTagLen
 			padLen := width - 4 - labelLen
 			if padLen < 0 {
 				padLen = 0
@@ -460,10 +480,7 @@ func (d dashboardModel) renderList(width int) string {
 			if nameWidth < 1 {
 				nameWidth = 1
 			}
-			name := ag.GetDisplayName()
-			if len(name) > nameWidth {
-				name = name[:nameWidth-1] + "…"
-			}
+			name := truncateVisible(ag.GetDisplayName(), nameWidth)
 
 			agentPrefix := "      "
 			if isSelected {
@@ -478,7 +495,7 @@ func (d dashboardModel) renderList(width int) string {
 			if closing {
 				nameRendered = StyleSubtle.Render(name)
 			}
-			padName := nameWidth - len(name)
+			padName := nameWidth - ansi.StringWidth(name)
 			if padName < 0 {
 				padName = 0
 			}

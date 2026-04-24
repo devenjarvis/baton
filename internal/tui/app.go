@@ -216,6 +216,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.globalSettings = globalSettings
 			_ = config.MigrateBypassPermissions(a.cfg)
 		}
+		a.dashboard.sidebarWidth = config.Resolve(a.globalSettings, nil).SidebarWidth
 
 		// Load per-repo settings and build resolved cache.
 		for _, repo := range msg.cfg.Repos {
@@ -580,6 +581,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Repo config form saved.
 		if a.dashboard.repoConfigForm != nil && a.dashboard.configRepoPath != "" {
 			repoPath := a.dashboard.configRepoPath
+			alias := strings.TrimSpace(a.dashboard.repoConfigForm.textValue("Alias"))
 			settings := a.extractRepoSettings()
 			if err := config.SaveRepoSettings(repoPath, settings); err != nil {
 				a.setError(err.Error())
@@ -588,6 +590,16 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.resolvedCache[repoPath] = config.Resolve(a.globalSettings, settings)
 				if mgr := a.managers[repoPath]; mgr != nil {
 					mgr.UpdateSettings(a.resolvedCache[repoPath])
+				}
+			}
+			for i, r := range a.cfg.Repos {
+				if r.Path == repoPath && r.Alias != alias {
+					a.cfg.Repos[i].Alias = alias
+					if err := config.Save(a.cfg); err != nil {
+						a.setError(err.Error())
+					}
+					a.refreshAgentList()
+					break
 				}
 			}
 		}
@@ -1141,9 +1153,17 @@ func (a *App) initRepoConfigForm(repoPath string) {
 	if rs.WorktreeDir != nil {
 		worktreeDir = *rs.WorktreeDir
 	}
+	alias := ""
+	for _, r := range a.cfg.Repos {
+		if r.Path == repoPath {
+			alias = r.Alias
+			break
+		}
+	}
 
 	inputWidth := 30
 	var fields []formField
+	fields = addTextInput(fields, "Alias", alias, "short nickname", inputWidth)
 	fields = addToggle(fields, "Bypass Permissions", bypassPerms)
 	fields = addTextInput(fields, "Default Branch", defaultBranch, "auto-detect", inputWidth)
 	fields = addTextInput(fields, "Branch Prefix", branchPrefix, config.DefaultBranchPrefix, inputWidth)
@@ -1202,6 +1222,11 @@ func (a App) updateGlobalConfig(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if mgr := a.managers[repoPath]; mgr != nil {
 				mgr.UpdateSettings(a.resolvedCache[repoPath])
 			}
+		}
+		newSidebarWidth := config.Resolve(a.globalSettings, nil).SidebarWidth
+		if newSidebarWidth != a.dashboard.sidebarWidth {
+			a.dashboard.sidebarWidth = newSidebarWidth
+			a.resizeAllForDashboard()
 		}
 		a.view = ViewDashboard
 		return a, nil
@@ -1339,7 +1364,7 @@ func (a *App) refreshAgentList() {
 		items = append(items, listItem{
 			kind:     listItemRepo,
 			repoPath: repo.Path,
-			repoName: repo.Name,
+			repoName: repo.DisplayName(),
 		})
 		mgr := a.managers[repo.Path]
 		if mgr != nil {

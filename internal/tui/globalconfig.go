@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"strconv"
+
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/devenjarvis/baton/internal/config"
@@ -55,6 +57,10 @@ func newGlobalConfigModel(gs *config.GlobalSettings, width, height int) globalCo
 	if gs.IDECommand != nil {
 		ideCommand = *gs.IDECommand
 	}
+	sidebarWidth := ""
+	if gs.SidebarWidth != nil {
+		sidebarWidth = strconv.Itoa(*gs.SidebarWidth)
+	}
 
 	inputWidth := 30
 
@@ -66,6 +72,7 @@ func newGlobalConfigModel(gs *config.GlobalSettings, width, height int) globalCo
 	fields = addTextInput(fields, "Branch Prefix", branchPrefix, config.DefaultBranchPrefix, inputWidth)
 	fields = addTextInput(fields, "Agent Program", agentProgram, config.DefaultAgentProgram, inputWidth)
 	fields = addEditorFields(fields, ideCommand, inputWidth)
+	fields = addTextInput(fields, "Sidebar Width", sidebarWidth, strconv.Itoa(config.DefaultSidebarWidth), inputWidth)
 
 	return globalConfigModel{
 		form:   newConfigForm(fields, width),
@@ -134,6 +141,12 @@ func (m globalConfigModel) extractSettings() *config.GlobalSettings {
 	}
 	if v := extractIDECommand(m.form); v != "" {
 		s.IDECommand = &v
+	}
+	if v := m.form.textValue("Sidebar Width"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			clamped := config.ClampSidebarWidth(n)
+			s.SidebarWidth = &clamped
+		}
 	}
 
 	return s
