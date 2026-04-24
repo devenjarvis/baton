@@ -329,3 +329,58 @@ func isBranchCollisionErr(err error) bool {
 	msg := err.Error()
 	return strings.Contains(msg, "already exists") || strings.Contains(msg, "already used")
 }
+
+// MoveWorktree renames wt's on-disk directory to <worktreeDir>/<newName> under
+// repoPath via `git worktree move`. Git updates the admin `gitdir` file so the
+// worktree remains valid, and processes cwd'd inside keep working via inode
+// (their PWD env may go stale — cosmetic only; getcwd() resolves to the new
+// path). On success, wt.Path and wt.Name are updated in place.
+//
+// If the destination directory already exists (orphaned worktree, unrelated
+// dir), the function retries with "-2", "-3", ... suffixes up to "-9" before
+// giving up. Non-collision errors (source missing, locked worktree, git
+// refuses) are returned immediately without retrying.
+//
+// No-op when the current basename already equals newName.
+func MoveWorktree(repoPath string, wt *WorktreeInfo, newName, worktreeDir string) error {
+	if wt == nil {
+		return fmt.Errorf("worktree is nil")
+	}
+	if newName == "" {
+		return fmt.Errorf("new worktree name is empty")
+	}
+	if worktreeDir == "" {
+		worktreeDir = ".baton/worktrees"
+	}
+	if filepath.Base(wt.Path) == newName {
+		return nil
+	}
+
+	// Pre-check the destination filesystem slot. Some versions of
+	// `git worktree move` silently nest the source into a pre-existing
+	// directory rather than erroring, so we can't rely on git's exit status
+	// to detect collisions. Stepping through candidates until we find an
+	// empty slot gives uniform behavior across git versions.
+	candidate := newName
+	absNewPath := ""
+	for i := 1; i <= 9; i++ {
+		absNewPath = filepath.Join(repoPath, worktreeDir, candidate)
+		if abs, err := filepath.Abs(absNewPath); err == nil {
+			absNewPath = abs
+		}
+		if _, err := os.Stat(absNewPath); os.IsNotExist(err) {
+			break
+		}
+		if i == 9 {
+			return fmt.Errorf("move worktree %q: all destinations up to %q are taken", wt.Path, absNewPath)
+		}
+		candidate = fmt.Sprintf("%s-%d", newName, i+1)
+	}
+
+	if _, err := runGit(repoPath, "worktree", "move", wt.Path, absNewPath); err != nil {
+		return fmt.Errorf("move worktree %q -> %q: %w", wt.Path, absNewPath, err)
+	}
+	wt.Path = absNewPath
+	wt.Name = candidate
+	return nil
+}
