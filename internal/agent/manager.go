@@ -256,6 +256,7 @@ func (m *Manager) applyRename(sess *Session, newBranch string) bool {
 	// EventStatusChanged would reference a session no longer in m.sessions.
 	m.mu.RLock()
 	_, stillOpen := m.sessions[sess.ID]
+	worktreeDir := m.settings.WorktreeDir
 	m.mu.RUnlock()
 	if !stillOpen {
 		return false
@@ -265,7 +266,7 @@ func (m *Manager) applyRename(sess *Session, newBranch string) bool {
 	// will retry. Writing to stderr during an active TUI alt-screen scrambles
 	// the rendered UI, so the error is swallowed here — users see the
 	// unchanged branch label in the preview as the implicit signal.
-	if _, err := sess.RenameBranch(m.repoPath, newBranch); err != nil {
+	if _, err := sess.RenameBranch(m.repoPath, newBranch, worktreeDir); err != nil {
 		return false
 	}
 

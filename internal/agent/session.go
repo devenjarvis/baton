@@ -359,17 +359,29 @@ func (s *Session) finishRename() {
 	s.renaming = false
 }
 
-// RenameBranch renames the session's git branch to newBranch. If the rename
-// succeeds, Session.Worktree.Branch, Session.Name, and hasClaudeName are
-// updated atomically under the session mutex. The actual new name (which may
-// include a collision suffix from git.RenameBranch) is returned.
+// RenameBranch renames the session's git branch to newBranch and moves the
+// worktree directory to match, so the session's display name, branch, and
+// on-disk worktree path all stay congruent. If the rename succeeds,
+// Session.Worktree.Branch, Session.Worktree.Path, Session.Worktree.Name,
+// Session.Name, each agent's WorktreePath reference, and hasClaudeName are
+// updated atomically under the session mutex. The actual new branch name
+// (which may include a collision suffix from git.RenameBranch) is returned.
+//
+// worktreeDir is the configured worktree directory (e.g. ".baton/worktrees");
+// pass empty string to use the default.
+//
+// The worktree move is best-effort: if `git worktree move` fails (destination
+// occupied by an unrelated dir, locked worktree, etc.) the branch rename is
+// kept and the worktree path is left pointing at the old location, matching
+// pre-change behavior. The caller's hasClaudeName flip still fires so the
+// rename won't be retried on the next prompt.
 //
 // If the session already has a Claude-derived name, this is a no-op and
 // returns the current branch.
 //
-// The session mutex is held across the git subprocess call so concurrent
+// The session mutex is held across the git subprocess calls so concurrent
 // callers observe a consistent view and cannot both attempt a rename.
-func (s *Session) RenameBranch(repoPath, newBranch string) (string, error) {
+func (s *Session) RenameBranch(repoPath, newBranch, worktreeDir string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -383,8 +395,17 @@ func (s *Session) RenameBranch(repoPath, newBranch string) (string, error) {
 	}
 
 	s.Worktree.Branch = actual
-	if last := lastBranchSegment(actual); last != "" {
-		s.Name = last
+	newName := lastBranchSegment(actual)
+	if newName != "" {
+		s.Name = newName
+		// Best-effort: align the on-disk worktree dir with the new branch.
+		// Swallow errors — the branch rename already succeeded, and a failed
+		// move is no worse than today's behavior.
+		if err := git.MoveWorktree(repoPath, s.Worktree, newName, worktreeDir); err == nil {
+			for _, a := range s.agents {
+				a.WorktreePath = s.Worktree.Path
+			}
+		}
 	}
 	s.hasClaudeName = true
 

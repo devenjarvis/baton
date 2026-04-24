@@ -1,0 +1,3 @@
+### Changed
+
+- Session name, git branch, and on-disk worktree directory now stay congruent after the first-prompt rename. Previously only the branch and the session's display name were updated to the Haiku-generated slug, while `.baton/worktrees/<random-name>` stayed frozen at the original adjective-noun. When the rename fires, `git worktree move` now relocates the directory to `.baton/worktrees/<slug>` so the dashboard's `Session / Branch / Worktree` line reads a single coherent identity. Best-effort: if the worktree move fails (destination occupied, worktree locked, etc.) the branch rename is kept and the path is left untouched, matching pre-change behavior. Existing sessions with already-divergent names are not migrated.
