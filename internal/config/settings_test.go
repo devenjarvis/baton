@@ -24,14 +24,14 @@ func TestResolve_AllDefaults(t *testing.T) {
 	if r.BypassPermissions != config.DefaultBypassPermissions {
 		t.Errorf("BypassPermissions = %v, want %v", r.BypassPermissions, config.DefaultBypassPermissions)
 	}
-	if r.SmartBranchNames != config.DefaultSmartBranchNames {
-		t.Errorf("SmartBranchNames = %v, want %v", r.SmartBranchNames, config.DefaultSmartBranchNames)
-	}
 	if r.DefaultBranch != "" {
 		t.Errorf("DefaultBranch = %q, want empty", r.DefaultBranch)
 	}
 	if r.BranchPrefix != config.DefaultBranchPrefix {
 		t.Errorf("BranchPrefix = %q, want %q", r.BranchPrefix, config.DefaultBranchPrefix)
+	}
+	if r.BranchNamePrompt != config.DefaultBranchNamePrompt {
+		t.Errorf("BranchNamePrompt = %q, want default", r.BranchNamePrompt)
 	}
 	if r.AgentProgram != config.DefaultAgentProgram {
 		t.Errorf("AgentProgram = %q, want %q", r.AgentProgram, config.DefaultAgentProgram)
@@ -125,19 +125,20 @@ func TestResolve_NilVsFalse(t *testing.T) {
 	}
 }
 
-func TestResolve_SmartBranchNames_GlobalFalse(t *testing.T) {
-	r := config.Resolve(&config.GlobalSettings{SmartBranchNames: boolPtr(false)}, nil)
-	if r.SmartBranchNames {
-		t.Error("global SmartBranchNames=false should disable smart branch names")
+func TestResolve_BranchNamePrompt_GlobalOverride(t *testing.T) {
+	custom := "my custom prompt {prompt}"
+	r := config.Resolve(&config.GlobalSettings{BranchNamePrompt: strPtr(custom)}, nil)
+	if r.BranchNamePrompt != custom {
+		t.Errorf("BranchNamePrompt = %q, want %q", r.BranchNamePrompt, custom)
 	}
 }
 
-func TestResolve_SmartBranchNames_RepoOverridesGlobal(t *testing.T) {
-	g := &config.GlobalSettings{SmartBranchNames: boolPtr(true)}
-	repo := &config.RepoSettings{SmartBranchNames: boolPtr(false)}
+func TestResolve_BranchNamePrompt_RepoOverridesGlobal(t *testing.T) {
+	g := &config.GlobalSettings{BranchNamePrompt: strPtr("from-global {prompt}")}
+	repo := &config.RepoSettings{BranchNamePrompt: strPtr("from-repo {prompt}")}
 	r := config.Resolve(g, repo)
-	if r.SmartBranchNames {
-		t.Error("repo SmartBranchNames=false should override global=true")
+	if r.BranchNamePrompt != "from-repo {prompt}" {
+		t.Errorf("BranchNamePrompt = %q, want repo override", r.BranchNamePrompt)
 	}
 }
 
@@ -165,8 +166,8 @@ func TestSaveLoadRoundTrip_Global(t *testing.T) {
 	original := &config.GlobalSettings{
 		AudioEnabled:      boolPtr(false),
 		BypassPermissions: boolPtr(true),
-		SmartBranchNames:  boolPtr(false),
 		BranchPrefix:      strPtr("test/"),
+		BranchNamePrompt:  strPtr("custom {prompt}"),
 		AgentProgram:      strPtr("test-claude"),
 		DefaultBranch:     strPtr("develop"),
 	}
@@ -186,11 +187,11 @@ func TestSaveLoadRoundTrip_Global(t *testing.T) {
 	if loaded.BypassPermissions == nil || *loaded.BypassPermissions != true {
 		t.Error("BypassPermissions should be true after round-trip")
 	}
-	if loaded.SmartBranchNames == nil || *loaded.SmartBranchNames != false {
-		t.Error("SmartBranchNames should be false after round-trip")
-	}
 	if loaded.BranchPrefix == nil || *loaded.BranchPrefix != "test/" {
 		t.Errorf("BranchPrefix = %v, want test/", loaded.BranchPrefix)
+	}
+	if loaded.BranchNamePrompt == nil || *loaded.BranchNamePrompt != "custom {prompt}" {
+		t.Errorf("BranchNamePrompt = %v, want custom {prompt}", loaded.BranchNamePrompt)
 	}
 	if loaded.AgentProgram == nil || *loaded.AgentProgram != "test-claude" {
 		t.Errorf("AgentProgram = %v, want test-claude", loaded.AgentProgram)

@@ -12,13 +12,18 @@ import (
 const (
 	DefaultAudioEnabled      = true
 	DefaultBypassPermissions = true
-	DefaultSmartBranchNames  = true
 	DefaultBranchPrefix      = "baton/"
 	DefaultAgentProgram      = "claude"
 	DefaultWorktreeDir       = ".baton/worktrees"
 	DefaultSidebarWidth      = 30
 	MinSidebarWidth          = 20
 	MaxSidebarWidth          = 60
+
+	// DefaultBranchNamePrompt is the instruction sent to Haiku to summarize
+	// the user's first prompt into a branch slug. Users can override via the
+	// branch_name_prompt key in global or per-repo config; the {prompt} token
+	// is substituted with the user's prompt before the call.
+	DefaultBranchNamePrompt = "Summarize this task into a 3-5 word git branch slug (lowercase, kebab-case, no prefix). Respond with ONLY the slug.\n\n{prompt}"
 )
 
 // ClampSidebarWidth returns w constrained to [MinSidebarWidth, MaxSidebarWidth].
@@ -37,9 +42,9 @@ func ClampSidebarWidth(w int) int {
 type GlobalSettings struct {
 	AudioEnabled      *bool   `json:"audio_enabled,omitempty"`
 	BypassPermissions *bool   `json:"bypass_permissions,omitempty"`
-	SmartBranchNames  *bool   `json:"smart_branch_names,omitempty"`
 	DefaultBranch     *string `json:"default_branch,omitempty"`
 	BranchPrefix      *string `json:"branch_prefix,omitempty"`
+	BranchNamePrompt  *string `json:"branch_name_prompt,omitempty"`
 	AgentProgram      *string `json:"agent_program,omitempty"`
 	IDECommand        *string `json:"ide_command,omitempty"`
 	SidebarWidth      *int    `json:"sidebar_width,omitempty"`
@@ -49,9 +54,9 @@ type GlobalSettings struct {
 // Fields here override the corresponding GlobalSettings value.
 type RepoSettings struct {
 	BypassPermissions *bool   `json:"bypass_permissions,omitempty"`
-	SmartBranchNames  *bool   `json:"smart_branch_names,omitempty"`
 	DefaultBranch     *string `json:"default_branch,omitempty"`
 	BranchPrefix      *string `json:"branch_prefix,omitempty"`
+	BranchNamePrompt  *string `json:"branch_name_prompt,omitempty"`
 	AgentProgram      *string `json:"agent_program,omitempty"`
 	IDECommand        *string `json:"ide_command,omitempty"`
 	WorktreeDir       *string `json:"worktree_dir,omitempty"`
@@ -62,9 +67,9 @@ type RepoSettings struct {
 type ResolvedSettings struct {
 	AudioEnabled      bool
 	BypassPermissions bool
-	SmartBranchNames  bool
 	DefaultBranch     string // "" means auto-detect
 	BranchPrefix      string
+	BranchNamePrompt  string
 	AgentProgram      string
 	IDECommand        string
 	WorktreeDir       string
@@ -77,8 +82,8 @@ func Resolve(global *GlobalSettings, repo *RepoSettings) ResolvedSettings {
 	r := ResolvedSettings{
 		AudioEnabled:      DefaultAudioEnabled,
 		BypassPermissions: DefaultBypassPermissions,
-		SmartBranchNames:  DefaultSmartBranchNames,
 		BranchPrefix:      DefaultBranchPrefix,
+		BranchNamePrompt:  DefaultBranchNamePrompt,
 		AgentProgram:      DefaultAgentProgram,
 		WorktreeDir:       DefaultWorktreeDir,
 		SidebarWidth:      DefaultSidebarWidth,
@@ -91,14 +96,14 @@ func Resolve(global *GlobalSettings, repo *RepoSettings) ResolvedSettings {
 		if global.BypassPermissions != nil {
 			r.BypassPermissions = *global.BypassPermissions
 		}
-		if global.SmartBranchNames != nil {
-			r.SmartBranchNames = *global.SmartBranchNames
-		}
 		if global.DefaultBranch != nil {
 			r.DefaultBranch = *global.DefaultBranch
 		}
 		if global.BranchPrefix != nil {
 			r.BranchPrefix = *global.BranchPrefix
+		}
+		if global.BranchNamePrompt != nil {
+			r.BranchNamePrompt = *global.BranchNamePrompt
 		}
 		if global.AgentProgram != nil {
 			r.AgentProgram = *global.AgentProgram
@@ -115,14 +120,14 @@ func Resolve(global *GlobalSettings, repo *RepoSettings) ResolvedSettings {
 		if repo.BypassPermissions != nil {
 			r.BypassPermissions = *repo.BypassPermissions
 		}
-		if repo.SmartBranchNames != nil {
-			r.SmartBranchNames = *repo.SmartBranchNames
-		}
 		if repo.DefaultBranch != nil {
 			r.DefaultBranch = *repo.DefaultBranch
 		}
 		if repo.BranchPrefix != nil {
 			r.BranchPrefix = *repo.BranchPrefix
+		}
+		if repo.BranchNamePrompt != nil {
+			r.BranchNamePrompt = *repo.BranchNamePrompt
 		}
 		if repo.AgentProgram != nil {
 			r.AgentProgram = *repo.AgentProgram

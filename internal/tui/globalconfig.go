@@ -33,10 +33,6 @@ func newGlobalConfigModel(gs *config.GlobalSettings, width, height int) globalCo
 	if gs.AudioEnabled != nil {
 		audioEnabled = *gs.AudioEnabled
 	}
-	smartBranchNames := config.DefaultSmartBranchNames
-	if gs.SmartBranchNames != nil {
-		smartBranchNames = *gs.SmartBranchNames
-	}
 	bypassPerms := config.DefaultBypassPermissions
 	if gs.BypassPermissions != nil {
 		bypassPerms = *gs.BypassPermissions
@@ -66,7 +62,6 @@ func newGlobalConfigModel(gs *config.GlobalSettings, width, height int) globalCo
 
 	var fields []formField
 	fields = addToggle(fields, "Audio Enabled", audioEnabled)
-	fields = addToggle(fields, "Smart Branch Names", smartBranchNames)
 	fields = addToggle(fields, "Bypass Permissions", bypassPerms)
 	fields = addTextInput(fields, "Default Branch", defaultBranch, "auto-detect", inputWidth)
 	fields = addTextInput(fields, "Branch Prefix", branchPrefix, config.DefaultBranchPrefix, inputWidth)
@@ -123,9 +118,6 @@ func (m globalConfigModel) extractSettings() *config.GlobalSettings {
 
 	audioEnabled := m.form.toggleValue("Audio Enabled")
 	s.AudioEnabled = &audioEnabled
-
-	smartBranchNames := m.form.toggleValue("Smart Branch Names")
-	s.SmartBranchNames = &smartBranchNames
 
 	bypassPerms := m.form.toggleValue("Bypass Permissions")
 	s.BypassPermissions = &bypassPerms
