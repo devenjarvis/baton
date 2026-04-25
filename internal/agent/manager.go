@@ -15,6 +15,8 @@ import (
 	"github.com/devenjarvis/baton/internal/config"
 	"github.com/devenjarvis/baton/internal/git"
 	"github.com/devenjarvis/baton/internal/hook"
+	"github.com/devenjarvis/baton/internal/setlist"
+	"github.com/devenjarvis/baton/internal/songs"
 	"github.com/devenjarvis/baton/internal/state"
 )
 
@@ -540,7 +542,8 @@ func (m *Manager) createSessionWorktree(cfg Config) (*Session, error) {
 	for _, s := range m.sessions {
 		existing = append(existing, s.CurrentName())
 	}
-	name := RandomName(existing)
+	track := songs.Pick(existing)
+	name := track.Slug()
 	m.nextID++
 	id := fmt.Sprintf("session-%d", m.nextID)
 	settings := m.settings
@@ -580,6 +583,19 @@ func (m *Manager) createSessionWorktree(cfg Config) (*Session, error) {
 	m.mu.Lock()
 	m.sessions[id] = sess
 	m.mu.Unlock()
+
+	// Best-effort: record the song that "played" for this session. Failure
+	// must not block session creation, and we don't surface the error since
+	// stderr writes would corrupt the TUI.
+	_ = setlist.Append(setlist.Entry{
+		PlayedAt:  time.Now(),
+		Name:      track.Name,
+		Artist:    track.Artist,
+		ISRC:      track.ISRC,
+		Slug:      name,
+		Repo:      m.repoPath,
+		SessionID: id,
+	})
 
 	return sess, nil
 }

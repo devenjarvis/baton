@@ -1,0 +1,22 @@
+[
+  {"name": "Bohemian Rhapsody", "artist": "Queen", "isrc": "GBUM71029604"},
+  {"name": "Smells Like Teen Spirit", "artist": "Nirvana", "isrc": "USGF19920005"},
+  {"name": "Wonderwall", "artist": "Oasis", "isrc": "GBARL9500504"},
+  {"name": "1979", "artist": "The Smashing Pumpkins", "isrc": "XXXXX0000001"},
+  {"name": "Take On Me", "artist": "a-ha", "isrc": "XXXXX0000002"},
+  {"name": "Hey Ya!", "artist": "OutKast", "isrc": "USAR10300012"},
+  {"name": "Mr. Brightside", "artist": "The Killers", "isrc": "USIR20301070"},
+  {"name": "Karma Police", "artist": "Radiohead", "isrc": "GBAYE9700216"},
+  {"name": "Lose Yourself", "artist": "Eminem", "isrc": "USIR10211570"},
+  {"name": "Crazy In Love", "artist": "Beyonce", "isrc": "USSM10307164"},
+  {"name": "Hotel California", "artist": "Eagles", "isrc": "USEE10076201"},
+  {"name": "Billie Jean", "artist": "Michael Jackson", "isrc": "USSM18300407"},
+  {"name": "Sweet Child O Mine", "artist": "Guns N Roses", "isrc": "USGF18750007"},
+  {"name": "Imagine", "artist": "John Lennon", "isrc": "USCA29500016"},
+  {"name": "Seven Nation Army", "artist": "The White Stripes", "isrc": "USXTH0301201"},
+  {"name": "Rolling In The Deep", "artist": "Adele", "isrc": "GBBKS1000349"},
+  {"name": "Uptown Funk", "artist": "Mark Ronson", "isrc": "GBARL1401524"},
+  {"name": "Skinny Love", "artist": "Bon Iver", "isrc": "XXXXX0000003"},
+  {"name": "Float On", "artist": "Modest Mouse", "isrc": "USEP40400142"},
+  {"name": "Juicy", "artist": "The Notorious B.I.G.", "isrc": "XXXXX0000004"}
+]
