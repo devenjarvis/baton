@@ -67,7 +67,8 @@ type Manager struct {
 }
 
 // haikuNameTimeout bounds how long the Haiku summarization subprocess may run
-// before it's cancelled and the fallback slugify path takes over.
+// before it's cancelled. On timeout the random branch persists and the next
+// actionable prompt retries.
 const haikuNameTimeout = 15 * time.Second
 
 // NewManager creates a new agent manager for the given repo.
@@ -142,8 +143,9 @@ func hookSocketPath(repoPath string) string {
 
 // dispatchHookEvents reads hook events from the server and routes each to the
 // agent named by AgentID. Unknown agent IDs are dropped silently. On the
-// first UserPromptSubmit for an agent, the prompt is slugified and applied
-// as the auto-generated display name on both the agent and its session.
+// first UserPromptSubmit for an agent, the prompt is forwarded to the
+// configured branch namer (Haiku by default) so the session's branch and
+// display name update once a meaningful name can be derived.
 func (m *Manager) dispatchHookEvents() {
 	defer m.hookDispatcher.Done()
 	for e := range m.hookServer.Events() {
@@ -163,55 +165,67 @@ func (m *Manager) dispatchHookEvents() {
 			})
 		}
 
-		// First meaningful user prompt drives two one-shot renames:
-		//   - applyAutoName sets human-readable display names on the agent
-		//     and (if unset) session, gated by Agent.HasClaudeName.
-		//   - maybeRenameFromPrompt renames the session's git branch in
-		//     place, gated by Session.HasClaudeName.
-		// Failures are dropped so the user's turn is never blocked.
 		if e.Kind == hook.KindUserPromptSubmit {
-			m.applyAutoName(a, sessID, e.Prompt)
 			m.maybeRenameFromPrompt(sess, a, e.Prompt)
 		}
 	}
 }
 
-// maybeRenameFromPrompt renames the session's branch based on the user's
-// first real prompt. Idempotent: sessions that already have a Claude-derived
-// name are skipped, and prompts that slugify to empty (e.g. "/clear") leave
-// the flag unset so the next prompt can try again.
+// maybeRenameFromPrompt renames the session's branch and updates the agent
+// and session display names based on the user's first real prompt by asking
+// the configured BranchNamer (Haiku by default) to summarize it. Idempotent:
+// sessions that already have a Claude-derived name are skipped, and noise
+// prompts (empty, whitespace, slash-only) are ignored so the next prompt
+// gets another chance.
 //
-// When smart branch names are enabled, the rename runs in a goroutine: Haiku
-// is asked to summarize the prompt into a 3-5 word slug, with a 15s timeout
-// and a fallback to suffixFromPrompt on error. The in-flight gate on Session
-// ensures a second UserPromptSubmit arriving mid-Haiku is a no-op, not a
-// double-dispatch.
+// On namer error or empty result, the session keeps its random branch and
+// hasClaudeName stays false — the next UserPromptSubmit will retry.
+// Session.TryStartRename gates double-dispatch, so a second prompt arriving
+// mid-Haiku is a no-op rather than a duplicate subprocess.
 func (m *Manager) maybeRenameFromPrompt(sess *Session, a *Agent, prompt string) {
 	if sess == nil || sess.HasClaudeName() {
 		return
 	}
-	// Mirror applyAutoName's terminal-state guard: a stray UserPromptSubmit
-	// for a Done/Error agent must not trigger a branch rename.
+	// A stray UserPromptSubmit for a Done/Error agent must not trigger
+	// a rename or auto-name update on a terminal row.
 	if st := a.Status(); st == StatusDone || st == StatusError {
+		return
+	}
+	// Empty / slash-only prompts carry no actionable text. Skip before
+	// touching TryStartRename so legitimate retries on the next prompt
+	// aren't blocked by an in-flight gate that will never be released.
+	if !isActionablePrompt(prompt) {
 		return
 	}
 
 	m.mu.RLock()
 	prefix := m.settings.BranchPrefix
-	smart := m.settings.SmartBranchNames
+	template := m.settings.BranchNamePrompt
 	namer := m.branchNamer
 	m.mu.RUnlock()
 
-	if !smart || namer == nil {
-		suffix := suffixFromPrompt(prompt)
-		if suffix == "" {
-			return
-		}
-		m.applyRename(sess, config.ExpandBranchPrefix(prefix)+suffix)
+	if namer == nil {
 		return
 	}
 
-	// Smart path: gate double-dispatch, then summarize asynchronously.
+	// Mark the agent as auto-named so its label is no longer treated as
+	// a placeholder. We do this even when Haiku ultimately fails — the
+	// session-level gate (sess.HasClaudeName) drives the rename retry,
+	// while this flag just tells the rest of the system "this agent had
+	// its naming chance" so we don't, e.g., resume-restore a placeholder
+	// over a user-set name later.
+	a.SetClaudeName(true)
+
+	// Render the user-configurable instruction template. Forgive a
+	// missing placeholder by appending the prompt — never silently drop
+	// the user's text.
+	var instruction string
+	if strings.Contains(template, "{prompt}") {
+		instruction = strings.ReplaceAll(template, "{prompt}", prompt)
+	} else {
+		instruction = template + "\n\n" + prompt
+	}
+
 	if !sess.TryStartRename() {
 		return
 	}
@@ -235,33 +249,48 @@ func (m *Manager) maybeRenameFromPrompt(sess *Session, a *Agent, prompt string) 
 			}
 		}()
 
-		suffix, err := namer(ctx, prompt)
+		suffix, err := namer(ctx, instruction)
 		if err != nil || suffix == "" {
-			// Fall back to the legacy synchronous slugify. If the prompt
-			// itself slugifies to empty (e.g. punctuation-only), leave
-			// hasClaudeName false so the next prompt gets another shot —
-			// matches pre-Haiku behavior.
-			suffix = suffixFromPrompt(prompt)
-			if suffix == "" {
-				return
-			}
+			return
 		}
 
-		if m.applyRename(sess, config.ExpandBranchPrefix(prefix)+suffix) {
-			// Haiku produced a smarter slug than the raw prompt — update
-			// the session display name so the TUI reflects it.
-			sess.SetDisplayName(suffix)
+		newBranch := config.ExpandBranchPrefix(prefix) + suffix
+		if !m.renameSessionBranch(sess, newBranch) {
+			return
 		}
+		// Display-name updates must happen before EventBranchRenamed fires
+		// so subscribers (PR scheduler, TUI) see a coherent snapshot.
+		sess.SetDisplayName(suffix)
+		a.SetDisplayName(suffix)
+		m.emitBranchRenamed(sess, a, newBranch)
 	}()
 }
 
-// applyRename performs the branch rename and emits a status-changed event so
-// the TUI picks up the new branch/name on its next tick. Returns true if the
-// rename succeeded.
-func (m *Manager) applyRename(sess *Session, newBranch string) bool {
+// isActionablePrompt reports whether prompt carries enough text for a
+// meaningful branch name. Empty/whitespace-only prompts and pure slash
+// commands (e.g. "/clear") return false.
+func isActionablePrompt(prompt string) bool {
+	trimmed := strings.TrimSpace(prompt)
+	if trimmed == "" {
+		return false
+	}
+	if strings.HasPrefix(trimmed, "/") {
+		idx := strings.IndexAny(trimmed, " \t")
+		if idx < 0 {
+			return false
+		}
+		return strings.TrimSpace(trimmed[idx+1:]) != ""
+	}
+	return true
+}
+
+// renameSessionBranch performs the git branch rename only. It does NOT emit
+// any events — callers should update display names first and then call
+// emitBranchRenamed so subscribers observe a coherent snapshot. Returns true
+// if the rename succeeded.
+func (m *Manager) renameSessionBranch(sess *Session, newBranch string) bool {
 	// If the session was closed while the async namer was running, skip the
-	// git op — the worktree is gone, so `git branch -m` would fail and the
-	// EventStatusChanged would reference a session no longer in m.sessions.
+	// git op — the worktree is gone, so `git branch -m` would fail.
 	m.mu.RLock()
 	_, stillOpen := m.sessions[sess.ID]
 	m.mu.RUnlock()
@@ -276,7 +305,14 @@ func (m *Manager) applyRename(sess *Session, newBranch string) bool {
 	if _, err := sess.RenameBranch(m.repoPath, newBranch); err != nil {
 		return false
 	}
+	return true
+}
 
+// emitBranchRenamed emits an EventStatusChanged followed by EventBranchRenamed
+// for a session whose branch (and typically display name) just updated. Call
+// after both the rename and any dependent display-name writes so subscribers
+// see consistent state.
+func (m *Manager) emitBranchRenamed(sess *Session, _ *Agent, newBranch string) {
 	if agents := sess.Agents(); len(agents) > 0 {
 		lead := agents[0]
 		m.emit(Event{
@@ -291,32 +327,6 @@ func (m *Manager) applyRename(sess *Session, newBranch string) bool {
 		SessionID: sess.ID,
 		Branch:    newBranch,
 	})
-	return true
-}
-
-// applyAutoName derives a display name from the first UserPromptSubmit prompt
-// and applies it to the agent and (if unset) the session. One-shot: once
-// Agent.HasClaudeName is true the agent is never renamed again, even when the
-// first prompt slugifies to empty — mirrors the old Claude-session-file
-// auto-name behavior so we don't silently overwrite a user-accepted name
-// later in the session.
-//
-// Mirrors OnHookEvent's late-event guard: a stray UserPromptSubmit arriving
-// after the agent reached Done or Error must not rename a terminal row.
-func (m *Manager) applyAutoName(a *Agent, sessID, prompt string) {
-	if a.HasClaudeName() {
-		return
-	}
-	if st := a.Status(); st == StatusDone || st == StatusError {
-		return
-	}
-	if slug := slugify(prompt); slug != "" {
-		a.SetDisplayName(slug)
-		if sess := m.GetSession(sessID); sess != nil && !sess.HasDisplayName() {
-			sess.SetDisplayName(slug)
-		}
-	}
-	a.SetClaudeName(true)
 }
 
 // findAgentAndSession locates an agent across all sessions and returns it

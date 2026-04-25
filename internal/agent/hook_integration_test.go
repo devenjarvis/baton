@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/devenjarvis/baton/internal/config"
 	"github.com/devenjarvis/baton/internal/hook"
 )
 
@@ -405,13 +404,16 @@ func TestDoneAgentIgnoresLatePreToolUse(t *testing.T) {
 	}
 }
 
-// TestUserPromptSubmitRenamesBranch verifies the first UserPromptSubmit with
-// real prompt text renames the session's random branch to a prompt-derived
-// slug, and a second prompt is a no-op because HasClaudeName is now set.
+// TestUserPromptSubmitRenamesBranch verifies the first actionable
+// UserPromptSubmit drives the namer-based rename to completion, and a second
+// prompt is a no-op because HasClaudeName is now set on the session.
 func TestUserPromptSubmitRenamesBranch(t *testing.T) {
 	repo := setupTestRepo(t)
 	mgr := NewManager(repo, defaultTestSettings())
 	defer mgr.Shutdown()
+
+	stub := &stubNamer{result: "add-dark-mode-to-dashboard"}
+	mgr.SetBranchNamer(stub.fn())
 
 	cfg := Config{Name: "warm-ibis", Task: "test", Rows: 24, Cols: 80}
 	sess, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
@@ -428,7 +430,7 @@ func TestUserPromptSubmitRenamesBranch(t *testing.T) {
 
 	originalBranch := sess.Worktree.Branch
 
-	// Slash-only prompt does not trigger a rename.
+	// Slash-only prompt is non-actionable: no rename, namer never invoked.
 	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
 		Kind:    hook.KindUserPromptSubmit,
 		AgentID: ag.ID,
@@ -443,8 +445,11 @@ func TestUserPromptSubmitRenamesBranch(t *testing.T) {
 	if sess.Branch() != originalBranch {
 		t.Errorf("slash-only prompt should not rename; got %q", sess.Branch())
 	}
+	if stub.calls.Load() != 0 {
+		t.Errorf("namer should not be called for slash-only prompt, got %d", stub.calls.Load())
+	}
 
-	// Real prompt triggers rename.
+	// Real prompt triggers rename via the stub namer.
 	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
 		Kind:    hook.KindUserPromptSubmit,
 		AgentID: ag.ID,
@@ -453,24 +458,18 @@ func TestUserPromptSubmitRenamesBranch(t *testing.T) {
 		t.Fatalf("SendEvent prompt: %v", err)
 	}
 
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if sess.HasClaudeName() {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
+	got := waitForBranch(t, sess, "baton/add-dark-mode-to-dashboard", 2*time.Second)
+	if got != "baton/add-dark-mode-to-dashboard" {
+		t.Errorf("expected branch baton/add-dark-mode-to-dashboard, got %q", got)
 	}
 	if !sess.HasClaudeName() {
 		t.Fatal("expected HasClaudeName true after prompt")
-	}
-	if got := sess.Branch(); got != "baton/add-dark-mode-to-dashboard" {
-		t.Errorf("expected branch baton/add-dark-mode-to-dashboard, got %q", got)
 	}
 	if got := sess.CurrentName(); got != "add-dark-mode-to-dashboard" {
 		t.Errorf("expected Name add-dark-mode-to-dashboard, got %q", got)
 	}
 
-	// Second real prompt is a no-op.
+	// Second real prompt is a no-op (gate already consumed at the session level).
 	prevBranch := sess.Branch()
 	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
 		Kind:    hook.KindUserPromptSubmit,
@@ -483,15 +482,22 @@ func TestUserPromptSubmitRenamesBranch(t *testing.T) {
 	if got := sess.Branch(); got != prevBranch {
 		t.Errorf("second prompt should be no-op; got %q, want %q", got, prevBranch)
 	}
+	if stub.calls.Load() != 1 {
+		t.Errorf("namer should only be called once total, got %d", stub.calls.Load())
+	}
 }
 
 // TestUserPromptSubmitSlashWithArgRenamesBranch verifies that a skill
-// invocation like "/plan-it add dark mode" renames the branch using the
-// argument text, while a pure slash command like "/clear" still does not.
+// invocation like "/plan-it add dark mode" is treated as actionable and
+// reaches the namer (which sees the full prompt; how it summarizes is up to
+// the model). A bare "/plan-it" with no args remains non-actionable.
 func TestUserPromptSubmitSlashWithArgRenamesBranch(t *testing.T) {
 	repo := setupTestRepo(t)
 	mgr := NewManager(repo, defaultTestSettings())
 	defer mgr.Shutdown()
+
+	stub := &stubNamer{result: "add-dark-mode"}
+	mgr.SetBranchNamer(stub.fn())
 
 	cfg := Config{Name: "cold-ferret", Task: "test", Rows: 24, Cols: 80}
 	sess, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
@@ -506,7 +512,6 @@ func TestUserPromptSubmitSlashWithArgRenamesBranch(t *testing.T) {
 		t.Fatal("timed out waiting for EventCreated")
 	}
 
-	// Slash command with argument triggers rename using the argument text.
 	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
 		Kind:    hook.KindUserPromptSubmit,
 		AgentID: ag.ID,
@@ -515,18 +520,15 @@ func TestUserPromptSubmitSlashWithArgRenamesBranch(t *testing.T) {
 		t.Fatalf("SendEvent slash+arg: %v", err)
 	}
 
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if sess.HasClaudeName() {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
+	got := waitForBranch(t, sess, "baton/add-dark-mode", 2*time.Second)
+	if got != "baton/add-dark-mode" {
+		t.Errorf("expected branch baton/add-dark-mode, got %q", got)
 	}
 	if !sess.HasClaudeName() {
 		t.Fatal("expected HasClaudeName true after slash+arg prompt")
 	}
-	if got := sess.Branch(); got != "baton/add-dark-mode" {
-		t.Errorf("expected branch baton/add-dark-mode, got %q", got)
+	if stub.calls.Load() != 1 {
+		t.Errorf("namer call count = %d, want 1", stub.calls.Load())
 	}
 }
 
@@ -560,8 +562,10 @@ func waitForClaudeName(t *testing.T, a *Agent, want bool, d time.Duration) bool 
 
 // sendUserPromptSubmit is a convenience wrapper that dispatches a
 // UserPromptSubmit event through the manager's hook socket and waits for
-// HasClaudeName() to flip — the only reliable signal that applyAutoName has
-// finished running on the dispatcher goroutine.
+// Agent.HasClaudeName() to flip — the only reliable signal that the
+// dispatcher goroutine has processed the rename request. The caller must
+// pass an actionable prompt (non-empty, not a bare slash command); empty or
+// slash-only prompts skip the rename flow and never flip the flag.
 func sendUserPromptSubmit(t *testing.T, mgr *Manager, a *Agent, prompt string) {
 	t.Helper()
 	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
@@ -577,12 +581,15 @@ func sendUserPromptSubmit(t *testing.T, mgr *Manager, a *Agent, prompt string) {
 }
 
 // TestManagerRenamesOnFirstUserPromptSubmit verifies that the first
-// UserPromptSubmit with a non-empty prompt slugifies and applies it as the
-// display name on both the agent and its session.
+// actionable UserPromptSubmit drives the namer-based rename and applies the
+// resulting slug as the display name on both the agent and its session.
 func TestManagerRenamesOnFirstUserPromptSubmit(t *testing.T) {
 	repo := setupTestRepo(t)
 	mgr := NewManager(repo, defaultTestSettings())
 	defer mgr.Shutdown()
+
+	stub := &stubNamer{result: "investigate-flaky-checkout-test"}
+	mgr.SetBranchNamer(stub.fn())
 
 	cfg := Config{Name: "rename-first", Task: "test", Rows: 24, Cols: 80}
 	sess, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
@@ -604,21 +611,29 @@ func TestManagerRenamesOnFirstUserPromptSubmit(t *testing.T) {
 	sendUserPromptSubmit(t, mgr, ag, "Investigate flaky checkout test!")
 
 	const want = "investigate-flaky-checkout-test"
-	if got := ag.GetDisplayName(); got != want {
-		t.Errorf("agent display name: got %q, want %q", got, want)
+	// The display-name update happens in the rename goroutine after the
+	// namer returns; the agent display name is the last write so wait on it.
+	if got := waitForAgentDisplayName(t, ag, want, 2*time.Second); got != want {
+		t.Fatalf("agent display name: got %q, want %q", got, want)
+	}
+	if got := sess.Branch(); got != "baton/"+want {
+		t.Errorf("branch: got %q, want baton/%s", got, want)
 	}
 	if got := sess.GetDisplayName(); got != want {
 		t.Errorf("session display name: got %q, want %q", got, want)
 	}
 }
 
-// TestManagerSecondUserPromptSubmitDoesNotRename verifies that once
-// HasClaudeName is set (on the first prompt), subsequent UserPromptSubmit
-// events leave the display name alone even when the new prompt is different.
+// TestManagerSecondUserPromptSubmitDoesNotRename verifies that once the
+// session's HasClaudeName is set (after a successful first rename), subsequent
+// UserPromptSubmit events do not invoke the namer or change display names.
 func TestManagerSecondUserPromptSubmitDoesNotRename(t *testing.T) {
 	repo := setupTestRepo(t)
 	mgr := NewManager(repo, defaultTestSettings())
 	defer mgr.Shutdown()
+
+	stub := &stubNamer{result: "first-prompt-wins"}
+	mgr.SetBranchNamer(stub.fn())
 
 	cfg := Config{Name: "rename-second", Task: "test", Rows: 24, Cols: 80}
 	sess, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
@@ -636,13 +651,16 @@ func TestManagerSecondUserPromptSubmitDoesNotRename(t *testing.T) {
 	sendUserPromptSubmit(t, mgr, ag, "first prompt wins")
 
 	const want = "first-prompt-wins"
-	if got := ag.GetDisplayName(); got != want {
+	if got := waitForAgentDisplayName(t, ag, want, 2*time.Second); got != want {
 		t.Fatalf("after first prompt: agent = %q, want %q", got, want)
 	}
+	if got := sess.Branch(); got != "baton/"+want {
+		t.Fatalf("after first prompt: branch = %q, want baton/%s", got, want)
+	}
 
-	// Second prompt must be a no-op. HasClaudeName is already true, so we
-	// can't reuse sendUserPromptSubmit's wait — just wait on status as a
-	// barrier that the dispatcher processed the event.
+	// Second prompt must be a no-op. HasClaudeName is already true on the
+	// session, so we use status as a barrier confirming the dispatcher
+	// processed the event before we assert.
 	ag.mu.Lock()
 	ag.status = StatusIdle
 	ag.mu.Unlock()
@@ -663,15 +681,21 @@ func TestManagerSecondUserPromptSubmitDoesNotRename(t *testing.T) {
 	if got := sess.GetDisplayName(); got != want {
 		t.Errorf("session display name changed: got %q, want %q", got, want)
 	}
+	if stub.calls.Load() != 1 {
+		t.Errorf("namer call count = %d, want 1", stub.calls.Load())
+	}
 }
 
-// TestManagerEmptyPromptConsumesOneShotGate verifies the one-shot rule:
-// a UserPromptSubmit with an empty prompt still flips HasClaudeName, so a
-// subsequent non-empty prompt cannot silently rename the agent.
-func TestManagerEmptyPromptConsumesOneShotGate(t *testing.T) {
+// TestManagerEmptyPromptDoesNotConsumeGate verifies the new flow: an empty
+// UserPromptSubmit skips the rename pipeline entirely (no namer call, gate
+// stays open), so a follow-up non-empty prompt still renames normally.
+func TestManagerEmptyPromptDoesNotConsumeGate(t *testing.T) {
 	repo := setupTestRepo(t)
 	mgr := NewManager(repo, defaultTestSettings())
 	defer mgr.Shutdown()
+
+	stub := &stubNamer{result: "real-prompt-result"}
+	mgr.SetBranchNamer(stub.fn())
 
 	cfg := Config{Name: "rename-empty", Task: "initial task", Rows: 24, Cols: 80}
 	sess, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
@@ -686,85 +710,53 @@ func TestManagerEmptyPromptConsumesOneShotGate(t *testing.T) {
 		t.Fatal("timed out waiting for EventCreated")
 	}
 
-	// newAgentWithCommand (used by CreateSessionWithCommand) doesn't set a
-	// displayName from cfg.Task the way newAgent does — so the agent's
-	// display name falls through to cfg.Name until the first UPS renames it.
 	const interim = "rename-empty"
 	if got := ag.GetDisplayName(); got != interim {
 		t.Fatalf("precondition: agent display name, got %q want %q", got, interim)
 	}
 
-	// Empty prompt: must flip HasClaudeName but NOT rename.
-	sendUserPromptSubmit(t, mgr, ag, "")
+	// Empty prompt: namer never invoked, gate stays open.
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindUserPromptSubmit,
+		AgentID: ag.ID,
+		Prompt:  "",
+	}); err != nil {
+		t.Fatalf("SendEvent empty: %v", err)
+	}
+	time.Sleep(150 * time.Millisecond)
+	if ag.HasClaudeName() {
+		t.Error("empty prompt should not flip Agent.HasClaudeName")
+	}
+	if sess.HasClaudeName() {
+		t.Error("empty prompt should not flip Session.HasClaudeName")
+	}
 	if got := ag.GetDisplayName(); got != interim {
 		t.Errorf("empty-prompt UPS renamed agent: got %q, want %q", got, interim)
 	}
 	if sess.HasDisplayName() {
 		t.Errorf("empty-prompt UPS set a session display name")
 	}
-
-	// Follow-up non-empty prompt is ignored (gate already consumed).
-	ag.mu.Lock()
-	ag.status = StatusIdle
-	ag.mu.Unlock()
-	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
-		Kind:    hook.KindUserPromptSubmit,
-		AgentID: ag.ID,
-		Prompt:  "too late",
-	}); err != nil {
-		t.Fatalf("SendEvent: %v", err)
-	}
-	if !waitForStatus(t, ag, StatusActive, 2*time.Second) {
-		t.Fatalf("expected Active after second UserPromptSubmit")
-	}
-	if got := ag.GetDisplayName(); got != interim {
-		t.Errorf("late prompt renamed agent past the gate: got %q, want %q", got, interim)
-	}
-}
-
-// TestManagerPreservesSessionDisplayName verifies that when a session already
-// has a display name (e.g. derived from an attached branch via
-// slugifyBranchName, or restored from persisted state), the first
-// UserPromptSubmit still renames the agent but leaves the session name alone.
-func TestManagerPreservesSessionDisplayName(t *testing.T) {
-	repo := setupTestRepo(t)
-	mgr := NewManager(repo, defaultTestSettings())
-	defer mgr.Shutdown()
-
-	cfg := Config{Name: "rename-branch", Task: "test", Rows: 24, Cols: 80}
-	sess, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
-		return exec.Command("bash", "-c", "sleep 5")
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-mgr.Events():
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for EventCreated")
+	if stub.calls.Load() != 0 {
+		t.Errorf("namer should not be called for empty prompt, got %d", stub.calls.Load())
 	}
 
-	const sessPreset = "add-login"
-	sess.SetDisplayName(sessPreset)
-
-	sendUserPromptSubmit(t, mgr, ag, "refactor auth middleware")
-
-	const wantAgent = "refactor-auth-middleware"
-	if got := ag.GetDisplayName(); got != wantAgent {
-		t.Errorf("agent rename: got %q, want %q", got, wantAgent)
-	}
-	if got := sess.GetDisplayName(); got != sessPreset {
-		t.Errorf("session display name overwritten: got %q, want %q", got, sessPreset)
+	// Follow-up actionable prompt: gate is still open, rename succeeds.
+	sendUserPromptSubmit(t, mgr, ag, "the real prompt")
+	if got := waitForBranch(t, sess, "baton/real-prompt-result", 2*time.Second); got != "baton/real-prompt-result" {
+		t.Errorf("retry rename: branch = %q, want baton/real-prompt-result", got)
 	}
 }
 
 // TestManagerDoneAgentIgnoresLateRename verifies that a stray UserPromptSubmit
 // event for a Done/Error agent doesn't auto-rename the terminal row. Mirrors
-// the Done-agent guard in OnHookEvent.
+// the Done-agent guard in maybeRenameFromPrompt.
 func TestManagerDoneAgentIgnoresLateRename(t *testing.T) {
 	repo := setupTestRepo(t)
 	mgr := NewManager(repo, defaultTestSettings())
 	defer mgr.Shutdown()
+
+	stub := &stubNamer{result: "should-not-be-called"}
+	mgr.SetBranchNamer(stub.fn())
 
 	cfg := Config{Name: "rename-done", Task: "test", Rows: 24, Cols: 80}
 	sess, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
@@ -790,8 +782,8 @@ func TestManagerDoneAgentIgnoresLateRename(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SendEvent: %v", err)
 	}
-	// Give the dispatcher time to process — no observable barrier since the
-	// status guard in OnHookEvent short-circuits and HasClaudeName stays false.
+	// Give the dispatcher time to process — the status guard short-circuits
+	// before SetClaudeName, so HasClaudeName stays false.
 	time.Sleep(200 * time.Millisecond)
 
 	if ag.HasClaudeName() {
@@ -803,15 +795,23 @@ func TestManagerDoneAgentIgnoresLateRename(t *testing.T) {
 	if sess.HasDisplayName() {
 		t.Error("session renamed by late UPS on Done agent")
 	}
+	if stub.calls.Load() != 0 {
+		t.Errorf("namer should not be called for Done agent, got %d", stub.calls.Load())
+	}
 }
 
-// TestManagerUnslugifiablePromptLeavesNamesUnchanged verifies a prompt that
-// slugifies to empty (e.g. all punctuation) doesn't clear existing names and
-// still consumes the one-shot gate.
-func TestManagerUnslugifiablePromptLeavesNamesUnchanged(t *testing.T) {
+// TestManagerNamerErrorLeavesNamesUnchanged verifies that when the namer
+// returns an error, the agent and session display names stay at their
+// pre-prompt values and the random branch is preserved. Agent.HasClaudeName
+// still flips so the resume restore path can distinguish "naming chance was
+// taken" from "fresh placeholder".
+func TestManagerNamerErrorLeavesNamesUnchanged(t *testing.T) {
 	repo := setupTestRepo(t)
 	mgr := NewManager(repo, defaultTestSettings())
 	defer mgr.Shutdown()
+
+	stub := &stubNamer{err: errors.New("haiku unavailable")}
+	mgr.SetBranchNamer(stub.fn())
 
 	cfg := Config{Name: "rename-punct", Task: "keep me", Rows: 24, Cols: 80}
 	sess, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
@@ -826,30 +826,30 @@ func TestManagerUnslugifiablePromptLeavesNamesUnchanged(t *testing.T) {
 		t.Fatal("timed out waiting for EventCreated")
 	}
 
-	// See TestManagerEmptyPromptConsumesOneShotGate — custom-command agents
-	// don't derive a display name from cfg.Task, so the baseline is cfg.Name.
 	const interim = "rename-punct"
-	if got := ag.GetDisplayName(); got != interim {
-		t.Fatalf("precondition: agent display name, got %q want %q", got, interim)
-	}
+	originalBranch := sess.Worktree.Branch
 
 	sendUserPromptSubmit(t, mgr, ag, "!!! ??? ...")
 
+	// Wait for the rename goroutine to finish so we don't race the assertions.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && stub.calls.Load() < 1 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+
 	if got := ag.GetDisplayName(); got != interim {
-		t.Errorf("agent display name overwritten: got %q, want %q", got, interim)
+		t.Errorf("agent display name overwritten on namer error: got %q, want %q", got, interim)
 	}
 	if sess.HasDisplayName() {
-		t.Errorf("session display name set from unslugifiable prompt")
+		t.Errorf("session display name set despite namer error")
 	}
-}
-
-// smartBranchTestSettings returns test settings with SmartBranchNames enabled
-// — defaultTestSettings() disables it to keep existing tests on the
-// synchronous slugify path.
-func smartBranchTestSettings() config.ResolvedSettings {
-	r := config.Resolve(nil, nil)
-	r.SmartBranchNames = true
-	return r
+	if sess.HasClaudeName() {
+		t.Error("Session.HasClaudeName should stay false when namer errors (so retries can fire)")
+	}
+	if got := sess.Branch(); got != originalBranch {
+		t.Errorf("branch should be unchanged on namer error: got %q, want %q", got, originalBranch)
+	}
 }
 
 // waitForBranch polls Session.Branch() until it matches want or the deadline
@@ -880,16 +880,39 @@ func waitForBranchChanged(t *testing.T, sess *Session, original string, d time.D
 	return sess.Branch()
 }
 
+// waitForAgentDisplayName polls until Agent.GetDisplayName() returns want or
+// the deadline elapses. The async rename goroutine updates the branch and
+// the display name in close succession but not atomically, so tests that
+// check both should wait on the display name (the later update).
+func waitForAgentDisplayName(t *testing.T, a *Agent, want string, d time.Duration) string {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		if got := a.GetDisplayName(); got == want {
+			return got
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return a.GetDisplayName()
+}
+
 // stubNamer is a BranchNamer that returns a fixed result and counts calls.
+// lastInstruction captures the most recent rendered template the manager
+// passed in so tests can assert template substitution.
 type stubNamer struct {
-	result string
-	err    error
-	calls  atomic.Int32
-	block  chan struct{} // if non-nil, the namer blocks on receive before returning
+	result          string
+	err             error
+	calls           atomic.Int32
+	block           chan struct{} // if non-nil, the namer blocks on receive before returning
+	mu              sync.Mutex
+	lastInstruction string
 }
 
 func (s *stubNamer) fn() BranchNamer {
-	return func(ctx context.Context, prompt string) (string, error) {
+	return func(ctx context.Context, instruction string) (string, error) {
+		s.mu.Lock()
+		s.lastInstruction = instruction
+		s.mu.Unlock()
 		s.calls.Add(1)
 		if s.block != nil {
 			select {
@@ -902,11 +925,17 @@ func (s *stubNamer) fn() BranchNamer {
 	}
 }
 
+func (s *stubNamer) instruction() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastInstruction
+}
+
 // TestSmartBranchRename_HappyPath verifies the stub namer's result is
-// slugified and applied to the session's branch when SmartBranchNames=true.
+// applied to the session's branch through the Haiku path.
 func TestSmartBranchRename_HappyPath(t *testing.T) {
 	repo := setupTestRepo(t)
-	mgr := NewManager(repo, smartBranchTestSettings())
+	mgr := NewManager(repo, defaultTestSettings())
 	defer mgr.Shutdown()
 
 	stub := &stubNamer{result: "fix-login-flow"}
@@ -947,60 +976,18 @@ func TestSmartBranchRename_HappyPath(t *testing.T) {
 	}
 }
 
-// TestSmartBranchRename_NamerErrorFallsBack verifies that when the namer
-// returns an error, we fall back to the synchronous slugify path.
-func TestSmartBranchRename_NamerErrorFallsBack(t *testing.T) {
+// TestSmartBranchRename_NamerErrorRetriesNextPrompt verifies the new
+// no-fallback contract: when the namer errors, the random branch persists
+// and Session.HasClaudeName stays false so the next prompt can retry.
+func TestSmartBranchRename_NamerErrorRetriesNextPrompt(t *testing.T) {
 	repo := setupTestRepo(t)
-	mgr := NewManager(repo, smartBranchTestSettings())
+	mgr := NewManager(repo, defaultTestSettings())
 	defer mgr.Shutdown()
 
-	stub := &stubNamer{err: errors.New("claude not found")}
-	mgr.SetBranchNamer(stub.fn())
+	failing := &stubNamer{err: errors.New("haiku unavailable")}
+	mgr.SetBranchNamer(failing.fn())
 
-	cfg := Config{Name: "smart-fallback", Task: "test", Rows: 24, Cols: 80}
-	sess, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
-		return exec.Command("bash", "-c", "sleep 5")
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-mgr.Events():
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for EventCreated")
-	}
-
-	original := sess.Branch()
-
-	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
-		Kind:    hook.KindUserPromptSubmit,
-		AgentID: ag.ID,
-		Prompt:  "add dark mode to dashboard",
-	}); err != nil {
-		t.Fatalf("SendEvent: %v", err)
-	}
-
-	got := waitForBranchChanged(t, sess, original, 2*time.Second)
-	if got != "baton/add-dark-mode-to-dashboard" {
-		t.Errorf("fallback branch = %q, want baton/add-dark-mode-to-dashboard", got)
-	}
-	if stub.calls.Load() != 1 {
-		t.Errorf("namer should be called once even on error, got %d", stub.calls.Load())
-	}
-}
-
-// TestSmartBranchRename_EmptyAfterErrorLeavesGate verifies that if the namer
-// errors AND the prompt slugifies to empty, hasClaudeName stays false so a
-// later prompt retries.
-func TestSmartBranchRename_EmptyAfterErrorLeavesGate(t *testing.T) {
-	repo := setupTestRepo(t)
-	mgr := NewManager(repo, smartBranchTestSettings())
-	defer mgr.Shutdown()
-
-	stub := &stubNamer{err: errors.New("haiku down")}
-	mgr.SetBranchNamer(stub.fn())
-
-	cfg := Config{Name: "smart-retry", Task: "test", Rows: 24, Cols: 80}
+	cfg := Config{Name: "namer-error", Task: "test", Rows: 24, Cols: 80}
 	sess, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
 		return exec.Command("bash", "-c", "sleep 5")
 	})
@@ -1015,54 +1002,109 @@ func TestSmartBranchRename_EmptyAfterErrorLeavesGate(t *testing.T) {
 
 	originalBranch := sess.Branch()
 
-	// First prompt: slash-only, so suffixFromPrompt returns empty.
-	// Smart path still enters — but the namer errors, and the fallback is
-	// also empty, so the gate must stay open.
+	// First prompt: namer errors → no rename, gate stays open.
 	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
 		Kind:    hook.KindUserPromptSubmit,
 		AgentID: ag.ID,
-		Prompt:  "/clear",
+		Prompt:  "first attempt with broken namer",
 	}); err != nil {
 		t.Fatalf("SendEvent: %v", err)
 	}
-
-	// Give the goroutine a moment to run and release the gate.
 	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if stub.calls.Load() >= 1 {
-			break
-		}
+	for time.Now().Before(deadline) && failing.calls.Load() < 1 {
 		time.Sleep(20 * time.Millisecond)
 	}
-	// Wait a little longer for finishRename to run.
+	// Wait for finishRename to clear the in-flight flag.
 	time.Sleep(100 * time.Millisecond)
 
 	if sess.HasClaudeName() {
-		t.Error("HasClaudeName should stay false after empty-result rename attempt")
+		t.Error("Session.HasClaudeName should stay false after namer error")
 	}
 	if got := sess.Branch(); got != originalBranch {
-		t.Errorf("branch should be unchanged, got %q", got)
+		t.Errorf("branch should be unchanged after namer error: got %q, want %q", got, originalBranch)
 	}
 
-	// Swap in a successful stub and send a real prompt — the second attempt
-	// should succeed.
-	stub2 := &stubNamer{result: "second-attempt"}
-	mgr.SetBranchNamer(stub2.fn())
+	// Swap in a successful stub and send another prompt — retry succeeds.
+	good := &stubNamer{result: "second-attempt"}
+	mgr.SetBranchNamer(good.fn())
 
 	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
 		Kind:    hook.KindUserPromptSubmit,
 		AgentID: ag.ID,
 		Prompt:  "this is the real prompt",
 	}); err != nil {
-		t.Fatalf("SendEvent 2: %v", err)
+		t.Fatalf("SendEvent retry: %v", err)
 	}
 
 	got := waitForBranch(t, sess, "baton/second-attempt", 2*time.Second)
 	if got != "baton/second-attempt" {
-		t.Errorf("second branch = %q, want baton/second-attempt", got)
+		t.Errorf("retry branch = %q, want baton/second-attempt", got)
 	}
-	if stub2.calls.Load() != 1 {
-		t.Errorf("second namer call count = %d, want 1", stub2.calls.Load())
+	if good.calls.Load() != 1 {
+		t.Errorf("retry namer call count = %d, want 1", good.calls.Load())
+	}
+}
+
+// TestSmartBranchRename_SlashOnlyDoesNotInvokeNamer verifies that "/clear"-
+// style prompts skip the rename pipeline entirely without consuming the
+// in-flight gate, and a real follow-up prompt still renames.
+func TestSmartBranchRename_SlashOnlyDoesNotInvokeNamer(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	stub := &stubNamer{result: "real-result"}
+	mgr.SetBranchNamer(stub.fn())
+
+	cfg := Config{Name: "slash-skip", Task: "test", Rows: 24, Cols: 80}
+	sess, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-mgr.Events():
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for EventCreated")
+	}
+
+	originalBranch := sess.Branch()
+
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindUserPromptSubmit,
+		AgentID: ag.ID,
+		Prompt:  "/clear",
+	}); err != nil {
+		t.Fatalf("SendEvent /clear: %v", err)
+	}
+	time.Sleep(150 * time.Millisecond)
+
+	if stub.calls.Load() != 0 {
+		t.Errorf("namer should not be called for slash-only prompt, got %d", stub.calls.Load())
+	}
+	if sess.HasClaudeName() {
+		t.Error("Session.HasClaudeName should stay false after slash-only prompt")
+	}
+	if got := sess.Branch(); got != originalBranch {
+		t.Errorf("slash-only prompt should not rename: got %q", got)
+	}
+
+	// Real prompt: rename succeeds, gate consumed.
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindUserPromptSubmit,
+		AgentID: ag.ID,
+		Prompt:  "now rename for real",
+	}); err != nil {
+		t.Fatalf("SendEvent retry: %v", err)
+	}
+
+	got := waitForBranch(t, sess, "baton/real-result", 2*time.Second)
+	if got != "baton/real-result" {
+		t.Errorf("retry branch = %q, want baton/real-result", got)
+	}
+	if stub.calls.Load() != 1 {
+		t.Errorf("namer call count = %d, want 1", stub.calls.Load())
 	}
 }
 
@@ -1071,7 +1113,7 @@ func TestSmartBranchRename_EmptyAfterErrorLeavesGate(t *testing.T) {
 // not dispatch a second namer invocation.
 func TestSmartBranchRename_DoubleDispatchGated(t *testing.T) {
 	repo := setupTestRepo(t)
-	mgr := NewManager(repo, smartBranchTestSettings())
+	mgr := NewManager(repo, defaultTestSettings())
 	defer mgr.Shutdown()
 
 	release := make(chan struct{})
@@ -1138,45 +1180,11 @@ func TestSmartBranchRename_DoubleDispatchGated(t *testing.T) {
 	}
 }
 
-// TestSmartBranchRename_DisabledUsesSyncSlugify verifies that when
-// SmartBranchNames=false, the legacy synchronous slugify path is used and the
-// namer is never invoked.
-func TestSmartBranchRename_DisabledUsesSyncSlugify(t *testing.T) {
-	repo := setupTestRepo(t)
-	mgr := NewManager(repo, defaultTestSettings()) // SmartBranchNames=false
-	defer mgr.Shutdown()
-
-	stub := &stubNamer{result: "should-not-appear"}
-	mgr.SetBranchNamer(stub.fn())
-
-	cfg := Config{Name: "smart-off", Task: "test", Rows: 24, Cols: 80}
-	sess, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
-		return exec.Command("bash", "-c", "sleep 5")
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-mgr.Events():
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for EventCreated")
-	}
-
-	sendUserPromptSubmit(t, mgr, ag, "please add dark mode")
-
-	if stub.calls.Load() != 0 {
-		t.Errorf("namer should not be called with SmartBranchNames=false, got %d", stub.calls.Load())
-	}
-	if got := sess.Branch(); got != "baton/please-add-dark-mode" {
-		t.Errorf("branch = %q, want baton/please-add-dark-mode", got)
-	}
-}
-
 // TestSmartBranchRename_ShutdownCancelsInflight verifies that Manager.Shutdown
 // cancels the in-flight rename goroutine so it doesn't outlive the manager.
 func TestSmartBranchRename_ShutdownCancelsInflight(t *testing.T) {
 	repo := setupTestRepo(t)
-	mgr := NewManager(repo, smartBranchTestSettings())
+	mgr := NewManager(repo, defaultTestSettings())
 
 	// Block the namer forever — only ctx cancellation should release it.
 	stub := &stubNamer{result: "never-returns", block: make(chan struct{})}
@@ -1231,7 +1239,7 @@ func TestSmartBranchRename_ShutdownCancelsInflight(t *testing.T) {
 // recover from the rename/PR race.
 func TestSmartBranchRename_EmitsBranchRenamedEvent(t *testing.T) {
 	repo := setupTestRepo(t)
-	mgr := NewManager(repo, smartBranchTestSettings())
+	mgr := NewManager(repo, defaultTestSettings())
 	defer mgr.Shutdown()
 
 	stub := &stubNamer{result: "add-dark-mode"}
@@ -1284,5 +1292,97 @@ func TestSmartBranchRename_EmitsBranchRenamedEvent(t *testing.T) {
 		case <-deadline:
 			t.Fatal("did not receive EventBranchRenamed within 2s")
 		}
+	}
+}
+
+// TestSmartBranchRename_CustomTemplateRendered verifies that a user-provided
+// BranchNamePrompt has the {prompt} token substituted with the user's prompt
+// and the rendered string is what the namer receives.
+func TestSmartBranchRename_CustomTemplateRendered(t *testing.T) {
+	repo := setupTestRepo(t)
+	settings := defaultTestSettings()
+	settings.BranchNamePrompt = "You are naming a git branch. Use 2 words. {prompt} -- end"
+	mgr := NewManager(repo, settings)
+	defer mgr.Shutdown()
+
+	stub := &stubNamer{result: "fix-login"}
+	mgr.SetBranchNamer(stub.fn())
+
+	cfg := Config{Name: "tmpl-render", Task: "test", Rows: 24, Cols: 80}
+	sess, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-mgr.Events():
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for EventCreated")
+	}
+
+	const userPrompt = "fix the login redirect bug"
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindUserPromptSubmit,
+		AgentID: ag.ID,
+		Prompt:  userPrompt,
+	}); err != nil {
+		t.Fatalf("SendEvent: %v", err)
+	}
+
+	got := waitForBranch(t, sess, "baton/fix-login", 2*time.Second)
+	if got != "baton/fix-login" {
+		t.Fatalf("branch = %q, want baton/fix-login", got)
+	}
+
+	const wantInstruction = "You are naming a git branch. Use 2 words. fix the login redirect bug -- end"
+	if got := stub.instruction(); got != wantInstruction {
+		t.Errorf("rendered instruction = %q, want %q", got, wantInstruction)
+	}
+}
+
+// TestSmartBranchRename_TemplateWithoutPlaceholderAppendsPrompt verifies the
+// defensive forgiveness: if a custom BranchNamePrompt forgets the {prompt}
+// token, the user's prompt is appended on its own paragraph rather than
+// silently dropped.
+func TestSmartBranchRename_TemplateWithoutPlaceholderAppendsPrompt(t *testing.T) {
+	repo := setupTestRepo(t)
+	settings := defaultTestSettings()
+	settings.BranchNamePrompt = "Header without placeholder"
+	mgr := NewManager(repo, settings)
+	defer mgr.Shutdown()
+
+	stub := &stubNamer{result: "ok"}
+	mgr.SetBranchNamer(stub.fn())
+
+	cfg := Config{Name: "tmpl-append", Task: "test", Rows: 24, Cols: 80}
+	sess, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-mgr.Events():
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for EventCreated")
+	}
+
+	const userPrompt = "do the thing"
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindUserPromptSubmit,
+		AgentID: ag.ID,
+		Prompt:  userPrompt,
+	}); err != nil {
+		t.Fatalf("SendEvent: %v", err)
+	}
+
+	if got := waitForBranch(t, sess, "baton/ok", 2*time.Second); got != "baton/ok" {
+		t.Fatalf("branch = %q, want baton/ok", got)
+	}
+
+	const wantInstruction = "Header without placeholder\n\ndo the thing"
+	if got := stub.instruction(); got != wantInstruction {
+		t.Errorf("rendered instruction = %q, want %q", got, wantInstruction)
 	}
 }

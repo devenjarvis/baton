@@ -60,12 +60,12 @@ func setupTestRepo(t *testing.T) string {
 }
 
 func defaultTestSettings() config.ResolvedSettings {
-	// Tests rely on the synchronous slugify rename path; the async Haiku
-	// path has dedicated tests in session_name_test.go and is opt-in via
-	// smart_branch_names=true in the relevant fixtures.
-	r := config.Resolve(nil, nil)
-	r.SmartBranchNames = false
-	return r
+	// Branch renaming always goes through Manager.branchNamer. Tests that
+	// exercise rename behavior MUST inject a stub via SetBranchNamer before
+	// dispatching an actionable UserPromptSubmit — otherwise the default
+	// DefaultBranchNamer() will spawn the real `claude` binary if it is on
+	// PATH (true on developer machines), making tests slow and non-hermetic.
+	return config.Resolve(nil, nil)
 }
 
 func TestAgentRenderContainsOutput(t *testing.T) {

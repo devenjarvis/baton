@@ -44,6 +44,23 @@ func writeSlowClaude(t *testing.T, dir string, sleepSecs int) {
 	}
 }
 
+// writeStdinCapturingClaude writes a fake claude that copies stdin to
+// stdinFile and then prints stdout. Used to assert the namer pipes the
+// rendered instruction verbatim.
+func writeStdinCapturingClaude(t *testing.T, dir, stdinFile, stdout string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fake claude uses /bin/sh; skip on windows")
+	}
+	script := "#!/bin/sh\n" +
+		"cat > " + shellSingleQuote(stdinFile) + "\n" +
+		"printf %s " + shellSingleQuote(stdout) + "\n"
+	path := filepath.Join(dir, "claude")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write capturing claude: %v", err)
+	}
+}
+
 // withPATH prepends dir to PATH for the duration of the test.
 func withPATH(t *testing.T, dir string) {
 	t.Helper()
@@ -87,12 +104,36 @@ func TestDefaultBranchNamer_Success(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	slug, err := namer(ctx, "we need to fix the login flow")
+	slug, err := namer(ctx, "Summarize this task: we need to fix the login flow")
 	if err != nil {
 		t.Fatalf("namer returned error: %v", err)
 	}
 	if slug != "fix-login-flow" {
 		t.Errorf("slug = %q, want fix-login-flow", slug)
+	}
+}
+
+func TestDefaultBranchNamer_PipesInstructionVerbatim(t *testing.T) {
+	dir := t.TempDir()
+	stdinFile := filepath.Join(dir, "stdin.txt")
+	writeStdinCapturingClaude(t, dir, stdinFile, "the-result")
+	withPATH(t, dir)
+
+	namer := DefaultBranchNamer()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	const instruction = "Custom prompt header.\n\nuser-prompt-text"
+	if _, err := namer(ctx, instruction); err != nil {
+		t.Fatalf("namer returned error: %v", err)
+	}
+
+	got, err := os.ReadFile(stdinFile)
+	if err != nil {
+		t.Fatalf("read captured stdin: %v", err)
+	}
+	if string(got) != instruction {
+		t.Errorf("stdin = %q, want %q", string(got), instruction)
 	}
 }
 
