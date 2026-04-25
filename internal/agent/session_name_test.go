@@ -1,8 +1,6 @@
 package agent
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/devenjarvis/baton/internal/git"
@@ -64,7 +62,7 @@ func TestSessionRenameBranch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateWorktree: %v", err)
 	}
-	oldPath := wt.Path
+	origPath := wt.Path
 
 	s := newSession("session-1", "warm-ibis", wt)
 
@@ -72,7 +70,7 @@ func TestSessionRenameBranch(t *testing.T) {
 		t.Error("HasClaudeName() should be false before rename")
 	}
 
-	actual, err := s.RenameBranch(repo, "baton/add-dark-mode", "")
+	actual, err := s.RenameBranch(repo, "baton/add-dark-mode")
 	if err != nil {
 		t.Fatalf("RenameBranch: %v", err)
 	}
@@ -89,23 +87,14 @@ func TestSessionRenameBranch(t *testing.T) {
 		t.Error("HasClaudeName() should be true after rename")
 	}
 
-	// The on-disk worktree directory is moved to match the new branch name so
-	// Session/Branch/Worktree all stay congruent.
-	if got := filepath.Base(s.Worktree.Path); got != "add-dark-mode" {
-		t.Errorf("Worktree.Path basename = %q, want %q", got, "add-dark-mode")
-	}
-	if s.Worktree.Name != "add-dark-mode" {
-		t.Errorf("Worktree.Name = %q, want %q", s.Worktree.Name, "add-dark-mode")
-	}
-	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
-		t.Errorf("old worktree path %q should not exist after rename (err=%v)", oldPath, err)
-	}
-	if _, err := os.Stat(s.Worktree.Path); err != nil {
-		t.Errorf("new worktree path %q should exist after rename: %v", s.Worktree.Path, err)
+	// The on-disk worktree path must NOT be moved during rename — moving it
+	// would yank the directory out from under the running Claude process.
+	if s.Worktree.Path != origPath {
+		t.Errorf("Worktree.Path changed during rename: got %q, want %q", s.Worktree.Path, origPath)
 	}
 
 	// Second rename is a no-op.
-	second, err := s.RenameBranch(repo, "baton/second-attempt", "")
+	second, err := s.RenameBranch(repo, "baton/second-attempt")
 	if err != nil {
 		t.Fatalf("second RenameBranch: %v", err)
 	}
@@ -114,48 +103,6 @@ func TestSessionRenameBranch(t *testing.T) {
 	}
 	if s.Name != "add-dark-mode" {
 		t.Errorf("second rename should not change Name, got %q", s.Name)
-	}
-}
-
-// TestSessionRenameBranch_WorktreeCollision verifies that when the target
-// worktree directory is already occupied on disk, Session.RenameBranch still
-// relocates the worktree — falling back to a "-2" suffix — so the session
-// name, branch, and on-disk directory remain congruent.
-func TestSessionRenameBranch_WorktreeCollision(t *testing.T) {
-	repo := setupTestRepo(t)
-
-	wt, err := git.CreateWorktree(repo, "warm-ibis", "", "", "")
-	if err != nil {
-		t.Fatalf("CreateWorktree: %v", err)
-	}
-	oldPath := wt.Path
-
-	// Occupy the primary destination with a non-empty unrelated directory.
-	blockerPath := filepath.Join(repo, ".baton", "worktrees", "add-dark-mode")
-	if err := os.MkdirAll(blockerPath, 0o755); err != nil {
-		t.Fatalf("mkdir blocker: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(blockerPath, "sentinel"), []byte("x"), 0o644); err != nil {
-		t.Fatalf("write sentinel: %v", err)
-	}
-
-	s := newSession("session-1", "warm-ibis", wt)
-
-	actual, err := s.RenameBranch(repo, "baton/add-dark-mode", "")
-	if err != nil {
-		t.Fatalf("RenameBranch: %v", err)
-	}
-	if actual != "baton/add-dark-mode" {
-		t.Errorf("branch rename should still succeed, got %q", actual)
-	}
-	if !s.HasClaudeName() {
-		t.Error("HasClaudeName should be true after rename")
-	}
-	if filepath.Base(s.Worktree.Path) != "add-dark-mode-2" {
-		t.Errorf("worktree path basename = %q, want %q", filepath.Base(s.Worktree.Path), "add-dark-mode-2")
-	}
-	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
-		t.Errorf("old worktree path %q should be gone (err=%v)", oldPath, err)
 	}
 }
 
@@ -172,7 +119,7 @@ func TestSessionRenameBranch_FailureLeavesStateUnchanged(t *testing.T) {
 
 	// Pin git config so rename would otherwise succeed, then sabotage via an
 	// empty target which RenameBranch rejects without touching state.
-	_, err = s.RenameBranch(repo, "", "")
+	_, err = s.RenameBranch(repo, "")
 	if err == nil {
 		t.Fatal("expected error for empty target")
 	}

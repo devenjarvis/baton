@@ -439,7 +439,7 @@ func TestDetachResumePreservesHasClaudeName(t *testing.T) {
 	}
 
 	// Rename the branch before detaching.
-	if _, err := sess.RenameBranch(repo, "baton/add-feature", ""); err != nil {
+	if _, err := sess.RenameBranch(repo, "baton/add-feature"); err != nil {
 		t.Fatal(err)
 	}
 	if !sess.HasClaudeName() {
