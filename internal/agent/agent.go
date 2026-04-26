@@ -531,6 +531,18 @@ func (a *Agent) RenderPadded(width, height int) string {
 	return a.terminal.RenderPadded(width, height)
 }
 
+// RenderPaddedWithSelection returns a width×height render with the cells inside
+// sel rendered in reverse video. See [vt.Terminal.RenderPaddedWithSelection].
+func (a *Agent) RenderPaddedWithSelection(width, height int, sel vt.SelectionRect) string {
+	return a.terminal.RenderPaddedWithSelection(width, height, sel)
+}
+
+// ExtractText returns the plain-text content of the cells inside rect.
+// See [vt.Terminal.ExtractText].
+func (a *Agent) ExtractText(rect vt.SelectionRect) string {
+	return a.terminal.ExtractText(rect)
+}
+
 // Snapshot returns a consistent (scrollback, viewport) pair for splice-safe
 // reads during pgup scrolling. See [vt.Terminal.Snapshot].
 func (a *Agent) Snapshot(width, height int) (scrollback []string, viewport string) {

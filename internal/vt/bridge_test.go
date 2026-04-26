@@ -673,6 +673,258 @@ func TestSnapshotAtomic(t *testing.T) {
 	wg.Wait()
 }
 
+func TestRenderPaddedWithSelectionInactiveMatchesRenderPadded(t *testing.T) {
+	const w, h = 30, 4
+	term := New(w, h)
+	defer term.Close()
+	_, _ = term.Write([]byte("hello\r\nworld\r\nfoo bar\r\nbaz"))
+
+	want := term.RenderPadded(w, h)
+	got := term.RenderPaddedWithSelection(w, h, SelectionRect{Active: false})
+	if got != want {
+		t.Errorf("inactive selection should match RenderPadded byte-for-byte\ngot:  %q\nwant: %q", got, want)
+	}
+}
+
+func TestRenderPaddedWithSelectionSingleCell(t *testing.T) {
+	const w, h = 10, 2
+	term := New(w, h)
+	defer term.Close()
+	_, _ = term.Write([]byte("ABCDE"))
+
+	// Select column 2 on row 0 → should invert exactly the 'C'.
+	out := term.RenderPaddedWithSelection(w, h, SelectionRect{
+		StartX: 2, StartY: 0, EndX: 2, EndY: 0, Active: true,
+	})
+	// The first row must contain "\x1b[7mC\x1b[27m" — reverse on, the cell, reverse off.
+	firstRow := strings.SplitN(out, "\n", 2)[0]
+	if !strings.Contains(firstRow, "\x1b[7mC\x1b[27m") {
+		t.Errorf("expected single-cell reverse around 'C', got %q", firstRow)
+	}
+	// 'B' and 'D' must not be wrapped in reverse video.
+	if strings.Contains(firstRow, "\x1b[7mB") || strings.Contains(firstRow, "\x1b[7mD") {
+		t.Errorf("expected only 'C' to be reversed, got %q", firstRow)
+	}
+	// Output shape must still be height rows, fully padded.
+	if got := strings.Count(out, "\n"); got != h-1 {
+		t.Errorf("expected %d newlines, got %d", h-1, got)
+	}
+}
+
+func TestRenderPaddedWithSelectionMultiLine(t *testing.T) {
+	const w, h = 10, 4
+	term := New(w, h)
+	defer term.Close()
+	_, _ = term.Write([]byte("ABCDE\r\nFGHIJ\r\nKLMNO\r\nPQRST"))
+
+	// Selection from (2,1) through (3,2): partial of row 1 (HIJ tail) and
+	// partial of row 2 (KLMN head).
+	out := term.RenderPaddedWithSelection(w, h, SelectionRect{
+		StartX: 2, StartY: 1, EndX: 3, EndY: 2, Active: true,
+	})
+	rows := strings.Split(out, "\n")
+	if len(rows) != h {
+		t.Fatalf("expected %d rows, got %d", h, len(rows))
+	}
+	// Row 0: no reverse video at all.
+	if strings.Contains(rows[0], "\x1b[7m") {
+		t.Errorf("row 0 should have no reverse video, got %q", rows[0])
+	}
+	// Row 1: reverse should turn on at H and span through end of row.
+	if !strings.Contains(rows[1], "\x1b[7m") {
+		t.Errorf("row 1 should contain reverse-on, got %q", rows[1])
+	}
+	// 'G' (col 1) must be before the reverse toggle.
+	idxG := strings.Index(rows[1], "G")
+	idxOn := strings.Index(rows[1], "\x1b[7m")
+	if idxG < 0 || idxOn < 0 || idxG > idxOn {
+		t.Errorf("row 1: 'G' should appear before reverse-on, got %q (G@%d, on@%d)", rows[1], idxG, idxOn)
+	}
+	// Row 2: reverse covers KLMN, then turns off before O.
+	if !strings.Contains(rows[2], "\x1b[27m") {
+		t.Errorf("row 2 should contain reverse-off, got %q", rows[2])
+	}
+	idxO := strings.Index(rows[2], "O")
+	idxOff := strings.Index(rows[2], "\x1b[27m")
+	if idxO < 0 || idxOff < 0 || idxOff > idxO {
+		t.Errorf("row 2: reverse-off should appear before 'O', got %q (off@%d, O@%d)", rows[2], idxOff, idxO)
+	}
+	// Row 3: no reverse video.
+	if strings.Contains(rows[3], "\x1b[7m") {
+		t.Errorf("row 3 should have no reverse video, got %q", rows[3])
+	}
+}
+
+func TestRenderPaddedWithSelectionDegenerateDims(t *testing.T) {
+	term := New(10, 5)
+	defer term.Close()
+	if got := term.RenderPaddedWithSelection(0, 5, SelectionRect{Active: true}); got != "" {
+		t.Errorf("expected empty for width=0, got %q", got)
+	}
+	if got := term.RenderPaddedWithSelection(5, 0, SelectionRect{Active: true}); got != "" {
+		t.Errorf("expected empty for height=0, got %q", got)
+	}
+}
+
+func TestRenderPaddedWithSelectionStyleTransitionInsideSelection(t *testing.T) {
+	const w, h = 10, 1
+	term := New(w, h)
+	defer term.Close()
+	// Red 'A', then plain 'BC'. Style.Diff from red→plain emits \x1b[0m which
+	// also clears reverse video — the bridge must re-emit \x1b[7m so the
+	// trailing 'BC' stays inverted.
+	_, _ = term.Write([]byte("\x1b[31mA\x1b[0mBC"))
+
+	out := term.RenderPaddedWithSelection(w, h, SelectionRect{
+		StartX: 0, StartY: 0, EndX: 2, EndY: 0, Active: true,
+	})
+	// Reverse-video must be in effect when 'B' and 'C' are emitted. We assert
+	// this structurally: every rendered glyph in the selection appears after
+	// a \x1b[7m and before the matching turn-off (or the trailing reset).
+	first := strings.SplitN(out, "\n", 2)[0]
+	idxA := strings.Index(first, "A")
+	idxB := strings.Index(first, "B")
+	idxC := strings.Index(first, "C")
+	if idxA < 0 || idxB < 0 || idxC < 0 {
+		t.Fatalf("expected A, B, C all present, got %q", first)
+	}
+	// Find the last \x1b[7m before each glyph and the first \x1b[27m or \x1b[0m
+	// after — assert the glyph is actually in reverse mode at emit time.
+	assertReverse := func(name string, idx int) {
+		t.Helper()
+		// last \x1b[7m before idx
+		on := strings.LastIndex(first[:idx], "\x1b[7m")
+		if on < 0 {
+			t.Errorf("%s at %d should be preceded by \\x1b[7m, got %q", name, idx, first)
+			return
+		}
+		// closest reverse-off after on
+		segment := first[on:idx]
+		if strings.Contains(segment, "\x1b[27m") || strings.Contains(segment, "\x1b[0m") {
+			// reverse was turned off between the last 7m and this glyph —
+			// must have been re-enabled. Look for another 7m closer to idx.
+			closer := strings.LastIndex(first[:idx], "\x1b[7m")
+			if closer == on {
+				t.Errorf("%s at %d: reverse turned off between \\x1b[7m@%d and glyph; not re-enabled. Frame=%q",
+					name, idx, on, first)
+			}
+		}
+	}
+	assertReverse("A", idxA)
+	assertReverse("B", idxB)
+	assertReverse("C", idxC)
+}
+
+func TestRenderPaddedWithSelectionWideCharNotSplit(t *testing.T) {
+	const w, h = 10, 1
+	term := New(w, h)
+	defer term.Close()
+	// Two CJK glyphs occupy 4 columns total; trailing ASCII fills the rest.
+	_, _ = term.Write([]byte("漢字hi"))
+
+	// Selection covers the trailing column of the first wide glyph only.
+	// The whole glyph should be inverted, and no second copy should appear.
+	out := term.RenderPaddedWithSelection(w, h, SelectionRect{
+		StartX: 1, StartY: 0, EndX: 1, EndY: 0, Active: true,
+	})
+	// "漢" must appear exactly once in the output.
+	if c := strings.Count(out, "漢"); c != 1 {
+		t.Errorf("wide glyph '漢' should appear exactly once, got %d in %q", c, out)
+	}
+	// And it should be inside the reverse-video bracket.
+	if !strings.Contains(out, "\x1b[7m漢\x1b[27m") {
+		t.Errorf("expected wide glyph to be wrapped in reverse video, got %q", out)
+	}
+}
+
+func TestExtractTextInactiveReturnsEmpty(t *testing.T) {
+	term := New(10, 2)
+	defer term.Close()
+	_, _ = term.Write([]byte("abc"))
+	if got := term.ExtractText(SelectionRect{Active: false}); got != "" {
+		t.Errorf("inactive rect should return empty, got %q", got)
+	}
+}
+
+func TestExtractTextSingleLine(t *testing.T) {
+	const w, h = 20, 2
+	term := New(w, h)
+	defer term.Close()
+	_, _ = term.Write([]byte("hello world"))
+
+	// Select cells 0..4 → "hello"
+	got := term.ExtractText(SelectionRect{StartX: 0, StartY: 0, EndX: 4, EndY: 0, Active: true})
+	if got != "hello" {
+		t.Errorf("expected 'hello', got %q", got)
+	}
+	// Select cells 6..10 → "world"
+	got = term.ExtractText(SelectionRect{StartX: 6, StartY: 0, EndX: 10, EndY: 0, Active: true})
+	if got != "world" {
+		t.Errorf("expected 'world', got %q", got)
+	}
+}
+
+func TestExtractTextMultiLine(t *testing.T) {
+	const w, h = 20, 4
+	term := New(w, h)
+	defer term.Close()
+	_, _ = term.Write([]byte("first line\r\nsecond\r\nthird"))
+
+	// Cover from (6, 0) to (5, 1) → " line" + "\n" + "second"
+	got := term.ExtractText(SelectionRect{StartX: 5, StartY: 0, EndX: 5, EndY: 1, Active: true})
+	want := " line\nsecond"
+	if got != want {
+		t.Errorf("multi-line: got %q, want %q", got, want)
+	}
+}
+
+func TestExtractTextTrimsTrailingWhitespace(t *testing.T) {
+	const w, h = 20, 2
+	term := New(w, h)
+	defer term.Close()
+	_, _ = term.Write([]byte("hi"))
+
+	// Selection extends past the actual content into blank cells; trailing
+	// whitespace must be trimmed.
+	got := term.ExtractText(SelectionRect{StartX: 0, StartY: 0, EndX: 19, EndY: 0, Active: true})
+	if got != "hi" {
+		t.Errorf("trailing blanks should be trimmed, got %q", got)
+	}
+
+	// Multi-line: each row trimmed independently. Row 1 is fully blank, so
+	// it should join in as an empty line — the join preserves rectangular
+	// shape across multi-line selections.
+	got = term.ExtractText(SelectionRect{StartX: 0, StartY: 0, EndX: 19, EndY: 1, Active: true})
+	if got != "hi\n" {
+		t.Errorf("multi-line trim should yield %q, got %q", "hi\n", got)
+	}
+}
+
+func TestExtractTextWideCharacter(t *testing.T) {
+	const w, h = 10, 1
+	term := New(w, h)
+	defer term.Close()
+	_, _ = term.Write([]byte("漢字hi"))
+
+	// Cells 0..3 cover both wide glyphs (each is 2 cells); content must
+	// not be duplicated by the trailing column.
+	got := term.ExtractText(SelectionRect{StartX: 0, StartY: 0, EndX: 3, EndY: 0, Active: true})
+	if got != "漢字" {
+		t.Errorf("expected '漢字', got %q", got)
+	}
+}
+
+func TestExtractTextEmptyRectOnBlankRow(t *testing.T) {
+	const w, h = 20, 2
+	term := New(w, h)
+	defer term.Close()
+	// Don't write anything — every cell is blank, so any rect trims to "".
+	got := term.ExtractText(SelectionRect{StartX: 0, StartY: 0, EndX: 5, EndY: 0, Active: true})
+	if got != "" {
+		t.Errorf("blank-row selection should yield empty string, got %q", got)
+	}
+}
+
 func TestCursorPosition(t *testing.T) {
 	term := New(80, 24)
 	defer term.Close()

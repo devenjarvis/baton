@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
 	xvt "github.com/charmbracelet/x/vt"
 )
@@ -199,6 +200,201 @@ func (t *Terminal) RenderPadded(width, height int) string {
 	}
 	raw := t.emu.Render()
 	return padFrame(raw, width, height)
+}
+
+// SelectionRect is a viewport-local cell rectangle used by the selection-aware
+// render and extract helpers. Coordinates are zero-based cell indices, and
+// the rect is inclusive on both ends; per-row span is "from StartX on row
+// StartY through EndX on row EndY" — see RenderPaddedWithSelection for the
+// exact membership rule. When Active is false, the helpers behave as if no
+// selection were present.
+type SelectionRect struct {
+	StartX, StartY int
+	EndX, EndY     int
+	Active         bool
+}
+
+// inSelection reports whether (x, y) falls inside sel under the per-line rule:
+// rows strictly inside the [StartY, EndY] band are fully selected; the start
+// row is selected from StartX to end-of-row; the end row is selected from
+// start-of-row to EndX; a single-row selection uses [StartX, EndX].
+func (sel SelectionRect) inSelection(x, y int) bool {
+	if !sel.Active || y < sel.StartY || y > sel.EndY {
+		return false
+	}
+	if y > sel.StartY && y < sel.EndY {
+		return true
+	}
+	if sel.StartY == sel.EndY {
+		return x >= sel.StartX && x <= sel.EndX
+	}
+	if y == sel.StartY {
+		return x >= sel.StartX
+	}
+	return x <= sel.EndX
+}
+
+// RenderPaddedWithSelection returns a render identical in shape to RenderPadded
+// (width × height cells, lines separated by `\n`, each line ending with a
+// style reset) but with the cells inside sel rendered in reverse video so the
+// underlying foreground/background are preserved. When sel.Active is false,
+// this delegates to RenderPadded.
+//
+// Iteration goes cell-by-cell so the lipgloss border around the viewport is
+// excluded by construction — the selection rect lives in VT-cell coordinates,
+// not screen pixels, so the frame can never appear inside the highlight.
+func (t *Terminal) RenderPaddedWithSelection(width, height int, sel SelectionRect) string {
+	if width <= 0 || height <= 0 {
+		return ""
+	}
+	if !sel.Active {
+		return t.RenderPadded(width, height)
+	}
+
+	var b strings.Builder
+	b.Grow(height * (width + 16))
+	for y := 0; y < height; y++ {
+		t.renderLineWithSelection(&b, width, y, sel)
+		b.WriteString("\x1b[0m")
+		if y < height-1 {
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
+}
+
+// renderLineWithSelection emits one row of width cells into b, honoring cell
+// styles and toggling SGR reverse video at selection boundaries. Wide cells
+// (Width == 2) emit their content once and consume two columns; if either
+// column is inside the selection, the cell is treated as selected.
+func (t *Terminal) renderLineWithSelection(b *strings.Builder, width, y int, sel SelectionRect) {
+	var (
+		pen     uv.Style
+		penSet  bool // false until we have written a real Style transition this line
+		reverse bool // SGR 7 currently on
+	)
+	for x := 0; x < width; x++ {
+		cell := t.emu.CellAt(x, y)
+		// Wide-cell trailing column: defensive skip. The lead branch below
+		// advances x past the trailing column, so this normally never fires
+		// — but if the emulator ever surfaces a stray Width==0 cell without
+		// a preceding lead, skipping it is the right behavior.
+		if cell != nil && cell.Width == 0 {
+			continue
+		}
+
+		var (
+			content string
+			cellW   int
+			style   uv.Style
+		)
+		if cell == nil {
+			content = " "
+			cellW = 1
+		} else {
+			content = cell.Content
+			if content == "" {
+				content = " "
+			}
+			cellW = cell.Width
+			if cellW < 1 {
+				cellW = 1
+			}
+			style = cell.Style
+		}
+
+		// Selection membership for this cell: a wide cell is "in" if either
+		// of its columns is in the selection.
+		inSel := sel.inSelection(x, y)
+		if cellW == 2 && !inSel {
+			inSel = sel.inSelection(x+1, y)
+		}
+
+		// Style transition. Always emit on the first cell of the line so any
+		// leftover SGR state from a prior line's reset is overwritten cleanly.
+		styleChanged := !penSet || !style.Equal(&pen)
+		if styleChanged {
+			diff := style.Diff(&pen)
+			if !penSet && diff == "" {
+				// First cell with zero style: still emit a reset so we don't
+				// inherit any pen the previous line might have left set.
+				b.WriteString("\x1b[0m")
+			} else {
+				b.WriteString(diff)
+			}
+			pen = style
+			penSet = true
+		}
+
+		// Reverse-video state. style.Diff may emit \x1b[0m, which clears all
+		// attributes including reverse — re-emit \x1b[7m after a style change
+		// while we're still inside the selection so the highlight survives.
+		switch {
+		case inSel && (!reverse || styleChanged):
+			b.WriteString("\x1b[7m")
+			reverse = true
+		case !inSel && reverse:
+			b.WriteString("\x1b[27m")
+			reverse = false
+		}
+
+		b.WriteString(content)
+		// Skip the trailing column of a wide cell so we don't double-emit.
+		if cellW == 2 {
+			x++
+		}
+	}
+	if reverse {
+		b.WriteString("\x1b[27m")
+	}
+}
+
+// ExtractText returns the plain text inside rect, joining rows with "\n" and
+// trimming trailing whitespace from each row. No styles or hyperlink metadata
+// are emitted. Wide cells contribute their content once (on the lead column)
+// and the trailing column is skipped; a wide cell is included if either of
+// its columns is inside the selection — matches RenderPaddedWithSelection.
+// An empty or inactive rect returns "".
+func (t *Terminal) ExtractText(rect SelectionRect) string {
+	if !rect.Active {
+		return ""
+	}
+	width := t.emu.Width()
+	var rows []string
+	for y := rect.StartY; y <= rect.EndY; y++ {
+		var line strings.Builder
+		for x := 0; x < width; x++ {
+			cell := t.emu.CellAt(x, y)
+			if cell != nil && cell.Width == 0 {
+				// Trailing column of a wide cell — handled at lead.
+				continue
+			}
+			cellW := 1
+			if cell != nil && cell.Width > 1 {
+				cellW = cell.Width
+			}
+			inSel := rect.inSelection(x, y)
+			if cellW == 2 && !inSel {
+				inSel = rect.inSelection(x+1, y)
+			}
+			if !inSel {
+				if cellW == 2 {
+					x++
+				}
+				continue
+			}
+			if cell == nil || cell.Content == "" {
+				line.WriteByte(' ')
+			} else {
+				line.WriteString(cell.Content)
+			}
+			if cellW == 2 {
+				x++
+			}
+		}
+		rows = append(rows, strings.TrimRight(line.String(), " \t"))
+	}
+	return strings.Join(rows, "\n")
 }
 
 // padFrame right-pads every line in `raw` (a `\n`-separated render) to `width`
