@@ -394,7 +394,7 @@ func (m *Manager) CreateSessionWithCommand(cfg Config, cmd func(name string) *ex
 		return nil, nil, err
 	}
 
-	a, err := sess.AddAgent(cfg, cmd(cfg.Name))
+	a, err := sess.AddAgent(cfg, cmd)
 	if err != nil {
 		_ = sess.Cleanup(m.repoPath)
 		m.mu.Lock()
@@ -448,7 +448,7 @@ func (m *Manager) CreateSessionOnBranchWithCommand(branch, baseBranch string, cf
 		return nil, nil, err
 	}
 
-	a, err := sess.AddAgent(cfg, cmd(cfg.Name))
+	a, err := sess.AddAgent(cfg, cmd)
 	if err != nil {
 		_ = sess.Cleanup(m.repoPath)
 		m.mu.Lock()
@@ -644,7 +644,7 @@ func (m *Manager) AddAgentWithCommand(sessionID string, cfg Config, cmd func(nam
 
 	cfg.RepoPath = m.repoPath
 
-	a, err := sess.AddAgent(cfg, cmd(cfg.Name))
+	a, err := sess.AddAgent(cfg, cmd)
 	if err != nil {
 		return nil, err
 	}

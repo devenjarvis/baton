@@ -399,7 +399,7 @@ func TestSessionStatusExcludesShell(t *testing.T) {
 
 	// Add a Claude agent that exits quickly.
 	cfg := Config{Task: "test", Rows: 24, Cols: 80}
-	ag, err := sess.AddAgent(cfg, exec.Command("bash", "-c", "echo done"))
+	ag, err := sess.AddAgent(cfg, func(_ string) *exec.Cmd { return exec.Command("bash", "-c", "echo done") })
 	if err != nil {
 		t.Fatal(err)
 	}

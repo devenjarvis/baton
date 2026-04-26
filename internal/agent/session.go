@@ -40,7 +40,10 @@ func newSession(id, name string, wt *git.WorktreeInfo) *Session {
 }
 
 // AddAgent creates and starts a new agent within this session using the session's worktree.
-func (s *Session) AddAgent(cfg Config, cmd *exec.Cmd) (*Agent, error) {
+// cmdFactory is called after the agent name has been assigned so the factory
+// receives the resolved name ("track-1", etc.) rather than the empty string
+// that cfg.Name holds before the lock.
+func (s *Session) AddAgent(cfg Config, cmdFactory func(name string) *exec.Cmd) (*Agent, error) {
 	s.mu.Lock()
 	s.nextAgentNum++
 	num := s.nextAgentNum
@@ -51,7 +54,7 @@ func (s *Session) AddAgent(cfg Config, cmd *exec.Cmd) (*Agent, error) {
 	id := fmt.Sprintf("%s-agent-%d", s.ID, num)
 	s.mu.Unlock()
 
-	a, err := newAgentWithCommand(id, cfg, s.Worktree.Path, cmd)
+	a, err := newAgentWithCommand(id, cfg, s.Worktree.Path, cmdFactory(cfg.Name))
 	if err != nil {
 		return nil, err
 	}
