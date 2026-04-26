@@ -889,22 +889,6 @@ func waitForBranchChanged(t *testing.T, sess *Session, original string, d time.D
 	return sess.Branch()
 }
 
-// waitForAgentDisplayName polls until Agent.GetDisplayName() returns want or
-// the deadline elapses. The async rename goroutine updates the branch and
-// the display name in close succession but not atomically, so tests that
-// check both should wait on the display name (the later update).
-func waitForAgentDisplayName(t *testing.T, a *Agent, want string, d time.Duration) string {
-	t.Helper()
-	deadline := time.Now().Add(d)
-	for time.Now().Before(deadline) {
-		if got := a.GetDisplayName(); got == want {
-			return got
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	return a.GetDisplayName()
-}
-
 // waitForSessionDisplayName polls until Session.GetDisplayName() returns want or
 // the deadline elapses. Use this after a successful Haiku rename to confirm the
 // session separator updated (the display-name write happens inside the rename
