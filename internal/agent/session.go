@@ -306,17 +306,6 @@ func (s *Session) Cleanup(repoPath string) error {
 	return git.RemoveWorktree(repoPath, s.Worktree, s.ownsBranch)
 }
 
-// existingNames returns the session name and all current agent names.
-// Must be called with s.mu held.
-func (s *Session) existingNames() []string {
-	names := make([]string, 0, len(s.agents)+1)
-	names = append(names, s.Name)
-	for _, a := range s.agents {
-		names = append(names, a.Name)
-	}
-	return names
-}
-
 // SetDisplayName sets a human-readable display name for the session.
 func (s *Session) SetDisplayName(name string) {
 	s.mu.Lock()
