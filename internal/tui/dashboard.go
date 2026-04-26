@@ -15,6 +15,7 @@ import (
 	"github.com/devenjarvis/baton/internal/agent"
 	"github.com/devenjarvis/baton/internal/config"
 	"github.com/devenjarvis/baton/internal/github"
+	"github.com/devenjarvis/baton/internal/vt"
 )
 
 // truncateVisible returns s truncated to n display cells with an ellipsis.
@@ -94,6 +95,21 @@ type dashboardModel struct {
 	// Repo config form shown in the right panel when focusConfig is active.
 	repoConfigForm *configForm
 	configRepoPath string // path of the repo being configured
+
+	// Mouse text selection state in VT-cell coordinates, bound to a specific
+	// agent so a sidebar selection change clears it cleanly.
+	selection selection
+}
+
+// selection tracks an in-progress or completed mouse drag selection inside the
+// agent VT viewport. Coordinates are zero-based cell indices within the
+// agent's viewport (0..fixedTermWidth, 0..fixedTermHeight).
+type selection struct {
+	anchorX, anchorY int
+	cursorX, cursorY int
+	active           bool   // a click has seeded an in-flight or completed selection
+	dragSeen         bool   // mouse moved away from the anchor; distinguishes drag from plain click
+	agentID          string // agent.Agent.ID() the selection is bound to
 }
 
 func newDashboardModel() dashboardModel {
@@ -277,9 +293,9 @@ func (d dashboardModel) fixedTermHeight() int {
 // previewMetadataRows returns the number of non-VT rows rendered above the
 // terminal viewport in the preview panel: title, sessionInfo, taskInfo, and
 // the blank separator — plus one row for the PR info line when the selected
-// session has an open PR. Mouse coordinate translation in app.go uses a
-// hardcoded constant (see forwardWheelToAgent) and is explicitly out of scope
-// here.
+// session has an open PR. Mouse coordinate translation in app.go consumes
+// this via screenToTermCell so wheel/click/drag stay aligned with the
+// viewport when the PR row appears or disappears.
 func (d dashboardModel) previewMetadataRows() int {
 	rows := 4 // title, sessionInfo, taskInfo, blank
 	if sess := d.selectedSession(); sess != nil {
@@ -673,6 +689,11 @@ func (d dashboardModel) renderPreview(width int) string {
 			start = 0
 		}
 		render = strings.Join(allLines[start:end], "\n")
+	} else if d.selection.active && d.selection.dragSeen && d.selection.agentID == ag.ID {
+		sx, sy, ex, ey, _ := d.selectionRect()
+		render = ag.RenderPaddedWithSelection(vpWidth, vpHeight, vt.SelectionRect{
+			StartX: sx, StartY: sy, EndX: ex, EndY: ey, Active: true,
+		})
 	} else {
 		render = ag.RenderPadded(vpWidth, vpHeight)
 	}
@@ -750,6 +771,33 @@ func (d *dashboardModel) clampToAgent() {
 			return
 		}
 	}
+}
+
+// clearSelection resets the mouse text-selection state. Safe to call when no
+// selection is active.
+func (d *dashboardModel) clearSelection() {
+	d.selection = selection{}
+}
+
+// selectionRect returns the active selection as a normalized rectangle in
+// VT-cell coordinates. Normalization is by row first, so for a multi-row
+// reverse drag (anchor row > cursor row) the returned startX/endX may be
+// "out of order" relative to a Cartesian rect — that asymmetry is intentional
+// and matches the per-line membership rule in vt.SelectionRect.inSelection:
+// startX picks where the start row begins, endX picks where the end row ends,
+// and the X axis is independent on each row. ok is false when there is no
+// drag-confirmed selection to render or copy from.
+func (d dashboardModel) selectionRect() (startX, startY, endX, endY int, ok bool) {
+	if !d.selection.active || !d.selection.dragSeen {
+		return 0, 0, 0, 0, false
+	}
+	startX, endX = d.selection.anchorX, d.selection.cursorX
+	startY, endY = d.selection.anchorY, d.selection.cursorY
+	if startY > endY || (startY == endY && startX > endX) {
+		startX, endX = endX, startX
+		startY, endY = endY, startY
+	}
+	return startX, startY, endX, endY, true
 }
 
 // agentItems returns all agent items from the list (for resize operations).

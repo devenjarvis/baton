@@ -22,6 +22,7 @@ import (
 	"github.com/devenjarvis/baton/internal/git"
 	"github.com/devenjarvis/baton/internal/github"
 	"github.com/devenjarvis/baton/internal/state"
+	"github.com/devenjarvis/baton/internal/vt"
 )
 
 // tickMsg triggers periodic re-renders.
@@ -195,6 +196,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.branchPicker.width = msg.Width
 		a.branchPicker.height = msg.Height - 1
 		a.recomputePRSectionY()
+		// A resize remaps the VT viewport — any in-flight selection is now
+		// pointing at stale cells. Drop it.
+		a.dashboard.clearSelection()
 
 		// Resize agent terminals to match their current display container.
 		if a.view == ViewDashboard {
@@ -1025,6 +1029,83 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if a.dashboard.panelFocus == focusList && a.dashboard.selectedAgent() != nil {
 					a.dashboard.panelFocus = focusTerminal
 				}
+				// Seed a fresh selection if the click landed inside the agent's
+				// VT viewport. dragSeen=false until a subsequent motion event
+				// confirms an actual drag — a click without drag should not
+				// produce a 1-cell selection.
+				if a.dashboard.panelFocus == focusTerminal {
+					if ag := a.dashboard.selectedAgent(); ag != nil {
+						if termX, termY, inVP := a.screenToTermCell(msg.X, msg.Y); inVP {
+							a.dashboard.selection = selection{
+								anchorX: termX,
+								anchorY: termY,
+								cursorX: termX,
+								cursorY: termY,
+								active:  true,
+								agentID: ag.ID,
+							}
+						} else {
+							// Click outside the viewport (e.g., on the border)
+							// drops any prior selection — matches what the user
+							// expects from "click somewhere else".
+							a.dashboard.clearSelection()
+						}
+					}
+				}
+			}
+		}
+		return a, nil
+	}
+
+	if msg, ok := msg.(tea.MouseMotionMsg); ok {
+		// Drag updates the cursor end of an in-flight selection. A motion
+		// event with the left button still held is the only signal we have
+		// that the user is dragging — bubbletea's MouseModeCellMotion gives
+		// us these while a button is down.
+		if a.dashboard.selection.active && msg.Button == tea.MouseLeft {
+			termX, termY, _ := a.screenToTermCell(msg.X, msg.Y)
+			if w := a.dashboard.fixedTermWidth(); w > 0 {
+				if termX < 0 {
+					termX = 0
+				} else if termX >= w {
+					termX = w - 1
+				}
+			}
+			if h := a.dashboard.fixedTermHeight(); h > 0 {
+				if termY < 0 {
+					termY = 0
+				} else if termY >= h {
+					termY = h - 1
+				}
+			}
+			a.dashboard.selection.cursorX = termX
+			a.dashboard.selection.cursorY = termY
+			if termX != a.dashboard.selection.anchorX || termY != a.dashboard.selection.anchorY {
+				a.dashboard.selection.dragSeen = true
+			}
+		}
+		return a, nil
+	}
+
+	if _, ok := msg.(tea.MouseReleaseMsg); ok {
+		if a.dashboard.selection.active {
+			if a.dashboard.selection.dragSeen {
+				// Real drag — copy the highlighted region. The highlight
+				// stays on screen until the next click clears or replaces it.
+				if ag := a.dashboard.selectedAgent(); ag != nil && ag.ID == a.dashboard.selection.agentID {
+					if sx, sy, ex, ey, ok := a.dashboard.selectionRect(); ok {
+						text := ag.ExtractText(vt.SelectionRect{
+							StartX: sx, StartY: sy, EndX: ex, EndY: ey, Active: true,
+						})
+						if text != "" {
+							return a, tea.SetClipboard(text)
+						}
+					}
+				}
+			} else {
+				// Plain click — drop the seeded selection. Focus already moved
+				// in the click handler.
+				a.dashboard.clearSelection()
 			}
 		}
 		return a, nil
@@ -1074,6 +1155,15 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				diffCmd := a.refreshDiffStatsCmd()
 				return a, tea.Batch(cmd, diffCmd)
 			}
+		}
+	}
+	// Maintain the invariant: a text selection only persists while the user
+	// remains focused on the same agent's terminal. Any focus or agent change
+	// (sidebar nav, esc, click on the list, etc.) drops it.
+	if a.dashboard.selection.active {
+		ag := a.dashboard.selectedAgent()
+		if a.dashboard.panelFocus != focusTerminal || ag == nil || ag.ID != a.dashboard.selection.agentID {
+			a.dashboard.clearSelection()
 		}
 	}
 	return a, cmd
@@ -1305,18 +1395,16 @@ func (a *App) setError(msg string) {
 	a.errTicks = 30
 }
 
-// forwardWheelToAgent encodes a mouse wheel event and feeds it to the agent's
-// terminal. Coordinates are translated from dashboard-screen space to cells
-// relative to the agent's PTY viewport and clamped to [0,W)×[0,H). The
-// emulator only emits bytes when the running program has enabled mouse
-// reporting (DECSET 1000/1002/1003 + SGR 1006).
-func (a *App) forwardWheelToAgent(ag *agent.Agent, msg tea.MouseWheelMsg) {
-	// Row/col offsets to the terminal viewport's top-left cell in screen
-	// space. Mirrors the hardcoded layout assumed by fixedTermHeight
-	// (contentHeight − 4 metadata rows − 2 border rows) plus whatever banner
-	// rows the app layer has pushed the dashboard down by. Exact precision
-	// isn't critical — most alt-screen apps treat wheel events as
-	// direction-only — but translating keeps the coords inside the viewport.
+// screenToTermCell converts a screen-space mouse coordinate to a VT cell
+// coordinate inside the agent preview viewport. inViewport is false when the
+// point lies outside the viewport rectangle — callers that want clamping
+// should clamp to [0, fixedTermWidth) × [0, fixedTermHeight) themselves.
+//
+// The translation mirrors the dashboard layout: an optional error/confirm-quit
+// banner pushes content down, the list panel and its border occupy the first
+// 32 columns, and the preview's lipgloss frame plus the metadata rows above
+// the VT viewport offset the top-left cell.
+func (a *App) screenToTermCell(screenX, screenY int) (termX, termY int, inViewport bool) {
 	dashboardTopY := 0
 	if a.err != "" {
 		dashboardTopY++
@@ -1325,19 +1413,31 @@ func (a *App) forwardWheelToAgent(ag *agent.Agent, msg tea.MouseWheelMsg) {
 		dashboardTopY++
 	}
 	const (
-		previewColOffset    = 32 // list panel width + list-panel right border
-		previewLeftBorder   = 1
-		previewTopBorder    = 1
-		previewMetadataRows = 4 // title, sessionInfo, taskInfo, blank separator
+		previewColOffset  = 32 // list panel width + list-panel right border
+		previewLeftBorder = 1
+		previewTopBorder  = 1
 	)
-	termX := msg.X - previewColOffset - previewLeftBorder
+	w := a.dashboard.fixedTermWidth()
+	h := a.dashboard.fixedTermHeight()
+	termX = screenX - previewColOffset - previewLeftBorder
+	termY = screenY - dashboardTopY - previewTopBorder - a.dashboard.previewMetadataRows()
+	inViewport = w > 0 && h > 0 && termX >= 0 && termX < w && termY >= 0 && termY < h
+	return termX, termY, inViewport
+}
+
+// forwardWheelToAgent encodes a mouse wheel event and feeds it to the agent's
+// terminal. Coordinates are translated from dashboard-screen space to cells
+// relative to the agent's PTY viewport and clamped to [0,W)×[0,H). The
+// emulator only emits bytes when the running program has enabled mouse
+// reporting (DECSET 1000/1002/1003 + SGR 1006).
+func (a *App) forwardWheelToAgent(ag *agent.Agent, msg tea.MouseWheelMsg) {
+	termX, termY, _ := a.screenToTermCell(msg.X, msg.Y)
 	if termX < 0 {
 		termX = 0
 	}
 	if w := a.dashboard.fixedTermWidth(); w > 0 && termX >= w {
 		termX = w - 1
 	}
-	termY := msg.Y - dashboardTopY - previewTopBorder - previewMetadataRows
 	if termY < 0 {
 		termY = 0
 	}
