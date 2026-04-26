@@ -42,17 +42,22 @@ func newSession(id, name string, wt *git.WorktreeInfo) *Session {
 // AddAgent creates and starts a new agent within this session using the session's worktree.
 func (s *Session) AddAgent(cfg Config, cmd *exec.Cmd) (*Agent, error) {
 	s.mu.Lock()
-	if cfg.Name == "" {
-		cfg.Name = RandomName(s.existingNames())
-	}
 	s.nextAgentNum++
 	num := s.nextAgentNum
+	autoNamed := cfg.Name == ""
+	if autoNamed {
+		cfg.Name = fmt.Sprintf("track-%d", num)
+	}
 	id := fmt.Sprintf("%s-agent-%d", s.ID, num)
 	s.mu.Unlock()
 
 	a, err := newAgentWithCommand(id, cfg, s.Worktree.Path, cmd)
 	if err != nil {
 		return nil, err
+	}
+
+	if autoNamed && !a.HasDisplayName() {
+		a.SetDisplayName(fmt.Sprintf("Track %d", num))
 	}
 
 	s.mu.Lock()
@@ -65,11 +70,12 @@ func (s *Session) AddAgent(cfg Config, cmd *exec.Cmd) (*Agent, error) {
 // AddAgentDefault creates and starts a new agent using the default claude command.
 func (s *Session) AddAgentDefault(cfg Config) (*Agent, error) {
 	s.mu.Lock()
-	if cfg.Name == "" {
-		cfg.Name = RandomName(s.existingNames())
-	}
 	s.nextAgentNum++
 	num := s.nextAgentNum
+	autoNamed := cfg.Name == ""
+	if autoNamed {
+		cfg.Name = fmt.Sprintf("track-%d", num)
+	}
 	id := fmt.Sprintf("%s-agent-%d", s.ID, num)
 	socketPath := s.hookSocketPath
 	s.mu.Unlock()
@@ -77,6 +83,10 @@ func (s *Session) AddAgentDefault(cfg Config) (*Agent, error) {
 	a, err := newAgent(id, cfg, s.Worktree.Path, socketPath)
 	if err != nil {
 		return nil, err
+	}
+
+	if autoNamed && !a.HasDisplayName() {
+		a.SetDisplayName(fmt.Sprintf("Track %d", num))
 	}
 
 	s.mu.Lock()
@@ -89,11 +99,12 @@ func (s *Session) AddAgentDefault(cfg Config) (*Agent, error) {
 // AddAgentResumed creates and starts a new agent that resumes a previous Claude session.
 func (s *Session) AddAgentResumed(cfg Config, claudeSessionID string) (*Agent, error) {
 	s.mu.Lock()
-	if cfg.Name == "" {
-		cfg.Name = RandomName(s.existingNames())
-	}
 	s.nextAgentNum++
 	num := s.nextAgentNum
+	autoNamed := cfg.Name == ""
+	if autoNamed {
+		cfg.Name = fmt.Sprintf("track-%d", num)
+	}
 	id := fmt.Sprintf("%s-agent-%d", s.ID, num)
 	socketPath := s.hookSocketPath
 	s.mu.Unlock()
@@ -101,6 +112,10 @@ func (s *Session) AddAgentResumed(cfg Config, claudeSessionID string) (*Agent, e
 	a, err := newResumedAgent(id, cfg, s.Worktree.Path, claudeSessionID, socketPath)
 	if err != nil {
 		return nil, err
+	}
+
+	if autoNamed && !a.HasDisplayName() {
+		a.SetDisplayName(fmt.Sprintf("Track %d", num))
 	}
 
 	s.mu.Lock()

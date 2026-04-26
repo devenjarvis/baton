@@ -106,6 +106,48 @@ func TestSessionRenameBranch(t *testing.T) {
 	}
 }
 
+func TestAgentAutoNamedAsTrack(t *testing.T) {
+	repo := setupTestRepo(t)
+	wt, err := git.CreateWorktree(repo, "bohemian-rhapsody", "", "", "")
+	if err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+	s := newSession("session-1", "bohemian-rhapsody", wt)
+
+	// First agent with no explicit name gets track-1 / Track 1.
+	a1, err := s.AddAgentDefault(Config{Rows: 24, Cols: 80})
+	if err != nil {
+		t.Fatalf("AddAgentDefault agent 1: %v", err)
+	}
+	if a1.Name != "track-1" {
+		t.Errorf("agent 1 Name = %q, want track-1", a1.Name)
+	}
+	if got := a1.GetDisplayName(); got != "Track 1" {
+		t.Errorf("agent 1 GetDisplayName = %q, want Track 1", got)
+	}
+
+	// Second agent with no explicit name gets track-2 / Track 2.
+	a2, err := s.AddAgentDefault(Config{Rows: 24, Cols: 80})
+	if err != nil {
+		t.Fatalf("AddAgentDefault agent 2: %v", err)
+	}
+	if a2.Name != "track-2" {
+		t.Errorf("agent 2 Name = %q, want track-2", a2.Name)
+	}
+	if got := a2.GetDisplayName(); got != "Track 2" {
+		t.Errorf("agent 2 GetDisplayName = %q, want Track 2", got)
+	}
+
+	// Explicit cfg.Name bypasses track numbering.
+	a3, err := s.AddAgentDefault(Config{Name: "my-custom-name", Rows: 24, Cols: 80})
+	if err != nil {
+		t.Fatalf("AddAgentDefault agent 3: %v", err)
+	}
+	if a3.Name != "my-custom-name" {
+		t.Errorf("agent 3 Name = %q, want my-custom-name", a3.Name)
+	}
+}
+
 func TestSessionRenameBranch_FailureLeavesStateUnchanged(t *testing.T) {
 	repo := setupTestRepo(t)
 
