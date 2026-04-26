@@ -1,0 +1,3 @@
+### Changed
+
+- Expanded the embedded song catalog used for random session names from 20 hand-picked classics to 1148 tracks curated from the maintainer's Spotify listening history (16 years of plays). Selection enriched via Last.fm (genre, listener-count popularity tier) and MusicBrainz (release year, ISRC), then sampled across decade × genre cells with a per-artist cap of 5 to keep diversity high while reflecting actual taste — a mix of pop stars and obscure artists across rock, indie, pop, hip-hop, electronic, folk, jazz, r&b, metal, country, and world. Worktree-name collisions are now effectively impossible at typical session counts.
