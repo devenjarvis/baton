@@ -260,10 +260,12 @@ func (m *Manager) maybeRenameFromPrompt(sess *Session, a *Agent, prompt string) 
 		if !m.renameSessionBranch(sess, newBranch) {
 			return
 		}
-		// Display-name updates must happen before EventBranchRenamed fires
-		// so subscribers (PR scheduler, TUI) see a coherent snapshot.
+		// The session display name updates to the Haiku-derived task name so
+		// the sidebar separator shows what the session is working on. Agents
+		// keep their stable track identities (Track 1, Track 2, ...) and are
+		// never renamed here. Both writes must happen before EventBranchRenamed
+		// fires so subscribers (PR scheduler, TUI) see a coherent snapshot.
 		sess.SetDisplayName(suffix)
-		a.SetDisplayName(suffix)
 		m.emitBranchRenamed(sess, a, newBranch)
 	}()
 }
