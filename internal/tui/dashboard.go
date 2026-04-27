@@ -662,7 +662,7 @@ func (d dashboardModel) renderPreview(width int) string {
 					checkStr = fmt.Sprintf(" -- %d/%d checks "+StyleWarning.Render("\u25cb"), entry.checks.Passed, entry.checks.Total)
 				}
 			}
-			prInfo = StyleSubtle.Render(fmt.Sprintf(" PR: #%d (%s)%s  %s", pr.Number, pr.State, checkStr, pr.URL))
+			prInfo = StyleSubtle.Render(" PR: ") + StyleLink.Render(fmt.Sprintf("#%d", pr.Number)) + StyleSubtle.Render(fmt.Sprintf(" (%s)%s  %s", pr.State, checkStr, pr.URL))
 		}
 	}
 	var taskInfo string
@@ -919,7 +919,7 @@ func (d dashboardModel) renderChecksSummary(entry *prCacheEntry, width, maxHeigh
 	if padLen < 0 {
 		padLen = 0
 	}
-	header := StyleSubtle.Render(prLabel) + badge + StyleSubtle.Render(strings.Repeat("─", padLen))
+	header := StyleSubtle.Render("── PR ") + StyleLink.Render(fmt.Sprintf("#%d", pr.Number)) + StyleSubtle.Render(" ──") + badge + StyleSubtle.Render(strings.Repeat("─", padLen))
 
 	var lines []string
 	lines = append(lines, header)

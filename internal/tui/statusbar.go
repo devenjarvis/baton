@@ -20,6 +20,7 @@ var (
 		{"t", "shell"},
 		{"e", "open in IDE"},
 		{"p", "open PR"},
+		{"click PR#", "open"},
 		{"s", "settings"},
 		{"a", "add repo"},
 		{"o", "open branch"},
