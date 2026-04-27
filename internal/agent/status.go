@@ -35,17 +35,17 @@ func (s Status) String() string {
 func (s Status) Symbol() string {
 	switch s {
 	case StatusStarting:
-		return "◎"
+		return "▷"
 	case StatusActive:
-		return "●"
+		return "▶"
 	case StatusWaiting:
-		return "◐"
+		return "⏺"
 	case StatusIdle:
-		return "○"
+		return "⏸"
 	case StatusDone:
-		return "✓"
+		return "⏭"
 	case StatusError:
-		return "✗"
+		return "⏹"
 	default:
 		return "?"
 	}

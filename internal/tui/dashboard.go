@@ -383,6 +383,14 @@ func (d dashboardModel) renderList(width int) string {
 
 			displayName := sess.GetDisplayName()
 
+			// Build rename-in-flight indicator suffix. Skipped while closing.
+			var renameSuffix string
+			var renameSuffixLen int
+			if !closing && sess.IsRenaming() {
+				renameSuffix = " ⏏"
+				renameSuffixLen = 2 // space + glyph
+			}
+
 			// Build PR indicator suffix for the session row. Skipped while
 			// closing so the " closing…" tag doesn't fight with a PR badge
 			// for limited header width.
@@ -411,7 +419,7 @@ func (d dashboardModel) renderList(width int) string {
 			}
 
 			// 4 for "  ──", 3 for " symbol ", 1 trailing space, plus some padding chars
-			maxNameLen := width - 10 - prSuffixLen - closingTagLen
+			maxNameLen := width - 10 - renameSuffixLen - prSuffixLen - closingTagLen
 			if maxNameLen < 5 {
 				maxNameLen = 5
 			}
@@ -425,8 +433,8 @@ func (d dashboardModel) renderList(width int) string {
 			if closing {
 				label += StyleSubtle.Render(closingTag)
 			}
-			label += " "
-			labelLen := ansi.StringWidth(symbol) + 1 + ansi.StringWidth(displayName) + 2 + prSuffixLen + closingTagLen
+			label += renameSuffix + " "
+			labelLen := ansi.StringWidth(symbol) + 1 + ansi.StringWidth(displayName) + 2 + renameSuffixLen + prSuffixLen + closingTagLen
 			padLen := width - 4 - labelLen
 			if padLen < 0 {
 				padLen = 0
