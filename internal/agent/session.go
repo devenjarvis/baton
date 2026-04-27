@@ -338,6 +338,13 @@ func (s *Session) HasClaudeName() bool {
 	return s.hasClaudeName
 }
 
+// IsRenaming reports whether a Haiku rename goroutine is currently in flight.
+func (s *Session) IsRenaming() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.renaming
+}
+
 // SetClaudeName marks whether this session has a Claude-derived branch name.
 func (s *Session) SetClaudeName(v bool) {
 	s.mu.Lock()
