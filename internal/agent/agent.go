@@ -374,6 +374,11 @@ func (a *Agent) OnHookEvent(e hook.Event) (statusChanged bool) {
 
 	switch e.Kind {
 	case hook.KindSessionStart:
+		// A late SessionStart after process exit must not resurrect a Done or
+		// Error agent — mirror the guard pattern on the other hook kinds.
+		if a.status == StatusDone || a.status == StatusError {
+			return false
+		}
 		if e.SessionID != "" {
 			a.claudeSessionID = e.SessionID
 		}
@@ -385,6 +390,14 @@ func (a *Agent) OnHookEvent(e hook.Event) (statusChanged bool) {
 		return false
 
 	case hook.KindStop:
+		// A late Stop after process exit must not resurrect a Done or Error
+		// agent. This race is common: the PTY closes (readLoop sets Done/Error)
+		// and Claude's in-flight Stop hook event lands a moment later on the
+		// unix socket. Without this guard the agent's status would flip back to
+		// Idle, showing a wrong indicator and potentially triggering a chime.
+		if a.status == StatusDone || a.status == StatusError {
+			return false
+		}
 		// Claude finished its turn; the user is now in control. Clear the
 		// composing flag so input-display logic returns to its idle baseline.
 		a.composing = false

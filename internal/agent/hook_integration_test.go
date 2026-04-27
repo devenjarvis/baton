@@ -207,6 +207,179 @@ func TestManagerUserPromptSubmitRearmsChime(t *testing.T) {
 	}
 }
 
+// TestDoneAgentIgnoresLateStop verifies that a Done agent stays Done when a
+// late Stop event arrives — the common race where the PTY closes (readLoop
+// sets StatusDone) while Claude's in-flight Stop hook is still in the socket
+// queue.  Without the guard, the agent's status would flip to Idle and the
+// dashboard would show the wrong indicator.
+func TestDoneAgentIgnoresLateStop(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	cfg := Config{Name: "done-ignore-stop", Task: "test", Rows: 24, Cols: 80}
+	_, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-mgr.Events():
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for EventCreated")
+	}
+
+	ag.mu.Lock()
+	ag.status = StatusDone
+	ag.mu.Unlock()
+
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindStop,
+		AgentID: ag.ID,
+	}); err != nil {
+		t.Fatalf("SendEvent Stop: %v", err)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+	if got := ag.Status(); got != StatusDone {
+		t.Errorf("expected Done to be preserved after late Stop, got %s", got)
+	}
+}
+
+// TestErrorAgentIgnoresLateStop verifies that an Error agent stays Error when a
+// late Stop hook arrives after the process has already exited with an error.
+func TestErrorAgentIgnoresLateStop(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	cfg := Config{Name: "error-ignore-stop", Task: "test", Rows: 24, Cols: 80}
+	_, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-mgr.Events():
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for EventCreated")
+	}
+
+	ag.mu.Lock()
+	ag.status = StatusError
+	ag.mu.Unlock()
+
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindStop,
+		AgentID: ag.ID,
+	}); err != nil {
+		t.Fatalf("SendEvent Stop: %v", err)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+	if got := ag.Status(); got != StatusError {
+		t.Errorf("expected Error to be preserved after late Stop, got %s", got)
+	}
+}
+
+// TestDoneAgentIgnoresLateSessionStart verifies that a Done agent stays Done
+// when a late SessionStart event arrives.  This mirrors the same scenario for
+// Stop: the process may exit before all hook events are drained from the socket.
+func TestDoneAgentIgnoresLateSessionStart(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	cfg := Config{Name: "done-ignore-ss", Task: "test", Rows: 24, Cols: 80}
+	_, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-mgr.Events():
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for EventCreated")
+	}
+
+	ag.mu.Lock()
+	ag.status = StatusDone
+	ag.mu.Unlock()
+
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:      hook.KindSessionStart,
+		AgentID:   ag.ID,
+		SessionID: "stray-session-id",
+	}); err != nil {
+		t.Fatalf("SendEvent SessionStart: %v", err)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+	if got := ag.Status(); got != StatusDone {
+		t.Errorf("expected Done to be preserved after late SessionStart, got %s", got)
+	}
+}
+
+// TestNotificationIgnoredWhenIdle verifies that a Notification arriving after
+// Stop (when the agent is already Idle) does not flip the agent to Waiting.
+// This prevents a trailing Notification from re-attentioning a row that Claude
+// has already finished with.
+func TestNotificationIgnoredWhenIdle(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	cfg := Config{Name: "idle-ignore-notif", Task: "test", Rows: 24, Cols: 80}
+	_, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-mgr.Events():
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for EventCreated")
+	}
+
+	// Drive to Idle via Stop hook (normal end-of-turn path).
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindSessionStart,
+		AgentID: ag.ID,
+	}); err != nil {
+		t.Fatalf("SendEvent SessionStart: %v", err)
+	}
+	if !waitForStatus(t, ag, StatusActive, 2*time.Second) {
+		t.Fatalf("expected Active after SessionStart, got %s", ag.Status())
+	}
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindStop,
+		AgentID: ag.ID,
+	}); err != nil {
+		t.Fatalf("SendEvent Stop: %v", err)
+	}
+	if !waitForStatus(t, ag, StatusIdle, 2*time.Second) {
+		t.Fatalf("expected Idle after Stop, got %s", ag.Status())
+	}
+
+	// A trailing Notification must not flip Idle → Waiting.
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindNotification,
+		AgentID: ag.ID,
+		Message: "stray notification after turn ended",
+	}); err != nil {
+		t.Fatalf("SendEvent Notification: %v", err)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+	if got := ag.Status(); got != StatusIdle {
+		t.Errorf("expected Idle to be preserved after stray Notification, got %s", got)
+	}
+}
+
 // TestDoneAgentIgnoresLateNotification verifies a Done agent stays Done
 // when a late Notification event arrives (e.g. race between Claude emitting
 // a prompt and the agent process having already been killed/finished).
