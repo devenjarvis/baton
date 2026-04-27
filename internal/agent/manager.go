@@ -260,10 +260,12 @@ func (m *Manager) maybeRenameFromPrompt(sess *Session, a *Agent, prompt string) 
 		if !m.renameSessionBranch(sess, newBranch) {
 			return
 		}
-		// Display-name updates must happen before EventBranchRenamed fires
-		// so subscribers (PR scheduler, TUI) see a coherent snapshot.
+		// The session display name updates to the Haiku-derived task name so
+		// the sidebar separator shows what the session is working on. Agents
+		// keep their stable track identities (Track 1, Track 2, ...) and are
+		// never renamed here. Both writes must happen before EventBranchRenamed
+		// fires so subscribers (PR scheduler, TUI) see a coherent snapshot.
 		sess.SetDisplayName(suffix)
-		a.SetDisplayName(suffix)
 		m.emitBranchRenamed(sess, a, newBranch)
 	}()
 }
@@ -394,7 +396,7 @@ func (m *Manager) CreateSessionWithCommand(cfg Config, cmd func(name string) *ex
 		return nil, nil, err
 	}
 
-	a, err := sess.AddAgent(cfg, cmd(cfg.Name))
+	a, err := sess.AddAgent(cfg, cmd)
 	if err != nil {
 		_ = sess.Cleanup(m.repoPath)
 		m.mu.Lock()
@@ -448,7 +450,7 @@ func (m *Manager) CreateSessionOnBranchWithCommand(branch, baseBranch string, cf
 		return nil, nil, err
 	}
 
-	a, err := sess.AddAgent(cfg, cmd(cfg.Name))
+	a, err := sess.AddAgent(cfg, cmd)
 	if err != nil {
 		_ = sess.Cleanup(m.repoPath)
 		m.mu.Lock()
@@ -644,7 +646,7 @@ func (m *Manager) AddAgentWithCommand(sessionID string, cfg Config, cmd func(nam
 
 	cfg.RepoPath = m.repoPath
 
-	a, err := sess.AddAgent(cfg, cmd(cfg.Name))
+	a, err := sess.AddAgent(cfg, cmd)
 	if err != nil {
 		return nil, err
 	}

@@ -611,16 +611,19 @@ func TestManagerRenamesOnFirstUserPromptSubmit(t *testing.T) {
 	sendUserPromptSubmit(t, mgr, ag, "Investigate flaky checkout test!")
 
 	const want = "investigate-flaky-checkout-test"
-	// The display-name update happens in the rename goroutine after the
-	// namer returns; the agent display name is the last write so wait on it.
-	if got := waitForAgentDisplayName(t, ag, want, 2*time.Second); got != want {
-		t.Fatalf("agent display name: got %q, want %q", got, want)
+	// The session display-name update happens in the rename goroutine after
+	// the namer returns; it's the last write before EventBranchRenamed fires
+	// so wait on it.
+	if got := waitForSessionDisplayName(t, sess, want, 2*time.Second); got != want {
+		t.Fatalf("session display name: got %q, want %q", got, want)
 	}
 	if got := sess.Branch(); got != "baton/"+want {
 		t.Errorf("branch: got %q, want baton/%s", got, want)
 	}
-	if got := sess.GetDisplayName(); got != want {
-		t.Errorf("session display name: got %q, want %q", got, want)
+	// Agent display name stays at its original value — agents keep their
+	// track identities; only the session separator picks up the task name.
+	if got := ag.GetDisplayName(); got != "rename-first" {
+		t.Errorf("agent display name changed: got %q, want rename-first", got)
 	}
 }
 
@@ -651,11 +654,15 @@ func TestManagerSecondUserPromptSubmitDoesNotRename(t *testing.T) {
 	sendUserPromptSubmit(t, mgr, ag, "first prompt wins")
 
 	const want = "first-prompt-wins"
-	if got := waitForAgentDisplayName(t, ag, want, 2*time.Second); got != want {
-		t.Fatalf("after first prompt: agent = %q, want %q", got, want)
+	if got := waitForSessionDisplayName(t, sess, want, 2*time.Second); got != want {
+		t.Fatalf("after first prompt: session display name = %q, want %q", got, want)
 	}
 	if got := sess.Branch(); got != "baton/"+want {
 		t.Fatalf("after first prompt: branch = %q, want baton/%s", got, want)
+	}
+	// Agent display name must not have changed.
+	if got := ag.GetDisplayName(); got != "rename-second" {
+		t.Errorf("agent display name changed: got %q, want rename-second", got)
 	}
 
 	// Second prompt must be a no-op. HasClaudeName is already true on the
@@ -675,11 +682,13 @@ func TestManagerSecondUserPromptSubmitDoesNotRename(t *testing.T) {
 		t.Fatalf("expected Active after second UserPromptSubmit")
 	}
 
-	if got := ag.GetDisplayName(); got != want {
-		t.Errorf("agent display name changed: got %q, want %q", got, want)
+	// Agent display name still unchanged after second prompt.
+	if got := ag.GetDisplayName(); got != "rename-second" {
+		t.Errorf("agent display name changed: got %q, want rename-second", got)
 	}
+	// Session display name still "first-prompt-wins" — second prompt is a no-op.
 	if got := sess.GetDisplayName(); got != want {
-		t.Errorf("session display name changed: got %q, want %q", got, want)
+		t.Errorf("session display name changed on second prompt: got %q, want %q", got, want)
 	}
 	if stub.calls.Load() != 1 {
 		t.Errorf("namer call count = %d, want 1", stub.calls.Load())
@@ -880,20 +889,20 @@ func waitForBranchChanged(t *testing.T, sess *Session, original string, d time.D
 	return sess.Branch()
 }
 
-// waitForAgentDisplayName polls until Agent.GetDisplayName() returns want or
-// the deadline elapses. The async rename goroutine updates the branch and
-// the display name in close succession but not atomically, so tests that
-// check both should wait on the display name (the later update).
-func waitForAgentDisplayName(t *testing.T, a *Agent, want string, d time.Duration) string {
+// waitForSessionDisplayName polls until Session.GetDisplayName() returns want or
+// the deadline elapses. Use this after a successful Haiku rename to confirm the
+// session separator updated (the display-name write happens inside the rename
+// goroutine, after the branch rename itself).
+func waitForSessionDisplayName(t *testing.T, sess *Session, want string, d time.Duration) string {
 	t.Helper()
 	deadline := time.Now().Add(d)
 	for time.Now().Before(deadline) {
-		if got := a.GetDisplayName(); got == want {
+		if got := sess.GetDisplayName(); got == want {
 			return got
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	return a.GetDisplayName()
+	return sess.GetDisplayName()
 }
 
 // stubNamer is a BranchNamer that returns a fixed result and counts calls.

@@ -40,19 +40,27 @@ func newSession(id, name string, wt *git.WorktreeInfo) *Session {
 }
 
 // AddAgent creates and starts a new agent within this session using the session's worktree.
-func (s *Session) AddAgent(cfg Config, cmd *exec.Cmd) (*Agent, error) {
+// cmdFactory is called after the agent name has been assigned so the factory
+// receives the resolved name ("track-1", etc.) rather than the empty string
+// that cfg.Name holds before the lock.
+func (s *Session) AddAgent(cfg Config, cmdFactory func(name string) *exec.Cmd) (*Agent, error) {
 	s.mu.Lock()
-	if cfg.Name == "" {
-		cfg.Name = RandomName(s.existingNames())
-	}
 	s.nextAgentNum++
 	num := s.nextAgentNum
+	autoNamed := cfg.Name == ""
+	if autoNamed {
+		cfg.Name = fmt.Sprintf("track-%d", num)
+	}
 	id := fmt.Sprintf("%s-agent-%d", s.ID, num)
 	s.mu.Unlock()
 
-	a, err := newAgentWithCommand(id, cfg, s.Worktree.Path, cmd)
+	a, err := newAgentWithCommand(id, cfg, s.Worktree.Path, cmdFactory(cfg.Name))
 	if err != nil {
 		return nil, err
+	}
+
+	if autoNamed && !a.HasDisplayName() {
+		a.SetDisplayName(fmt.Sprintf("Track %d", num))
 	}
 
 	s.mu.Lock()
@@ -65,11 +73,12 @@ func (s *Session) AddAgent(cfg Config, cmd *exec.Cmd) (*Agent, error) {
 // AddAgentDefault creates and starts a new agent using the default claude command.
 func (s *Session) AddAgentDefault(cfg Config) (*Agent, error) {
 	s.mu.Lock()
-	if cfg.Name == "" {
-		cfg.Name = RandomName(s.existingNames())
-	}
 	s.nextAgentNum++
 	num := s.nextAgentNum
+	autoNamed := cfg.Name == ""
+	if autoNamed {
+		cfg.Name = fmt.Sprintf("track-%d", num)
+	}
 	id := fmt.Sprintf("%s-agent-%d", s.ID, num)
 	socketPath := s.hookSocketPath
 	s.mu.Unlock()
@@ -77,6 +86,10 @@ func (s *Session) AddAgentDefault(cfg Config) (*Agent, error) {
 	a, err := newAgent(id, cfg, s.Worktree.Path, socketPath)
 	if err != nil {
 		return nil, err
+	}
+
+	if autoNamed && !a.HasDisplayName() {
+		a.SetDisplayName(fmt.Sprintf("Track %d", num))
 	}
 
 	s.mu.Lock()
@@ -89,11 +102,12 @@ func (s *Session) AddAgentDefault(cfg Config) (*Agent, error) {
 // AddAgentResumed creates and starts a new agent that resumes a previous Claude session.
 func (s *Session) AddAgentResumed(cfg Config, claudeSessionID string) (*Agent, error) {
 	s.mu.Lock()
-	if cfg.Name == "" {
-		cfg.Name = RandomName(s.existingNames())
-	}
 	s.nextAgentNum++
 	num := s.nextAgentNum
+	autoNamed := cfg.Name == ""
+	if autoNamed {
+		cfg.Name = fmt.Sprintf("track-%d", num)
+	}
 	id := fmt.Sprintf("%s-agent-%d", s.ID, num)
 	socketPath := s.hookSocketPath
 	s.mu.Unlock()
@@ -101,6 +115,10 @@ func (s *Session) AddAgentResumed(cfg Config, claudeSessionID string) (*Agent, e
 	a, err := newResumedAgent(id, cfg, s.Worktree.Path, claudeSessionID, socketPath)
 	if err != nil {
 		return nil, err
+	}
+
+	if autoNamed && !a.HasDisplayName() {
+		a.SetDisplayName(fmt.Sprintf("Track %d", num))
 	}
 
 	s.mu.Lock()
@@ -286,17 +304,6 @@ func (s *Session) KillAll() {
 // (created it), the branch is also deleted. Attached sessions preserve the branch.
 func (s *Session) Cleanup(repoPath string) error {
 	return git.RemoveWorktree(repoPath, s.Worktree, s.ownsBranch)
-}
-
-// existingNames returns the session name and all current agent names.
-// Must be called with s.mu held.
-func (s *Session) existingNames() []string {
-	names := make([]string, 0, len(s.agents)+1)
-	names = append(names, s.Name)
-	for _, a := range s.agents {
-		names = append(names, a.Name)
-	}
-	return names
 }
 
 // SetDisplayName sets a human-readable display name for the session.
