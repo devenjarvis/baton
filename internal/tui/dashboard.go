@@ -31,6 +31,31 @@ func truncateVisible(s string, n int) string {
 	return ansi.Truncate(s, n, "…")
 }
 
+// tickerSlice returns a maxWidth-wide window of s starting at rune offset.
+// Returns "" when offset >= len(runes).
+func tickerSlice(s string, offset, maxWidth int) string {
+	runes := []rune(s)
+	if offset >= len(runes) {
+		return ""
+	}
+	return truncateVisible(string(runes[offset:]), maxWidth)
+}
+
+// Timing constants for the sidebar session-name marquee ticker.
+const (
+	tickerPauseStart = 2 * time.Second
+	tickerPauseEnd   = time.Second
+	tickerInterval   = 250 * time.Millisecond
+)
+
+// sessionTicker tracks the scroll state for one session's name in the sidebar.
+type sessionTicker struct {
+	offset      int
+	pauseUntil  time.Time
+	nextAdvance time.Time
+	atEnd       bool
+}
+
 // ColorWaiting is the accent used for agents in StatusWaiting (permission
 // prompts, input blocks). Scoped to the dashboard because no other view
 // needs it today — add to theme.go if another view ever surfaces waiting.
@@ -92,6 +117,9 @@ type dashboardModel struct {
 	// title and separator) where the PR checks summary begins, or -1 when absent.
 	prSectionY int
 
+	// tickers tracks marquee scroll state for session names that overflow the sidebar.
+	tickers map[string]*sessionTicker
+
 	// Repo config form shown in the right panel when focusConfig is active.
 	repoConfigForm *configForm
 	configRepoPath string // path of the repo being configured
@@ -113,7 +141,81 @@ type selection struct {
 }
 
 func newDashboardModel() dashboardModel {
-	return dashboardModel{prSectionY: -1}
+	return dashboardModel{prSectionY: -1, tickers: make(map[string]*sessionTicker)}
+}
+
+// advanceTickers steps the marquee scroll state for all sessions whose names
+// overflow the sidebar. Must be called once per tick before rendering.
+func (d *dashboardModel) advanceTickers(now time.Time) {
+	width := d.listWidth()
+	for _, item := range d.items {
+		if item.kind != listItemSession || item.session == nil {
+			continue
+		}
+		sess := item.session
+		displayName := sess.GetDisplayName()
+
+		closing := d.closingSessions != nil && d.closingSessions[sess.ID]
+		prSuffixLen := 0
+		if !closing {
+			if entry := d.prCache[sess.ID]; entry != nil && entry.pr != nil {
+				prSuffixLen = 1 + len(fmt.Sprintf("#%d", entry.pr.Number))
+				if entry.checks != nil {
+					prSuffixLen += 2
+				}
+				if isMergeReady(entry) {
+					prSuffixLen += 6
+				}
+			}
+		}
+		closingTagLen := 0
+		if closing {
+			closingTagLen = 9
+		}
+		maxNameLen := width - 10 - prSuffixLen - closingTagLen
+		if maxNameLen < 5 {
+			maxNameLen = 5
+		}
+
+		if ansi.StringWidth(displayName) <= maxNameLen {
+			delete(d.tickers, sess.ID)
+			continue
+		}
+
+		fullName := displayName + " ·"
+		fullRunes := []rune(fullName)
+
+		t, exists := d.tickers[sess.ID]
+		if !exists {
+			t = &sessionTicker{pauseUntil: now.Add(tickerPauseStart)}
+			d.tickers[sess.ID] = t
+		}
+
+		if now.Before(t.pauseUntil) {
+			continue
+		}
+		if now.Before(t.nextAdvance) {
+			continue
+		}
+
+		t.offset++
+		t.nextAdvance = now.Add(tickerInterval)
+
+		if ansi.StringWidth(string(fullRunes[t.offset:])) <= maxNameLen {
+			if !t.atEnd {
+				// First time reaching the end: brief pause before snapping.
+				t.atEnd = true
+				t.pauseUntil = now.Add(tickerPauseEnd)
+				t.nextAdvance = time.Time{}
+			} else {
+				// End pause expired: snap back to start.
+				t.offset = 0
+				t.atEnd = false
+				t.pauseUntil = now.Add(tickerPauseStart)
+				t.nextAdvance = time.Time{}
+			}
+		}
+	}
 }
 
 func (d dashboardModel) Update(msg tea.Msg) (dashboardModel, tea.Cmd) {
@@ -423,18 +525,25 @@ func (d dashboardModel) renderList(width int) string {
 			if maxNameLen < 5 {
 				maxNameLen = 5
 			}
-			displayName = truncateVisible(displayName, maxNameLen)
+			var renderedName string
+			if ansi.StringWidth(displayName) <= maxNameLen {
+				renderedName = displayName
+			} else if t := d.tickers[sess.ID]; t != nil && t.offset > 0 {
+				renderedName = tickerSlice(displayName+" ·", t.offset, maxNameLen)
+			} else {
+				renderedName = truncateVisible(displayName, maxNameLen)
+			}
 
 			nameStyle := lipgloss.NewStyle()
 			if closing {
 				nameStyle = StyleSubtle
 			}
-			label := fmt.Sprintf(" %s %s", symbolStyle.Render(symbol), nameStyle.Render(displayName))
+			label := fmt.Sprintf(" %s %s", symbolStyle.Render(symbol), nameStyle.Render(renderedName))
 			if closing {
 				label += StyleSubtle.Render(closingTag)
 			}
 			label += renameSuffix + " "
-			labelLen := ansi.StringWidth(symbol) + 1 + ansi.StringWidth(displayName) + 2 + renameSuffixLen + prSuffixLen + closingTagLen
+			labelLen := ansi.StringWidth(symbol) + 1 + ansi.StringWidth(renderedName) + 2 + renameSuffixLen + prSuffixLen + closingTagLen
 			padLen := width - 4 - labelLen
 			if padLen < 0 {
 				padLen = 0

@@ -369,6 +369,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				diffCmd = a.refreshDiffStatsCmd()
 			}
 		}
+		// Advance sidebar marquee tickers for overflowing session names.
+		a.dashboard.advanceTickers(time.Now())
 		// Adaptive per-session PR polling.
 		var prCmds []tea.Cmd
 		if a.ghClient != nil {
