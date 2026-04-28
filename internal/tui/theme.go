@@ -31,6 +31,10 @@ var (
 	StyleActive = lipgloss.NewStyle().
 			Foreground(ColorSecondary)
 
+	StyleLink = lipgloss.NewStyle().
+			Underline(true).
+			Foreground(ColorSecondary)
+
 	StyleStatusBar = lipgloss.NewStyle().
 			Foreground(ColorText).
 			Background(lipgloss.Color("#1F2937")).

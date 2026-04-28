@@ -68,7 +68,7 @@ func prIndicator(entry *prCacheEntry) string {
 	pr := entry.pr
 	checks := entry.checks
 
-	prNum := fmt.Sprintf("#%d", pr.Number)
+	prNum := StyleLink.Render(fmt.Sprintf("#%d", pr.Number))
 
 	if checks == nil {
 		return prNum
