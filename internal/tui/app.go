@@ -1096,9 +1096,17 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// stays on screen until the next click clears or replaces it.
 				if ag := a.dashboard.selectedAgent(); ag != nil && ag.ID == a.dashboard.selection.agentID {
 					if sx, sy, ex, ey, ok := a.dashboard.selectionRect(); ok {
-						text := ag.ExtractText(vt.SelectionRect{
+						rect := vt.SelectionRect{
 							StartX: sx, StartY: sy, EndX: ex, EndY: ey, Active: true,
-						})
+						}
+						var text string
+						if a.dashboard.scrollOffset > 0 {
+							vpWidth := a.dashboard.previewTermWidth()
+							vpHeight := a.dashboard.previewTermHeight()
+							text = ag.ExtractTextFromSnapshot(vpWidth, vpHeight, a.dashboard.scrollOffset, rect)
+						} else {
+							text = ag.ExtractText(rect)
+						}
 						if text != "" {
 							return a, tea.SetClipboard(text)
 						}

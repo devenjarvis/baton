@@ -925,6 +925,65 @@ func TestExtractTextEmptyRectOnBlankRow(t *testing.T) {
 	}
 }
 
+func TestExtractTextFromSnapshotInactiveReturnsEmpty(t *testing.T) {
+	term := New(20, 2)
+	defer term.Close()
+	_, _ = term.Write([]byte("abc"))
+	if got := term.ExtractTextFromSnapshot(20, 2, 0, SelectionRect{Active: false}); got != "" {
+		t.Errorf("inactive rect should return empty, got %q", got)
+	}
+}
+
+func TestExtractTextFromSnapshotScrollbackRow(t *testing.T) {
+	// 20-wide, 2-row terminal: "FirstLine" scrolls off into scrollback.
+	term := New(20, 2)
+	defer term.Close()
+	_, _ = term.Write([]byte("FirstLine\r\nSecondLine\r\nThirdLine"))
+
+	// allLines = [scrollback[0]="FirstLine...", vpLine0="SecondLine...", vpLine1="ThirdLine..."]
+	// scrollOffset=1: end=2, start=0 → visible=["FirstLine...", "SecondLine..."]
+	// Select row 0, cols 0..8 → "FirstLine"
+	got := term.ExtractTextFromSnapshot(20, 2, 1, SelectionRect{
+		StartX: 0, StartY: 0, EndX: 8, EndY: 0, Active: true,
+	})
+	if got != "FirstLine" {
+		t.Errorf("expected 'FirstLine' from scrollback, got %q", got)
+	}
+}
+
+func TestExtractTextFromSnapshotViewportRowWhenScrolled(t *testing.T) {
+	// 20-wide, 2-row terminal: visible[1] = "SecondLine..." when scrollOffset=1.
+	term := New(20, 2)
+	defer term.Close()
+	_, _ = term.Write([]byte("FirstLine\r\nSecondLine\r\nThirdLine"))
+
+	// scrollOffset=1: visible=["FirstLine...", "SecondLine..."]
+	// Select row 1, cols 0..9 → "SecondLine"
+	got := term.ExtractTextFromSnapshot(20, 2, 1, SelectionRect{
+		StartX: 0, StartY: 1, EndX: 9, EndY: 1, Active: true,
+	})
+	if got != "SecondLine" {
+		t.Errorf("expected 'SecondLine', got %q", got)
+	}
+}
+
+func TestExtractTextFromSnapshotMultiRowCrossesScrollback(t *testing.T) {
+	// Selection spanning both a scrollback row and a viewport row.
+	term := New(20, 2)
+	defer term.Close()
+	_, _ = term.Write([]byte("FirstLine\r\nSecondLine\r\nThirdLine"))
+
+	// scrollOffset=1: visible=["FirstLine...", "SecondLine..."]
+	// Select from (5,0) to (5,1) → "Line" + "\n" + "Second"
+	got := term.ExtractTextFromSnapshot(20, 2, 1, SelectionRect{
+		StartX: 5, StartY: 0, EndX: 5, EndY: 1, Active: true,
+	})
+	want := "Line\nSecond"
+	if got != want {
+		t.Errorf("expected %q, got %q", want, got)
+	}
+}
+
 func TestCursorPosition(t *testing.T) {
 	term := New(80, 24)
 	defer term.Close()

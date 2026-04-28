@@ -556,6 +556,13 @@ func (a *Agent) ExtractText(rect vt.SelectionRect) string {
 	return a.terminal.ExtractText(rect)
 }
 
+// ExtractTextFromSnapshot extracts plain text from the correct visible window
+// in the combined scrollback+viewport content, accounting for scroll offset.
+// See [vt.Terminal.ExtractTextFromSnapshot].
+func (a *Agent) ExtractTextFromSnapshot(width, height, scrollOffset int, rect vt.SelectionRect) string {
+	return a.terminal.ExtractTextFromSnapshot(width, height, scrollOffset, rect)
+}
+
 // Snapshot returns a consistent (scrollback, viewport) pair for splice-safe
 // reads during pgup scrolling. See [vt.Terminal.Snapshot].
 func (a *Agent) Snapshot(width, height int) (scrollback []string, viewport string) {

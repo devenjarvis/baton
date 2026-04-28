@@ -397,6 +397,58 @@ func (t *Terminal) ExtractText(rect SelectionRect) string {
 	return strings.Join(rows, "\n")
 }
 
+// ExtractTextFromSnapshot extracts plain text from the correct visible window
+// in the combined scrollback+viewport content, accounting for scroll offset.
+// Calls Snapshot() for an atomic read to avoid TOCTOU races between the two reads.
+// rect coordinates are viewport-local (row 0 = topmost visible line).
+func (t *Terminal) ExtractTextFromSnapshot(width, height, scrollOffset int, rect SelectionRect) string {
+	if !rect.Active {
+		return ""
+	}
+	scrollback, viewport := t.Snapshot(width, height)
+	vpLines := strings.Split(viewport, "\n")
+	allLines := append(scrollback, vpLines...)
+
+	end := len(allLines) - scrollOffset
+	if end < 0 {
+		end = 0
+	}
+	start := end - height
+	if start < 0 {
+		start = 0
+	}
+	visibleLines := allLines[start:end]
+
+	var rows []string
+	for y := rect.StartY; y <= rect.EndY; y++ {
+		if y >= len(visibleLines) {
+			break
+		}
+		stripped := ansi.Strip(visibleLines[y])
+		var line strings.Builder
+		col := 0
+		for _, r := range stripped {
+			rw := ansi.StringWidth(string(r))
+			if rw == 0 {
+				continue // combining marks / zero-width chars have no column position
+			}
+			inSel := false
+			for c := col; c < col+rw; c++ {
+				if rect.inSelection(c, y) {
+					inSel = true
+					break
+				}
+			}
+			if inSel {
+				line.WriteRune(r)
+			}
+			col += rw
+		}
+		rows = append(rows, strings.TrimRight(line.String(), " \t"))
+	}
+	return strings.Join(rows, "\n")
+}
+
 // padFrame right-pads every line in `raw` (a `\n`-separated render) to `width`
 // cells and forces the output to exactly `height` lines.
 func padFrame(raw string, width, height int) string {
