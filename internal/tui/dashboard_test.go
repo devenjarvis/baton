@@ -1,6 +1,12 @@
 package tui
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/devenjarvis/baton/internal/agent"
+)
 
 func TestSelectionRect_Inactive(t *testing.T) {
 	d := dashboardModel{}
@@ -100,5 +106,155 @@ func TestClearSelection(t *testing.T) {
 	}
 	if _, _, _, _, ok := d.selectionRect(); ok {
 		t.Error("after clearSelection, selectionRect should report ok=false")
+	}
+}
+
+// tickerDashboard builds a minimal dashboardModel for ticker tests.
+func tickerDashboard(sidebarW int, sessions ...*agent.Session) dashboardModel {
+	d := newDashboardModel()
+	d.sidebarWidth = sidebarW
+	d.prCache = make(map[string]*prCacheEntry)
+	d.closingSessions = make(map[string]bool)
+	for _, s := range sessions {
+		d.items = append(d.items, listItem{kind: listItemSession, session: s})
+	}
+	return d
+}
+
+// past returns a time in the past so ticker pause/advance checks pass immediately.
+func past() time.Time { return time.Now().Add(-time.Hour) }
+
+func TestTickerSlice_Basic(t *testing.T) {
+	got := tickerSlice("hello world", 6, 5)
+	if got != "world" {
+		t.Errorf("got %q, want %q", got, "world")
+	}
+}
+
+func TestTickerSlice_OffsetAtEnd(t *testing.T) {
+	got := tickerSlice("hello", 5, 10)
+	if got != "" {
+		t.Errorf("offset=len: got %q, want %q", got, "")
+	}
+}
+
+func TestTickerSlice_OffsetPastEnd(t *testing.T) {
+	got := tickerSlice("hello", 10, 5)
+	if got != "" {
+		t.Errorf("offset>len: got %q, want %q", got, "")
+	}
+}
+
+func TestTickerSlice_MultibyteRunes(t *testing.T) {
+	// "日本語" — 3 runes, each 2 display cells wide; offset=1 skips "日".
+	got := tickerSlice("日本語", 1, 10)
+	if got != "本語" {
+		t.Errorf("multibyte: got %q, want %q", got, "本語")
+	}
+}
+
+func TestAdvanceTickers_NameFits_NoTickerCreated(t *testing.T) {
+	// sidebarW=30 → maxNameLen=20; "short" (5 chars) fits easily.
+	sess := &agent.Session{ID: "s1", Name: "short"}
+	d := tickerDashboard(30, sess)
+	d.advanceTickers(time.Now())
+	if _, exists := d.tickers["s1"]; exists {
+		t.Error("ticker should not be created for a name that fits")
+	}
+}
+
+func TestAdvanceTickers_NameFits_ClearsStale(t *testing.T) {
+	// Stale ticker entry from a previous long name should be removed.
+	sess := &agent.Session{ID: "s1", Name: "short"}
+	d := tickerDashboard(30, sess)
+	d.tickers["s1"] = &sessionTicker{offset: 5}
+	d.advanceTickers(time.Now())
+	if _, exists := d.tickers["s1"]; exists {
+		t.Error("stale ticker should be removed when name fits")
+	}
+}
+
+func TestAdvanceTickers_OverflowCreatesTickerWithPause(t *testing.T) {
+	// sidebarW=30 → maxNameLen=20; long name (26 chars) overflows.
+	longName := "abcdefghijklmnopqrstuvwxyz"
+	sess := &agent.Session{ID: "s1", Name: longName}
+	d := tickerDashboard(30, sess)
+	now := time.Now()
+	d.advanceTickers(now)
+	tk := d.tickers["s1"]
+	if tk == nil {
+		t.Fatal("expected ticker to be created for overflowing name")
+	}
+	if tk.offset != 0 {
+		t.Errorf("offset: got %d, want 0", tk.offset)
+	}
+	if !tk.pauseUntil.After(now) {
+		t.Error("ticker should start in paused state")
+	}
+}
+
+func TestAdvanceTickers_AdvancePastPause_IncrementsOffset(t *testing.T) {
+	longName := "abcdefghijklmnopqrstuvwxyz"
+	sess := &agent.Session{ID: "s1", Name: longName}
+	d := tickerDashboard(30, sess)
+	// Pre-seed expired ticker so initial pause is already over.
+	d.tickers["s1"] = &sessionTicker{pauseUntil: past(), nextAdvance: past()}
+	d.advanceTickers(time.Now())
+	tk := d.tickers["s1"]
+	if tk.offset != 1 {
+		t.Errorf("offset after advance: got %d, want 1", tk.offset)
+	}
+}
+
+func TestAdvanceTickers_WideCharName_ScrollsNotStuck(t *testing.T) {
+	// 12 CJK runes = 24 display cells, overflows maxNameLen=20.
+	// len(fullRunes) = 14. Old rune-count check (offset+20 >= 14) would fire at
+	// offset=0 (0+20=20 >= 14), preventing the name from ever scrolling.
+	wideName := strings.Repeat("日", 12)
+	sess := &agent.Session{ID: "s1", Name: wideName}
+	d := tickerDashboard(30, sess)
+	d.tickers["s1"] = &sessionTicker{pauseUntil: past(), nextAdvance: past()}
+	d.advanceTickers(time.Now())
+	tk := d.tickers["s1"]
+	if tk.atEnd {
+		t.Error("wide-char name: atEnd should not fire on first advance")
+	}
+	if tk.offset != 1 {
+		t.Errorf("wide-char name: offset after first advance: got %d, want 1", tk.offset)
+	}
+}
+
+func TestAdvanceTickers_EndReached_SnapsBack(t *testing.T) {
+	// sidebarW=30 → maxNameLen=20
+	// longName=26 chars → fullName "…" + " ·" = 28 runes
+	// end condition: offset+20 >= 28 → offset >= 8
+	longName := "12345678901234567890123456"
+	sess := &agent.Session{ID: "s1", Name: longName}
+	d := tickerDashboard(30, sess)
+
+	// Set offset to 7 (one step before end); advance once → hits 8 → atEnd=true.
+	d.tickers["s1"] = &sessionTicker{offset: 7, pauseUntil: past(), nextAdvance: past()}
+	d.advanceTickers(time.Now())
+	tk := d.tickers["s1"]
+	if !tk.atEnd {
+		t.Fatal("expected atEnd=true after reaching end")
+	}
+	if tk.offset != 8 {
+		t.Errorf("offset at end: got %d, want 8", tk.offset)
+	}
+
+	// Simulate end-pause expiry and advance again → snap back.
+	tk.pauseUntil = past()
+	tk.nextAdvance = past()
+	beforeSnap := time.Now()
+	d.advanceTickers(time.Now())
+	if tk.offset != 0 {
+		t.Errorf("offset after snap: got %d, want 0", tk.offset)
+	}
+	if tk.atEnd {
+		t.Error("atEnd should be false after snap")
+	}
+	if !tk.pauseUntil.After(beforeSnap) {
+		t.Error("snap should set a fresh start pause")
 	}
 }
