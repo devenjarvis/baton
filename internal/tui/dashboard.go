@@ -798,7 +798,15 @@ func (d dashboardModel) renderPreview(width int) string {
 		if start < 0 {
 			start = 0
 		}
-		render = strings.Join(allLines[start:end], "\n")
+		visibleLines := allLines[start:end]
+		if d.selection.active && d.selection.dragSeen && d.selection.agentID == ag.ID {
+			sx, sy, ex, ey, _ := d.selectionRect()
+			render = applySelectionHighlight(visibleLines, vt.SelectionRect{
+				StartX: sx, StartY: sy, EndX: ex, EndY: ey, Active: true,
+			})
+		} else {
+			render = strings.Join(visibleLines, "\n")
+		}
 	} else if d.selection.active && d.selection.dragSeen && d.selection.agentID == ag.ID {
 		sx, sy, ex, ey, _ := d.selectionRect()
 		render = ag.RenderPaddedWithSelection(vpWidth, vpHeight, vt.SelectionRect{
@@ -817,6 +825,66 @@ func (d dashboardModel) renderPreview(width int) string {
 	}
 	previewParts = append(previewParts, "", render)
 	return lipgloss.JoinVertical(lipgloss.Left, previewParts...)
+}
+
+// applySelectionHighlight inserts reverse-video SGR codes around selected column
+// ranges in each line of lines. ANSI is stripped first so column positions are
+// reliable; the non-selected text is emitted as plain. Active must be true on
+// rect for any highlight to be applied.
+func applySelectionHighlight(lines []string, rect vt.SelectionRect) string {
+	inSel := func(x, y int) bool {
+		if !rect.Active || y < rect.StartY || y > rect.EndY {
+			return false
+		}
+		if y > rect.StartY && y < rect.EndY {
+			return true
+		}
+		if rect.StartY == rect.EndY {
+			return x >= rect.StartX && x <= rect.EndX
+		}
+		if y == rect.StartY {
+			return x >= rect.StartX
+		}
+		return x <= rect.EndX
+	}
+	result := make([]string, len(lines))
+	for y, line := range lines {
+		if !rect.Active || y < rect.StartY || y > rect.EndY {
+			result[y] = line
+			continue
+		}
+		stripped := ansi.Strip(line)
+		var b strings.Builder
+		col := 0
+		inRev := false
+		for _, r := range stripped {
+			rw := ansi.StringWidth(string(r))
+			if rw == 0 {
+				continue // combining marks / zero-width chars have no column position
+			}
+			sel := false
+			for c := col; c < col+rw; c++ {
+				if inSel(c, y) {
+					sel = true
+					break
+				}
+			}
+			if sel && !inRev {
+				b.WriteString("\x1b[7m")
+				inRev = true
+			} else if !sel && inRev {
+				b.WriteString("\x1b[27m")
+				inRev = false
+			}
+			b.WriteRune(r)
+			col += rw
+		}
+		if inRev {
+			b.WriteString("\x1b[27m")
+		}
+		result[y] = b.String()
+	}
+	return strings.Join(result, "\n")
 }
 
 // selectedItem returns the currently selected list item, or nil if the list is empty.
