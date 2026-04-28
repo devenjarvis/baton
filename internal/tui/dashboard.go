@@ -389,17 +389,17 @@ func (d dashboardModel) fixedTermWidth() int {
 // accepting 1 row of clipping when PR is visible is better than per-session
 // resize churn.
 func (d dashboardModel) fixedTermHeight() int {
-	return d.contentHeight() - 4 - 2 // metadata rows + focusTerminal border
+	return d.contentHeight() - 2 - 2 // 2 metadata rows (sessionInfo + blank) + 2 border rows
 }
 
 // previewMetadataRows returns the number of non-VT rows rendered above the
-// terminal viewport in the preview panel: title, sessionInfo, taskInfo, and
-// the blank separator — plus one row for the PR info line when the selected
-// session has an open PR. Mouse coordinate translation in app.go consumes
-// this via screenToTermCell so wheel/click/drag stay aligned with the
-// viewport when the PR row appears or disappears.
+// terminal viewport in the preview panel: sessionInfo and the blank separator
+// — plus one row for the PR info line when the selected session has an open
+// PR. Mouse coordinate translation in app.go consumes this via screenToTermCell
+// so wheel/click/drag stay aligned with the viewport when the PR row appears
+// or disappears.
 func (d dashboardModel) previewMetadataRows() int {
-	rows := 4 // title, sessionInfo, taskInfo, blank
+	rows := 2 // sessionInfo + blank; assumes agents always have a non-nil session
 	if sess := d.selectedSession(); sess != nil {
 		if entry := d.prCache[sess.ID]; entry != nil && entry.pr != nil {
 			rows++
@@ -753,16 +753,16 @@ func (d dashboardModel) renderPreview(width int) string {
 
 	// Agent selected — show terminal preview with session context.
 	ag := item.agent
-	titleText := " " + ag.GetDisplayName() + " "
-	if d.scrollOffset > 0 {
-		titleText = fmt.Sprintf(" %s [↑%d] ", ag.GetDisplayName(), d.scrollOffset)
-	}
-	title := StyleTitle.Render(titleText)
 
 	sessionInfo := ""
 	if item.session != nil {
-		sessionInfo = StyleSubtle.Render(fmt.Sprintf(" Session: %s  Branch: %s  Worktree: %s",
-			item.session.GetDisplayName(), item.session.Branch(), item.session.Worktree.Path))
+		if d.scrollOffset > 0 {
+			sessionInfo = StyleSubtle.Render(fmt.Sprintf(" Branch: %s  Worktree: %s  [↑%d]",
+				item.session.Branch(), item.session.Worktree.Path, d.scrollOffset))
+		} else {
+			sessionInfo = StyleSubtle.Render(fmt.Sprintf(" Branch: %s  Worktree: %s",
+				item.session.Branch(), item.session.Worktree.Path))
+		}
 	}
 	var prInfo string
 	if item.session != nil {
@@ -782,13 +782,6 @@ func (d dashboardModel) renderPreview(width int) string {
 			prInfo = StyleSubtle.Render(" PR: ") + StyleLink.Render(fmt.Sprintf("#%d", pr.Number)) + StyleSubtle.Render(fmt.Sprintf(" (%s)%s  %s", pr.State, checkStr, pr.URL))
 		}
 	}
-	var taskInfo string
-	if ag.IsShell {
-		taskInfo = StyleSubtle.Render(" Shell — " + ag.WorktreePath)
-	} else {
-		taskInfo = StyleSubtle.Render(" Task: " + ag.Task)
-	}
-
 	var render string
 	vpWidth := d.previewTermWidth()
 	vpHeight := d.previewTermHeight()
@@ -815,11 +808,14 @@ func (d dashboardModel) renderPreview(width int) string {
 		render = ag.RenderPadded(vpWidth, vpHeight)
 	}
 
-	previewParts := []string{title, sessionInfo}
+	previewParts := []string{}
+	if sessionInfo != "" {
+		previewParts = append(previewParts, sessionInfo)
+	}
 	if prInfo != "" {
 		previewParts = append(previewParts, prInfo)
 	}
-	previewParts = append(previewParts, taskInfo, "", render)
+	previewParts = append(previewParts, "", render)
 	return lipgloss.JoinVertical(lipgloss.Left, previewParts...)
 }
 
