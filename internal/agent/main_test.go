@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // TestMain redirects $HOME to a per-process temp dir so tests that exercise
@@ -30,5 +31,15 @@ func TestMain(m *testing.M) {
 			panic(err)
 		}
 	}
+
+	// Production retry config (30s per attempt, 75s overall, 1s+3s backoff)
+	// is realistic for a `claude -p` cold start but glacial in unit tests.
+	// Shrink to fast-but-still-realistic values so tests still exercise the
+	// retry path without padding wall-clock time. Unit tests of the wrapper
+	// itself (TestCallNamerWithRetry_*) override these inline as needed.
+	haikuNamePerAttemptTimeout = 500 * time.Millisecond
+	haikuNameOverallTimeout = 3 * time.Second
+	haikuNameBackoff = []time.Duration{}
+
 	os.Exit(m.Run())
 }
