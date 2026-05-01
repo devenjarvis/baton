@@ -3,7 +3,9 @@ package agent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -19,6 +21,25 @@ type BranchNamer func(ctx context.Context, instruction string) (string, error)
 
 const claudeHaikuModel = "claude-haiku-4-5"
 
+// ErrClaudeNotFound is returned when the `claude` binary is not on PATH.
+// The retry wrapper treats this as terminal — no amount of retrying will
+// produce the binary, so we fail fast and let the next user prompt re-attempt.
+var ErrClaudeNotFound = errors.New("claude not found on PATH")
+
+// ErrEmptySlug is returned when claude's response slugifies to the empty
+// string (e.g. punctuation-only output, or output that doesn't begin with
+// an alphanumeric character). Treated as terminal — retrying the same
+// instruction is unlikely to produce a different result.
+var ErrEmptySlug = errors.New("empty slug after slugify")
+
+// batonHookEnvVars lists env vars that wire a claude subprocess into baton's
+// running hook server. These must be stripped from the Haiku subprocess so
+// it doesn't fire phantom hook events back into the TUI as the parent agent.
+var batonHookEnvVars = []string{
+	"BATON_HOOK_SOCKET",
+	"BATON_AGENT_ID",
+}
+
 // DefaultBranchNamer returns a BranchNamer that shells out to
 // `claude -p --model claude-haiku-4-5` to summarize the user's first prompt.
 // The instruction is piped in on stdin so the argv stays bounded regardless
@@ -31,7 +52,7 @@ func DefaultBranchNamer() BranchNamer {
 	return func(ctx context.Context, instruction string) (string, error) {
 		claudePath, err := exec.LookPath("claude")
 		if err != nil {
-			return "", fmt.Errorf("claude not found on PATH: %w", err)
+			return "", fmt.Errorf("%w: %v", ErrClaudeNotFound, err)
 		}
 		return runClaudeHaiku(ctx, claudePath, instruction)
 	}
@@ -40,6 +61,12 @@ func DefaultBranchNamer() BranchNamer {
 func runClaudeHaiku(ctx context.Context, claudePath, instruction string) (string, error) {
 	cmd := exec.CommandContext(ctx, claudePath, "-p", "--model", claudeHaikuModel)
 	cmd.Stdin = strings.NewReader(instruction)
+	// Strip baton's hook-wiring env vars so the Haiku subprocess does not
+	// register hook callbacks against the running TUI's socket as the parent
+	// agent. Inheriting these caused phantom SessionStart/SessionEnd events
+	// to land on the parent agent and added per-call socket roundtrips that
+	// inflated cold-start latency past the rename timeout.
+	cmd.Env = sanitizedHaikuEnv(os.Environ())
 	// Bound how long Wait() blocks on pipe drain after the context kills the
 	// process — otherwise a descendant sleep can hold the stdout pipe open
 	// and keep Wait blocked long past cancellation.
@@ -55,7 +82,112 @@ func runClaudeHaiku(ctx context.Context, claudePath, instruction string) (string
 
 	slug := slugify(strings.TrimSpace(stdout.String()))
 	if slug == "" {
-		return "", fmt.Errorf("claude haiku: empty slug after slugify")
+		return "", ErrEmptySlug
 	}
 	return slug, nil
+}
+
+// sanitizedHaikuEnv returns env minus baton's hook-wiring vars. Everything
+// else (PATH, HOME, XDG_*, ANTHROPIC_*, etc.) is preserved — claude needs
+// auth and config to run.
+func sanitizedHaikuEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, e := range env {
+		if shouldStripHaikuEnv(e) {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+func shouldStripHaikuEnv(entry string) bool {
+	for _, name := range batonHookEnvVars {
+		if strings.HasPrefix(entry, name+"=") {
+			return true
+		}
+	}
+	return false
+}
+
+// callNamerWithRetry invokes namer up to maxAttempts times, each bounded by
+// perAttempt, returning early on success. Treats ErrClaudeNotFound and
+// ErrEmptySlug as terminal — retrying won't fix a missing binary or a model
+// that returned junk. Aborts immediately when done is closed (manager
+// shutdown) or when the outer ctx expires.
+//
+// perAttemptLog, if non-nil, is invoked with the attempt number (1-based),
+// the result/error, and the wall-clock duration. Used to write per-attempt
+// lines to the diagnostic log without coupling this wrapper to a file path.
+func callNamerWithRetry(
+	ctx context.Context,
+	namer BranchNamer,
+	instruction string,
+	done <-chan struct{},
+	maxAttempts int,
+	perAttempt time.Duration,
+	backoff []time.Duration,
+	perAttemptLog func(attempt int, suffix string, err error, took time.Duration),
+) (string, error) {
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		select {
+		case <-done:
+			return "", context.Canceled
+		default:
+		}
+
+		attemptCtx, cancel := context.WithTimeout(ctx, perAttempt)
+		start := time.Now()
+		suffix, err := namer(attemptCtx, instruction)
+		cancel()
+		took := time.Since(start)
+
+		if perAttemptLog != nil {
+			perAttemptLog(attempt, suffix, err, took)
+		}
+
+		if err == nil && suffix != "" {
+			return suffix, nil
+		}
+
+		// Terminal errors: don't retry.
+		if errors.Is(err, ErrClaudeNotFound) || errors.Is(err, ErrEmptySlug) {
+			return "", err
+		}
+		if err == nil && suffix == "" {
+			// Defensive: namer returned (\"\", nil). Treat as terminal.
+			return "", ErrEmptySlug
+		}
+
+		lastErr = err
+		if attempt == maxAttempts {
+			break
+		}
+
+		var wait time.Duration
+		if idx := attempt - 1; idx < len(backoff) {
+			wait = backoff[idx]
+		}
+		if wait > 0 {
+			timer := time.NewTimer(wait)
+			select {
+			case <-timer.C:
+			case <-done:
+				timer.Stop()
+				return "", context.Canceled
+			case <-ctx.Done():
+				timer.Stop()
+				return "", ctx.Err()
+			}
+		}
+	}
+	return "", lastErr
 }

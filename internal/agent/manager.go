@@ -68,10 +68,29 @@ type Manager struct {
 	branchNamer BranchNamer
 }
 
-// haikuNameTimeout bounds how long the Haiku summarization subprocess may run
-// before it's cancelled. On timeout the random branch persists and the next
+// haikuNamePerAttemptTimeout bounds how long a single Haiku summarization
+// subprocess may run before it's cancelled. Cold starts of `claude -p`
+// (settings discovery, MCP probe, possible auth refresh) routinely exceed
+// 15s in real-world repos, so each attempt gets a generous budget.
+//
+// Declared as var (not const) so tests can swap to fast values via
+// setHaikuRetryForTesting.
+var haikuNamePerAttemptTimeout = 30 * time.Second
+
+// haikuNameOverallTimeout caps the total wall-clock time spent across all
+// retry attempts. On timeout the random branch persists and the next
 // actionable prompt retries.
-const haikuNameTimeout = 15 * time.Second
+var haikuNameOverallTimeout = 75 * time.Second
+
+// haikuNameAttempts is the maximum number of times callNamerWithRetry will
+// invoke the namer per UserPromptSubmit. Each attempt is bounded by
+// haikuNamePerAttemptTimeout; the whole sequence is bounded by
+// haikuNameOverallTimeout.
+var haikuNameAttempts = 3
+
+// haikuNameBackoff is the wait between attempts N and N+1. Linear small
+// backoff is enough at this scale — exponential is overkill for 3 attempts.
+var haikuNameBackoff = []time.Duration{1 * time.Second, 3 * time.Second}
 
 // NewManager creates a new agent manager for the given repo.
 //
@@ -237,7 +256,7 @@ func (m *Manager) maybeRenameFromPrompt(sess *Session, a *Agent, prompt string) 
 		defer m.watchers.Done()
 		defer sess.finishRename()
 
-		ctx, cancel := context.WithTimeout(context.Background(), haikuNameTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), haikuNameOverallTimeout)
 		defer cancel()
 
 		// Cancel the Haiku subprocess if the manager shuts down mid-call.
@@ -251,15 +270,29 @@ func (m *Manager) maybeRenameFromPrompt(sess *Session, a *Agent, prompt string) 
 			}
 		}()
 
-		suffix, err := namer(ctx, instruction)
+		repoPath := m.repoPath
+		sessID := sess.ID
+		logAttempt := func(attempt int, s string, err error, took time.Duration) {
+			haikuLogAttempt(repoPath, sessID, attempt, s, err, took)
+		}
+
+		start := time.Now()
+		suffix, err := callNamerWithRetry(
+			ctx, namer, instruction, m.done,
+			haikuNameAttempts, haikuNamePerAttemptTimeout, haikuNameBackoff,
+			logAttempt,
+		)
 		if err != nil || suffix == "" {
+			haikuLogOutcome(repoPath, sessID, suffix, err, time.Since(start))
 			return
 		}
 
 		newBranch := config.ExpandBranchPrefix(prefix) + suffix
 		if !m.renameSessionBranch(sess, newBranch) {
+			haikuLogOutcome(repoPath, sessID, "", fmt.Errorf("git rename failed or session closed (target=%s)", newBranch), time.Since(start))
 			return
 		}
+		haikuLogOutcome(repoPath, sessID, suffix, nil, time.Since(start))
 		// The session display name updates to the Haiku-derived task name so
 		// the sidebar separator shows what the session is working on. Agents
 		// keep their stable track identities (Track 1, Track 2, ...) and are

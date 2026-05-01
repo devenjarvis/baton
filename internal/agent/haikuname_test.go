@@ -2,10 +2,13 @@ package agent
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -218,5 +221,229 @@ func TestDefaultBranchNamer_ClaudeMissing(t *testing.T) {
 	_, err := namer(ctx, "hello")
 	if err == nil {
 		t.Fatal("expected error when claude is absent from PATH")
+	}
+	if !errors.Is(err, ErrClaudeNotFound) {
+		t.Errorf("err = %v, want errors.Is(err, ErrClaudeNotFound) == true", err)
+	}
+}
+
+// writeEnvDumpingClaude writes a fake claude that dumps its env into envFile
+// and prints stdout. Used to verify env-stripping in the Haiku subprocess.
+func writeEnvDumpingClaude(t *testing.T, dir, envFile, stdout string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fake claude uses /bin/sh; skip on windows")
+	}
+	script := "#!/bin/sh\n" +
+		"cat >/dev/null\n" +
+		"env > " + shellSingleQuote(envFile) + "\n" +
+		"printf %s " + shellSingleQuote(stdout) + "\n"
+	path := filepath.Join(dir, "claude")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write env-dumping claude: %v", err)
+	}
+}
+
+func TestDefaultBranchNamer_StripsBatonHookEnv(t *testing.T) {
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, "env.txt")
+	writeEnvDumpingClaude(t, dir, envFile, "result-slug")
+	withPATH(t, dir)
+
+	t.Setenv("BATON_HOOK_SOCKET", "/should/not/leak.sock")
+	t.Setenv("BATON_AGENT_ID", "should-not-leak")
+	// Sentinel non-baton var should still be inherited.
+	t.Setenv("BATON_KEEPME_TESTONLY", "yes")
+
+	namer := DefaultBranchNamer()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if _, err := namer(ctx, "hello"); err != nil {
+		t.Fatalf("namer returned error: %v", err)
+	}
+
+	envContents, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatalf("read env file: %v", err)
+	}
+	body := string(envContents)
+	for _, banned := range []string{"BATON_HOOK_SOCKET=", "BATON_AGENT_ID="} {
+		if strings.Contains(body, banned) {
+			t.Errorf("subprocess env contained %q; should have been stripped\n%s", banned, body)
+		}
+	}
+	if !strings.Contains(body, "BATON_KEEPME_TESTONLY=yes") {
+		t.Errorf("subprocess env missing non-baton sentinel var; env stripping was too aggressive\n%s", body)
+	}
+}
+
+func TestSanitizedHaikuEnv(t *testing.T) {
+	in := []string{
+		"PATH=/usr/bin",
+		"BATON_HOOK_SOCKET=/sock",
+		"HOME=/home/u",
+		"BATON_AGENT_ID=abc",
+		"BATON_FOO=keepme",     // not in strip list
+		"BATON_HOOK_SOCKET_X=", // prefix-only similar key — must NOT be stripped
+	}
+	out := sanitizedHaikuEnv(in)
+	got := strings.Join(out, "\n")
+	for _, banned := range []string{"BATON_HOOK_SOCKET=/sock", "BATON_AGENT_ID=abc"} {
+		if strings.Contains(got, banned) {
+			t.Errorf("sanitized env contained %q\n%s", banned, got)
+		}
+	}
+	for _, kept := range []string{"PATH=/usr/bin", "HOME=/home/u", "BATON_FOO=keepme", "BATON_HOOK_SOCKET_X="} {
+		if !strings.Contains(got, kept) {
+			t.Errorf("sanitized env missing %q\n%s", kept, got)
+		}
+	}
+}
+
+// TestCallNamerWithRetry_SucceedsAfterTransientErrors verifies that a transient
+// error on attempts 1 and 2 is recovered by attempt 3.
+func TestCallNamerWithRetry_SucceedsAfterTransientErrors(t *testing.T) {
+	var calls atomic.Int32
+	stub := func(ctx context.Context, instruction string) (string, error) {
+		n := calls.Add(1)
+		if n < 3 {
+			return "", fmt.Errorf("transient failure %d", n)
+		}
+		return "good-slug", nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+
+	suffix, err := callNamerWithRetry(
+		ctx, stub, "x", done,
+		3, 1*time.Second, []time.Duration{10 * time.Millisecond, 10 * time.Millisecond},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("expected success after retry, got err=%v", err)
+	}
+	if suffix != "good-slug" {
+		t.Errorf("suffix = %q, want good-slug", suffix)
+	}
+	if got := calls.Load(); got != 3 {
+		t.Errorf("namer called %d times, want 3", got)
+	}
+}
+
+// TestCallNamerWithRetry_StopsOnTerminalErrors verifies that terminal sentinel
+// errors short-circuit the retry loop.
+func TestCallNamerWithRetry_StopsOnTerminalErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"ClaudeNotFound", fmt.Errorf("wrap: %w", ErrClaudeNotFound)},
+		{"EmptySlug", ErrEmptySlug},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int32
+			stub := func(ctx context.Context, instruction string) (string, error) {
+				calls.Add(1)
+				return "", tc.err
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			done := make(chan struct{})
+
+			_, err := callNamerWithRetry(
+				ctx, stub, "x", done,
+				3, 100*time.Millisecond, []time.Duration{10 * time.Millisecond, 10 * time.Millisecond},
+				nil,
+			)
+			if !errors.Is(err, tc.err) && !errors.Is(err, ErrClaudeNotFound) && !errors.Is(err, ErrEmptySlug) {
+				t.Errorf("err = %v, want terminal", err)
+			}
+			if got := calls.Load(); got != 1 {
+				t.Errorf("namer called %d times for terminal error, want 1", got)
+			}
+		})
+	}
+}
+
+// TestCallNamerWithRetry_DoneAbortsBackoff verifies that closing the done
+// channel during the inter-attempt sleep aborts retries promptly.
+func TestCallNamerWithRetry_DoneAbortsBackoff(t *testing.T) {
+	var calls atomic.Int32
+	stub := func(ctx context.Context, instruction string) (string, error) {
+		calls.Add(1)
+		return "", fmt.Errorf("transient")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		close(done)
+	}()
+
+	start := time.Now()
+	_, err := callNamerWithRetry(
+		ctx, stub, "x", done,
+		3, 1*time.Second, []time.Duration{2 * time.Second, 2 * time.Second},
+		nil,
+	)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected cancellation error")
+	}
+	if elapsed > 1*time.Second {
+		t.Errorf("retry took %v after done close; expected ~50ms-ish", elapsed)
+	}
+	if got := calls.Load(); got > 2 {
+		t.Errorf("namer called %d times after done close, want <= 2", got)
+	}
+}
+
+// TestCallNamerWithRetry_LogsEachAttempt verifies the per-attempt logging
+// callback fires exactly once per attempt with the right metadata.
+func TestCallNamerWithRetry_LogsEachAttempt(t *testing.T) {
+	var calls atomic.Int32
+	stub := func(ctx context.Context, instruction string) (string, error) {
+		n := calls.Add(1)
+		if n < 2 {
+			return "", fmt.Errorf("blip")
+		}
+		return "ok-slug", nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+
+	type entry struct {
+		attempt int
+		suffix  string
+		err     error
+	}
+	var seen []entry
+	logFn := func(attempt int, suffix string, err error, took time.Duration) {
+		seen = append(seen, entry{attempt, suffix, err})
+	}
+
+	suffix, err := callNamerWithRetry(
+		ctx, stub, "x", done,
+		3, 100*time.Millisecond, []time.Duration{1 * time.Millisecond, 1 * time.Millisecond},
+		logFn,
+	)
+	if err != nil || suffix != "ok-slug" {
+		t.Fatalf("got suffix=%q err=%v, want ok-slug nil", suffix, err)
+	}
+	if len(seen) != 2 {
+		t.Fatalf("len(seen) = %d, want 2", len(seen))
+	}
+	if seen[0].attempt != 1 || seen[0].err == nil {
+		t.Errorf("first log entry: %+v, want attempt=1 with err", seen[0])
+	}
+	if seen[1].attempt != 2 || seen[1].suffix != "ok-slug" || seen[1].err != nil {
+		t.Errorf("second log entry: %+v, want attempt=2 suffix=ok-slug err=nil", seen[1])
 	}
 }
