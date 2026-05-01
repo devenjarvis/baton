@@ -515,6 +515,12 @@ func (a *Agent) IsAltScreen() bool {
 	return a.terminal.IsAltScreen()
 }
 
+// CursorPosition returns the current cursor position (x, y) where x is the
+// column and y is the row, both zero-indexed.
+func (a *Agent) CursorPosition() (x, y int) {
+	return a.terminal.CursorPosition()
+}
+
 // SendText forwards text input to the VT terminal.
 func (a *Agent) SendText(text string) {
 	a.mu.Lock()

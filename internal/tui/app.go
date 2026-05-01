@@ -1599,6 +1599,22 @@ func (a App) View() tea.View {
 	v.AltScreen = true
 	if a.view == ViewDashboard {
 		v.MouseMode = tea.MouseModeCellMotion
+		if a.dashboard.panelFocus == focusTerminal && a.dashboard.scrollOffset == 0 {
+			if item := a.dashboard.selectedItem(); item != nil && item.kind == listItemAgent && item.agent != nil {
+				cursorX, cursorY := item.agent.CursorPosition()
+				dashboardTopY := 0
+				if a.err != "" {
+					dashboardTopY++
+				}
+				if a.confirmQuit {
+					dashboardTopY++
+				}
+				const previewColOffset = 32 // mirrors screenToTermCell constant
+				screenX := cursorX + previewColOffset + 1
+				screenY := cursorY + dashboardTopY + 1 + a.dashboard.previewMetadataRows()
+				v.Cursor = tea.NewCursor(screenX, screenY)
+			}
+		}
 	}
 	return v
 }
