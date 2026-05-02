@@ -517,6 +517,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// rapid force-push window. Two in a row means the PR is genuinely gone.
 		if msg.pr == nil {
 			if _, had := a.prCache[msg.sessionID]; had {
+				// ps is always non-nil here: pollAllSessions initialises it before
+				// dispatching a poll, and prPollMsg can only arrive after dispatch.
+				// The nil guard is defensive; if ps were nil we skip the grace period
+				// and evict immediately rather than dereference.
 				if ps != nil {
 					ps.consecutiveNilPolls++
 					if ps.consecutiveNilPolls < 2 {
@@ -1918,6 +1922,11 @@ func (a *App) refreshPRStatusForSession(sessionID, branch, repoPath, worktreePat
 				}
 				basePR, _ := ghClient.GetPR(ctx, owner, repo, baseBranch)
 				if basePR == nil {
+					break
+				}
+				// Post-fetch cycle check catches diamond topologies where two PRs
+				// share a base and HeadBranch != baseBranch used for lookup.
+				if visited[basePR.HeadBranch] {
 					break
 				}
 				visited[basePR.HeadBranch] = true

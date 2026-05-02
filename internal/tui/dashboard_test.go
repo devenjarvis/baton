@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/devenjarvis/baton/internal/agent"
+	"github.com/devenjarvis/baton/internal/github"
 )
 
 func TestSelectionRect_Inactive(t *testing.T) {
@@ -221,6 +222,76 @@ func TestAdvanceTickers_WideCharName_ScrollsNotStuck(t *testing.T) {
 	}
 	if tk.offset != 1 {
 		t.Errorf("wide-char name: offset after first advance: got %d, want 1", tk.offset)
+	}
+}
+
+// TestPreviewMetadataRows verifies the row count used for mouse coordinate
+// mapping: 2 baseline (sessionInfo + blank), +1 for a single PR, +N for stack.
+func TestPreviewMetadataRows(t *testing.T) {
+	makeSession := func(id string) *agent.Session {
+		return &agent.Session{ID: id, Name: id}
+	}
+
+	tests := []struct {
+		name      string
+		cacheEntry *prCacheEntry
+		want      int
+	}{
+		{
+			name:       "no PR",
+			cacheEntry: nil,
+			want:       2,
+		},
+		{
+			name:       "single PR, no stack",
+			cacheEntry: &prCacheEntry{pr: &github.PRState{Number: 1}},
+			want:       3,
+		},
+		{
+			name: "stacked 2-deep",
+			cacheEntry: &prCacheEntry{
+				pr: &github.PRState{Number: 2},
+				stack: []*prCacheEntry{
+					{pr: &github.PRState{Number: 1}},
+				},
+			},
+			want: 4,
+		},
+		{
+			name: "stacked 3-deep",
+			cacheEntry: &prCacheEntry{
+				pr: &github.PRState{Number: 3},
+				stack: []*prCacheEntry{
+					{pr: &github.PRState{Number: 2}},
+					{pr: &github.PRState{Number: 1}},
+				},
+			},
+			want: 5,
+		},
+		{
+			name: "stack with nil entry is skipped",
+			cacheEntry: &prCacheEntry{
+				pr:    &github.PRState{Number: 2},
+				stack: []*prCacheEntry{nil},
+			},
+			want: 3, // nil stack entry not counted
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			sess := makeSession("s1")
+			d := newDashboardModel()
+			d.prCache = make(map[string]*prCacheEntry)
+			d.items = []listItem{{kind: listItemSession, session: sess}}
+			d.selected = 0
+			if tc.cacheEntry != nil {
+				d.prCache["s1"] = tc.cacheEntry
+			}
+			if got := d.previewMetadataRows(); got != tc.want {
+				t.Errorf("previewMetadataRows() = %d, want %d", got, tc.want)
+			}
+		})
 	}
 }
 

@@ -157,20 +157,15 @@ func prIndicatorWidth(entry *prCacheEntry) int {
 	if entry == nil || entry.pr == nil {
 		return 0
 	}
-	// Each PR in the chain: "#N" (2+digits) + " symbol" (2) = ~4+
-	// Separator " \u2192 " = 3 visible chars.
-	depth := len(entry.stack) + 1
-	// Base estimate: each PR level contributes "#N \u2713" \u2248 len("#NNN \u2713") \u2248 6 chars
-	// plus 3 for " \u2192 " between levels. Rough but consistent with existing logic.
-	numWidth := len(fmt.Sprintf("%d", entry.pr.Number))
-	w := 1 + numWidth // "#N"
+	// Head PR: "#N" + optional " symbol" + optional " Ready"
+	w := 1 + len(fmt.Sprintf("%d", entry.pr.Number))
 	if entry.checks != nil {
 		w += 2 // " symbol"
 	}
 	if isMergeReady(entry) {
 		w += 6 // " Ready"
 	}
-	// Add base levels (approximate \u2014 numbers vary, so use a fixed estimate).
+	// Base levels: each adds " \u2192 #N" + optional " symbol"
 	for _, base := range entry.stack {
 		if base.pr == nil {
 			continue
@@ -181,7 +176,6 @@ func prIndicatorWidth(entry *prCacheEntry) int {
 			w += 2
 		}
 	}
-	_ = depth
 	return w
 }
 
