@@ -366,6 +366,23 @@ func (m *Manager) emitBranchRenamed(sess *Session, _ *Agent, newBranch string) {
 	})
 }
 
+// ReconcileExternalBranchRename updates the in-memory branch name for a session
+// after the user has renamed the branch outside baton (e.g. `git branch -m`),
+// then fires EventBranchRenamed so the burst-polling window arms and the sidebar
+// label refreshes. No git operations are performed.
+func (m *Manager) ReconcileExternalBranchRename(sessionID, newBranch string) {
+	m.mu.RLock()
+	sess := m.sessions[sessionID]
+	m.mu.RUnlock()
+
+	if sess == nil {
+		return
+	}
+
+	sess.UpdateBranch(newBranch)
+	m.emitBranchRenamed(sess, nil, newBranch)
+}
+
 // findAgentAndSession locates an agent across all sessions and returns it
 // alongside its containing session.
 func (m *Manager) findAgentAndSession(agentID string) (*Agent, *Session) {

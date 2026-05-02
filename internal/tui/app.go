@@ -1790,6 +1790,17 @@ outer:
 					continue
 				}
 				ps.lastSHACheck = now
+
+				// Detect external branch renames (e.g. `git branch -m`) before
+				// querying the remote — a stale in-memory branch name causes
+				// getRemoteSHA to always return "" and drops the 30s stable poll.
+				if actualBranch := getCurrentHeadBranch(sess.Worktree.Path); actualBranch != "" && actualBranch != sess.Branch() {
+					mgr.ReconcileExternalBranchRename(sess.ID, actualBranch)
+					// Skip remote SHA check this tick; EventBranchRenamed will
+					// arm the burst and the next tick has the correct branch.
+					continue
+				}
+
 				sha := getRemoteSHA(repo.Path, sess.Branch())
 				if sha == "" || sha == ps.lastRemoteSHA {
 					continue
@@ -1840,6 +1851,24 @@ func getRemoteSHA(repoPath, branch string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// getCurrentHeadBranch returns the branch name that HEAD points to in the given
+// worktree. Returns "" on any error or when HEAD is detached (rev-parse returns
+// "HEAD"). Mirrors the getLocalHeadSHA pattern.
+func getCurrentHeadBranch(worktreePath string) string {
+	if worktreePath == "" {
+		return ""
+	}
+	out, err := exec.Command("git", "-C", worktreePath, "rev-parse", "--abbrev-ref", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	branch := strings.TrimSpace(string(out))
+	if branch == "HEAD" {
+		return ""
+	}
+	return branch
 }
 
 // getLocalHeadSHA returns the local HEAD SHA for a worktree. Used as a

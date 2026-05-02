@@ -415,6 +415,22 @@ func (s *Session) RenameBranch(repoPath, newBranch string) (string, error) {
 	return actual, nil
 }
 
+// UpdateBranch updates the in-memory branch name and session display name to
+// match an externally applied git branch rename. This is the no-git-ops
+// counterpart to RenameBranch: it reconciles state after the user has already
+// run `git branch -m` outside baton. Setting hasClaudeName prevents the Haiku
+// namer from overwriting the externally-set name on the next user prompt.
+func (s *Session) UpdateBranch(newBranch string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.Worktree.Branch = newBranch
+	if last := lastBranchSegment(newBranch); last != "" {
+		s.Name = last
+	}
+	s.hasClaudeName = true
+}
+
 // Branch returns the session's current git branch, safe for concurrent reads
 // while RenameBranch may be mutating it.
 func (s *Session) Branch() string {
