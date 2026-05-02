@@ -157,10 +157,10 @@ func TestSessionKill(t *testing.T) {
 
 // countAgentRows counts agent rows in the dashboard sidebar.
 // Agent rows are indented under sessions and start with a status symbol from
-// agent.Status.Symbol(): ◎ ● ◐ ○ ✓ ✗ (or "$" for shell agents). Session header
+// agent.Status.Symbol(): ▷ ▶ ⏺ ⏸ ⏭ ⏹ (or "$" for shell agents). Session header
 // rows contain box-drawing dashes "──", so we skip those.
 func countAgentRows(screen string) int {
-	statusSymbols := []string{"◎ ", "● ", "◐ ", "○ ", "✓ ", "✗ ", "$ "}
+	statusSymbols := []string{"▷ ", "▶ ", "⏺ ", "⏸ ", "⏭ ", "⏹ ", "$ "}
 	count := 0
 	for _, line := range strings.Split(screen, "\n") {
 		// Strip leading whitespace and the optional selection arrow.
