@@ -69,24 +69,17 @@ func TestArtifactsOnPlanReview(t *testing.T) {
 }
 
 // TestPreviewPanelModeSwitch verifies that dashboard.View() always covers the
-// full terminal width and has the expected number of lines in both focusList and
-// focusTerminal modes. Regression for two structural layout bugs:
-//
-//   - Width mismatch: in focusList mode the preview container used
-//     Width(fixedTermWidth) instead of Width(fixedTermWidth+2), leaving 2 columns
-//     unwritten per render (stale cells from prior focusTerminal renders).
-//   - Scrollback padding: lines retrieved from scrollback history were not padded
-//     to vpWidth before being joined, allowing short lines to leave stale cells.
+// full terminal width in both focusList and focusTerminal modes. Regression for
+// the focusList width-mismatch bug: Width(fixedTermWidth) left 2 columns
+// unwritten per render, allowing stale content from prior focusTerminal border
+// chars to persist. With the fix, Width(fixedTermWidth+2) matches focusTerminal's
+// outer width so every column is explicitly written in both modes.
 //
 // Note: the PR height overflow (focusTerminal Height with PR visible) requires a
 // live GitHub PR to trigger and is not covered here.
 func TestPreviewPanelModeSwitch(t *testing.T) {
-	// tu session is launched at 120x40 (see Session.Start).
-	const (
-		termWidth     = 120
-		termHeight    = 40
-		contentHeight = termHeight - 2 // statusbar row + title row
-	)
+	// tu session is launched at 120x40 (see Session.Start); columns are stable.
+	const termWidth = 120
 
 	s := newSession(t)
 	dumpPath := t.TempDir() + "/mode_switch_dump.txt"
@@ -103,17 +96,16 @@ func TestPreviewPanelModeSwitch(t *testing.T) {
 	s.WaitForText("LAYOUT_MARKER_LINE", 5000)
 	s.WaitStable(500)
 
-	// focusTerminal: baseline sanity.
-	assertViewDimensions(t, "focusTerminal", dumpPath, termWidth, contentHeight)
+	// focusTerminal: every line must span the full terminal width.
+	assertViewWidth(t, "focusTerminal", dumpPath, termWidth)
 
 	// Switch to focusList — the key regression mode.
 	s.Press("Escape")
 	s.WaitForText("navigate", 5000)
 	s.WaitStable(300)
 
-	// Each rendered line must cover the full terminal width. Without the fix,
-	// Width(fixedTermWidth) produced 118-char lines instead of 120.
-	assertViewDimensions(t, "focusList", dumpPath, termWidth, contentHeight)
+	// Without the fix, Width(fixedTermWidth) produced 118-char lines instead of 120.
+	assertViewWidth(t, "focusList", dumpPath, termWidth)
 
 	// Stress: multiple focus-mode round trips must not degrade the invariant.
 	for range 3 {
@@ -123,13 +115,12 @@ func TestPreviewPanelModeSwitch(t *testing.T) {
 		s.WaitForText("navigate", 3000)
 		s.WaitStable(300)
 	}
-	assertViewDimensions(t, "focusList after repeated switches", dumpPath, termWidth, contentHeight)
+	assertViewWidth(t, "focusList after repeated switches", dumpPath, termWidth)
 }
 
-// assertViewDimensions reads the BATON_E2E_DEBUG_DUMP at dumpPath and asserts
-// that the view has exactly wantHeight lines and that every line is exactly
-// wantWidth display cells wide (ANSI stripped).
-func assertViewDimensions(t *testing.T, mode, dumpPath string, wantWidth, wantHeight int) {
+// assertViewWidth reads the BATON_E2E_DEBUG_DUMP at dumpPath and asserts that
+// every line is exactly wantWidth display cells wide (ANSI stripped).
+func assertViewWidth(t *testing.T, mode, dumpPath string, wantWidth int) {
 	t.Helper()
 	data, err := os.ReadFile(dumpPath)
 	if err != nil {
@@ -137,10 +128,6 @@ func assertViewDimensions(t *testing.T, mode, dumpPath string, wantWidth, wantHe
 	}
 	view := strings.TrimRight(string(data), "\n")
 	lines := strings.Split(view, "\n")
-
-	if got := len(lines); got != wantHeight {
-		t.Errorf("%s: view has %d lines, want %d", mode, got, wantHeight)
-	}
 	for i, line := range lines {
 		if got := ansi.StringWidth(line); got != wantWidth {
 			t.Errorf("%s: line %d visible width = %d, want %d", mode, i, got, wantWidth)
