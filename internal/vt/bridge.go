@@ -449,6 +449,28 @@ func (t *Terminal) ExtractTextFromSnapshot(width, height, scrollOffset int, rect
 	return strings.Join(rows, "\n")
 }
 
+// PadLines right-pads each element of lines to exactly width display cells and
+// appends an ANSI style reset. Returns a new slice; the input is not modified.
+// Used by the scrollback render path so visibleLines match the column count
+// produced by RenderPadded.
+func PadLines(lines []string, width int) []string {
+	result := make([]string, len(lines))
+	if width <= 0 {
+		copy(result, lines)
+		return result
+	}
+	for i, line := range lines {
+		visible := ansi.StringWidth(line)
+		pad := width - visible
+		if pad > 0 {
+			result[i] = line + strings.Repeat(" ", pad) + "\x1b[0m"
+		} else {
+			result[i] = line + "\x1b[0m"
+		}
+	}
+	return result
+}
+
 // padFrame right-pads every line in `raw` (a `\n`-separated render) to `width`
 // cells and forces the output to exactly `height` lines.
 func padFrame(raw string, width, height int) string {
