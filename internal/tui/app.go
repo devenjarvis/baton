@@ -517,6 +517,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// rapid force-push window. Two in a row means the PR is genuinely gone.
 		if msg.pr == nil {
 			if _, had := a.prCache[msg.sessionID]; had {
+				// ps is always non-nil here: pollAllSessions initialises it before
+				// dispatching a poll, and prPollMsg can only arrive after dispatch.
+				// The nil guard is defensive; if ps were nil we skip the grace period
+				// and evict immediately rather than dereference.
 				if ps != nil {
 					ps.consecutiveNilPolls++
 					if ps.consecutiveNilPolls < 2 {
@@ -540,6 +544,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			pr:      msg.pr,
 			checks:  msg.checks,
 			reviews: msg.reviews,
+			stack:   msg.stack,
 		}
 		// Detect check state transitions and fire notifications.
 		if ps != nil && msg.checks != nil {
@@ -1887,6 +1892,7 @@ func (a *App) refreshPRStatusForSession(sessionID, branch, repoPath, worktreePat
 		}
 		var checks *github.CheckStatus
 		var reviews *github.ReviewStatus
+		var stack []*prCacheEntry
 		if pr != nil {
 			var err error
 			// Prefer SHA for checks when available — matches what CI ran against.
@@ -1902,6 +1908,34 @@ func (a *App) refreshPRStatusForSession(sessionID, branch, repoPath, worktreePat
 			if err != nil {
 				return prPollMsg{sessionID: sessionID, err: err}
 			}
+
+			// Walk up the base-branch chain for stacked PR support (best-effort,
+			// max 3 levels). Stop when the base targets a trunk branch, no PR is
+			// found, or a branch is revisited (cycle guard).
+			defaultBranches := map[string]bool{"main": true, "master": true, "develop": true}
+			visited := map[string]bool{pr.HeadBranch: true}
+			cur := pr
+			for i := 0; i < 3; i++ {
+				baseBranch := cur.BaseBranch
+				if baseBranch == "" || defaultBranches[baseBranch] || visited[baseBranch] {
+					break
+				}
+				basePR, _ := ghClient.GetPR(ctx, owner, repo, baseBranch)
+				if basePR == nil {
+					break
+				}
+				// Post-fetch cycle check catches diamond topologies where two PRs
+				// share a base and HeadBranch != baseBranch used for lookup.
+				if visited[basePR.HeadBranch] {
+					break
+				}
+				visited[basePR.HeadBranch] = true
+				entry := &prCacheEntry{pr: basePR}
+				entry.checks, _ = ghClient.GetChecks(ctx, owner, repo, basePR.HeadBranch)
+				entry.reviews, _ = ghClient.GetReviews(ctx, owner, repo, basePR.Number)
+				stack = append(stack, entry)
+				cur = basePR
+			}
 		}
 
 		return prPollMsg{
@@ -1909,6 +1943,7 @@ func (a *App) refreshPRStatusForSession(sessionID, branch, repoPath, worktreePat
 			pr:        pr,
 			checks:    checks,
 			reviews:   reviews,
+			stack:     stack,
 		}
 	}
 }

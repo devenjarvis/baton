@@ -159,13 +159,7 @@ func (d *dashboardModel) advanceTickers(now time.Time) {
 		prSuffixLen := 0
 		if !closing {
 			if entry := d.prCache[sess.ID]; entry != nil && entry.pr != nil {
-				prSuffixLen = 1 + len(fmt.Sprintf("#%d", entry.pr.Number))
-				if entry.checks != nil {
-					prSuffixLen += 2
-				}
-				if isMergeReady(entry) {
-					prSuffixLen += 6
-				}
+				prSuffixLen = 1 + prIndicatorWidth(entry) // 1 for leading space
 			}
 		}
 		closingTagLen := 0
@@ -402,7 +396,12 @@ func (d dashboardModel) previewMetadataRows() int {
 	rows := 2 // sessionInfo + blank; assumes agents always have a non-nil session
 	if sess := d.selectedSession(); sess != nil {
 		if entry := d.prCache[sess.ID]; entry != nil && entry.pr != nil {
-			rows++
+			rows++ // head PR line
+			for _, base := range entry.stack {
+				if base != nil && base.pr != nil {
+					rows++ // one row per valid base PR
+				}
+			}
 		}
 	}
 	return rows
@@ -501,14 +500,7 @@ func (d dashboardModel) renderList(width int) string {
 			if !closing {
 				if entry := d.prCache[sess.ID]; entry != nil && entry.pr != nil {
 					prSuffix = " " + prIndicator(entry)
-					// Approximate visible length: space + #N + space + symbol + optional " Ready"
-					prSuffixLen = 1 + len(fmt.Sprintf("#%d", entry.pr.Number))
-					if entry.checks != nil {
-						prSuffixLen += 2 // space + check symbol
-					}
-					if isMergeReady(entry) {
-						prSuffixLen += 6 // " Ready"
-					}
+					prSuffixLen = 1 + prIndicatorWidth(entry) // 1 for leading space
 				}
 			}
 
@@ -764,7 +756,7 @@ func (d dashboardModel) renderPreview(width int) string {
 				item.session.Branch(), item.session.Worktree.Path))
 		}
 	}
-	var prInfo string
+	var prInfoLines []string
 	if item.session != nil {
 		if entry := d.prCache[item.session.ID]; entry != nil && entry.pr != nil {
 			pr := entry.pr
@@ -779,7 +771,23 @@ func (d dashboardModel) renderPreview(width int) string {
 					checkStr = fmt.Sprintf(" -- %d/%d checks "+StyleWarning.Render("\u25cb"), entry.checks.Passed, entry.checks.Total)
 				}
 			}
-			prInfo = StyleSubtle.Render(" PR: ") + StyleLink.Render(fmt.Sprintf("#%d", pr.Number)) + StyleSubtle.Render(fmt.Sprintf(" (%s)%s  %s", pr.State, checkStr, pr.URL))
+			headLine := StyleSubtle.Render(" PR: ") + StyleLink.Render(fmt.Sprintf("#%d", pr.Number)) + StyleSubtle.Render(fmt.Sprintf(" (%s)%s  %s", pr.State, checkStr, pr.URL))
+			prInfoLines = append(prInfoLines, headLine)
+			// Render base PRs for stacked workflows (root first, so reverse stack).
+			for i := len(entry.stack) - 1; i >= 0; i-- {
+				base := entry.stack[i]
+				if base == nil || base.pr == nil {
+					continue
+				}
+				sym := checkSymbolFor(base.checks)
+				symStr := ""
+				if sym != "" {
+					symStr = "  " + sym
+				}
+				baseLine := StyleSubtle.Render(fmt.Sprintf("    \u21b3 PR #%d (branch: %s \u2192 %s)%s",
+					base.pr.Number, base.pr.HeadBranch, base.pr.BaseBranch, symStr))
+				prInfoLines = append(prInfoLines, baseLine)
+			}
 		}
 	}
 	var render string
@@ -820,9 +828,7 @@ func (d dashboardModel) renderPreview(width int) string {
 	if sessionInfo != "" {
 		previewParts = append(previewParts, sessionInfo)
 	}
-	if prInfo != "" {
-		previewParts = append(previewParts, prInfo)
-	}
+	previewParts = append(previewParts, prInfoLines...)
 	previewParts = append(previewParts, "", render)
 	return lipgloss.JoinVertical(lipgloss.Left, previewParts...)
 }
@@ -1080,27 +1086,47 @@ func (d dashboardModel) renderDiffSummary(width, maxHeight int) []string {
 
 // renderChecksSummary renders a rich PR checks section for the left panel bottom.
 // It shows per-check rows with status, name, and duration, plus review status.
+// When entry.stack is non-empty, a stacked-PR context line is shown in the header.
 func (d dashboardModel) renderChecksSummary(entry *prCacheEntry, width, maxHeight int) []string {
 	pr := entry.pr
 
 	// Header line: "── PR #42 ── Ready ──────"
-	prLabel := fmt.Sprintf("── PR #%d ──", pr.Number)
-	var badge string
-	var badgeLen int
-	if isMergeReady(entry) {
-		badge = " " + lipgloss.NewStyle().Foreground(ColorSuccess).Render("Ready") + " "
-		badgeLen = 7 // " Ready "
+	// For stacked PRs: "── #102 stacked on #101 ──────"
+	var header string
+	if len(entry.stack) > 0 && entry.stack[0] != nil && entry.stack[0].pr != nil {
+		baseNum := entry.stack[0].pr.Number
+		stackLabel := fmt.Sprintf("── #%d stacked on #%d ──", pr.Number, baseNum)
+		sepWidth := width - 2
+		if sepWidth < 0 {
+			sepWidth = 0
+		}
+		padLen := sepWidth - len(stackLabel)
+		if padLen < 0 {
+			padLen = 0
+		}
+		header = StyleSubtle.Render("── ") +
+			StyleLink.Render(fmt.Sprintf("#%d", pr.Number)) +
+			StyleSubtle.Render(" stacked on ") +
+			StyleLink.Render(fmt.Sprintf("#%d", baseNum)) +
+			StyleSubtle.Render(" ──"+strings.Repeat("─", padLen))
+	} else {
+		prLabel := fmt.Sprintf("── PR #%d ──", pr.Number)
+		var badge string
+		var badgeLen int
+		if isMergeReady(entry) {
+			badge = " " + lipgloss.NewStyle().Foreground(ColorSuccess).Render("Ready") + " "
+			badgeLen = 7 // " Ready "
+		}
+		sepWidth := width - 2
+		if sepWidth < 0 {
+			sepWidth = 0
+		}
+		padLen := sepWidth - len(prLabel) - badgeLen
+		if padLen < 0 {
+			padLen = 0
+		}
+		header = StyleSubtle.Render("── PR ") + StyleLink.Render(fmt.Sprintf("#%d", pr.Number)) + StyleSubtle.Render(" ──") + badge + StyleSubtle.Render(strings.Repeat("─", padLen))
 	}
-
-	sepWidth := width - 2
-	if sepWidth < 0 {
-		sepWidth = 0
-	}
-	padLen := sepWidth - len(prLabel) - badgeLen
-	if padLen < 0 {
-		padLen = 0
-	}
-	header := StyleSubtle.Render("── PR ") + StyleLink.Render(fmt.Sprintf("#%d", pr.Number)) + StyleSubtle.Render(" ──") + badge + StyleSubtle.Render(strings.Repeat("─", padLen))
 
 	var lines []string
 	lines = append(lines, header)

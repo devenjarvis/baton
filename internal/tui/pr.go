@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
@@ -20,7 +21,10 @@ type prPollMsg struct {
 	pr        *github.PRState
 	checks    *github.CheckStatus
 	reviews   *github.ReviewStatus
-	err       error
+	// stack holds base PRs for stacked-branch workflows, ordered from
+	// immediate parent (index 0) to root. Empty for non-stacked sessions.
+	stack []*prCacheEntry
+	err   error
 }
 
 // prCacheEntry holds cached PR and check status for a session.
@@ -28,6 +32,10 @@ type prCacheEntry struct {
 	pr      *github.PRState
 	checks  *github.CheckStatus
 	reviews *github.ReviewStatus
+	// stack holds base PRs for stacked-branch workflows, ordered from
+	// immediate parent (index 0) to root. Nil for non-stacked sessions.
+	// All code checking entry.pr != nil continues to work unchanged.
+	stack []*prCacheEntry
 }
 
 // prSessionState tracks per-session polling state for adaptive PR polling.
@@ -64,43 +72,111 @@ func isMergeReady(entry *prCacheEntry) bool {
 	return checksOK && reviewsOK && mergeable
 }
 
+// checkSymbolFor returns the colored check symbol for a checks state.
+func checkSymbolFor(checks *github.CheckStatus) string {
+	if checks == nil {
+		return ""
+	}
+	var sym string
+	var style lipgloss.Style
+	switch checks.State {
+	case "success":
+		sym = "\u2713"
+		style = lipgloss.NewStyle().Foreground(ColorSuccess)
+	case "failure":
+		sym = "\u2717"
+		style = lipgloss.NewStyle().Foreground(ColorError)
+	case "pending":
+		sym = "\u25cb"
+		style = lipgloss.NewStyle().Foreground(ColorWarning)
+	default:
+		sym = "?"
+		style = lipgloss.NewStyle().Foreground(ColorMuted)
+	}
+	return style.Render(sym)
+}
+
 // prIndicator returns a compact colored string for the session row.
+// For stacked PRs it emits a chain format: "#101 \u2713 \u2192 #102 \u25cb".
 // Returns empty string if no PR data exists.
 func prIndicator(entry *prCacheEntry) string {
 	if entry == nil || entry.pr == nil {
 		return ""
 	}
-	pr := entry.pr
-	checks := entry.checks
 
-	prNum := StyleLink.Render(fmt.Sprintf("#%d", pr.Number))
-
-	if checks == nil {
-		return prNum
+	// Non-stacked: simple "#N symbol [Ready]" format.
+	if len(entry.stack) == 0 {
+		prNum := StyleLink.Render(fmt.Sprintf("#%d", entry.pr.Number))
+		sym := checkSymbolFor(entry.checks)
+		result := prNum
+		if sym != "" {
+			result += " " + sym
+		}
+		if isMergeReady(entry) {
+			result += " " + lipgloss.NewStyle().Foreground(ColorSuccess).Render("Ready")
+		}
+		return result
 	}
 
-	var checkSymbol string
-	var checkStyle lipgloss.Style
-	switch checks.State {
-	case "success":
-		checkSymbol = "\u2713" // checkmark
-		checkStyle = lipgloss.NewStyle().Foreground(ColorSuccess)
-	case "failure":
-		checkSymbol = "\u2717" // x mark
-		checkStyle = lipgloss.NewStyle().Foreground(ColorError)
-	case "pending":
-		checkSymbol = "\u25cb" // circle
-		checkStyle = lipgloss.NewStyle().Foreground(ColorWarning)
-	default:
-		checkSymbol = "?"
-		checkStyle = lipgloss.NewStyle().Foreground(ColorMuted)
+	// Stacked: emit base-first chain. entry.stack is ordered immediate-parent
+	// (index 0) to root, so reversing gives root-to-head order.
+	sep := StyleSubtle.Render(" \u2192 ")
+	var parts []string
+	for i := len(entry.stack) - 1; i >= 0; i-- {
+		base := entry.stack[i]
+		if base.pr == nil {
+			continue
+		}
+		num := StyleLink.Render(fmt.Sprintf("#%d", base.pr.Number))
+		sym := checkSymbolFor(base.checks)
+		if sym != "" {
+			parts = append(parts, num+" "+sym)
+		} else {
+			parts = append(parts, num)
+		}
+	}
+	// Append the head PR.
+	headNum := StyleLink.Render(fmt.Sprintf("#%d", entry.pr.Number))
+	headSym := checkSymbolFor(entry.checks)
+	if headSym != "" {
+		parts = append(parts, headNum+" "+headSym)
+	} else {
+		parts = append(parts, headNum)
 	}
 
-	result := prNum + " " + checkStyle.Render(checkSymbol)
+	result := strings.Join(parts, sep)
 	if isMergeReady(entry) {
 		result += " " + lipgloss.NewStyle().Foreground(ColorSuccess).Render("Ready")
 	}
 	return result
+}
+
+// prIndicatorWidth returns the approximate visible width of prIndicator output
+// for the given entry. Used for layout calculations in dashboard rendering.
+func prIndicatorWidth(entry *prCacheEntry) int {
+	if entry == nil || entry.pr == nil {
+		return 0
+	}
+	// Head PR: "#N" + optional " symbol" + optional " Ready"
+	w := 1 + len(fmt.Sprintf("%d", entry.pr.Number))
+	if entry.checks != nil {
+		w += 2 // " symbol"
+	}
+	if isMergeReady(entry) {
+		w += 6 // " Ready"
+	}
+	// Base levels: each adds " \u2192 #N" + optional " symbol"
+	for _, base := range entry.stack {
+		if base.pr == nil {
+			continue
+		}
+		w += 3 // " \u2192 "
+		w += 1 + len(fmt.Sprintf("%d", base.pr.Number))
+		if base.checks != nil {
+			w += 2
+		}
+	}
+	return w
 }
 
 // formatCheckDuration formats a duration for check run display.

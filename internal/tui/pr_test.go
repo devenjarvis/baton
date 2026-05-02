@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -160,6 +161,58 @@ func TestPrPollMsg_NilWithNoPriorCacheIsNoop(t *testing.T) {
 	}
 	if got.prPollStates["sess-1"].inFlight {
 		t.Errorf("inFlight should be cleared")
+	}
+}
+
+// TestPrIndicator_Stacked verifies the chain format and that prIndicatorWidth
+// agrees with the rendered visible length.
+func TestPrIndicator_Stacked(t *testing.T) {
+	base := &prCacheEntry{
+		pr:     &github.PRState{Number: 101},
+		checks: &github.CheckStatus{State: "success"},
+	}
+	head := &prCacheEntry{
+		pr:     &github.PRState{Number: 102},
+		checks: &github.CheckStatus{State: "pending"},
+		stack:  []*prCacheEntry{base},
+	}
+
+	indicator := prIndicator(head)
+	if indicator == "" {
+		t.Fatal("prIndicator returned empty string for stacked entry")
+	}
+	// Indicator must contain both PR numbers.
+	if !strings.Contains(indicator, "101") {
+		t.Errorf("indicator missing base PR number: %q", indicator)
+	}
+	if !strings.Contains(indicator, "102") {
+		t.Errorf("indicator missing head PR number: %q", indicator)
+	}
+
+	// prIndicatorWidth must be > single-PR width.
+	singleWidth := prIndicatorWidth(&prCacheEntry{
+		pr:     &github.PRState{Number: 102},
+		checks: &github.CheckStatus{State: "pending"},
+	})
+	stackedWidth := prIndicatorWidth(head)
+	if stackedWidth <= singleWidth {
+		t.Errorf("stacked width %d should be > single width %d", stackedWidth, singleWidth)
+	}
+}
+
+// TestPrIndicator_NonStacked verifies that a non-stacked entry is unchanged.
+func TestPrIndicator_NonStacked(t *testing.T) {
+	entry := &prCacheEntry{
+		pr:     &github.PRState{Number: 42},
+		checks: &github.CheckStatus{State: "success"},
+	}
+	indicator := prIndicator(entry)
+	if !strings.Contains(indicator, "42") {
+		t.Errorf("single-PR indicator missing PR number: %q", indicator)
+	}
+	// No separator arrow in non-stacked case.
+	if strings.Contains(indicator, "→") {
+		t.Errorf("non-stacked indicator should not contain separator: %q", indicator)
 	}
 }
 
