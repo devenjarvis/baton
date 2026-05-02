@@ -83,31 +83,31 @@ func TestHookPipeline(t *testing.T) {
 	s.Press("Escape")
 	s.WaitForText("navigate", 10000)
 
-	// Active (●) — session-start fires at t≈0.3s.
-	if !waitForAgentSymbol(s, "●", 5000) {
-		t.Fatalf("never observed Active (●) symbol\nScreen:\n%s", s.Screenshot())
+	// Active (▶) — session-start fires at t≈0.3s.
+	if !waitForAgentSymbol(s, "▶", 5000) {
+		t.Fatalf("never observed Active (▶) symbol\nScreen:\n%s", s.Screenshot())
 	}
-	// Waiting (◐) — notification fires at t≈1.5s.
-	if !waitForAgentSymbol(s, "◐", 5000) {
-		t.Fatalf("never observed Waiting (◐) symbol\nScreen:\n%s", s.Screenshot())
+	// Waiting (⏺) — notification fires at t≈1.5s.
+	if !waitForAgentSymbol(s, "⏺", 5000) {
+		t.Fatalf("never observed Waiting (⏺) symbol\nScreen:\n%s", s.Screenshot())
 	}
-	// Idle (○) — stop fires at t≈3.5s.
-	if !waitForAgentSymbol(s, "○", 5000) {
-		t.Fatalf("never observed Idle (○) after Stop\nScreen:\n%s", s.Screenshot())
+	// Idle (⏸) — stop fires at t≈3.5s.
+	if !waitForAgentSymbol(s, "⏸", 5000) {
+		t.Fatalf("never observed Idle (⏸) after Stop\nScreen:\n%s", s.Screenshot())
 	}
-	// Active (●) again — user-prompt-submit fires at t≈5.5s and re-arms.
+	// Active (▶) again — user-prompt-submit fires at t≈5.5s and re-arms.
 	// This is the observable signal that UserPromptSubmit transitioned the
 	// bubble back to Active. (The chime re-arm flag is not visible on
 	// screen; the second Idle below confirms the manager saw the transition
 	// and emitted a status-change event.)
-	if !waitForAgentSymbol(s, "●", 5000) {
-		t.Fatalf("never observed re-armed Active (●) after UserPromptSubmit\nScreen:\n%s", s.Screenshot())
+	if !waitForAgentSymbol(s, "▶", 5000) {
+		t.Fatalf("never observed re-armed Active (▶) after UserPromptSubmit\nScreen:\n%s", s.Screenshot())
 	}
-	// Idle (○) again — stop fires at t≈7.5s. This doubles as a re-arm check:
+	// Idle (⏸) again — stop fires at t≈7.5s. This doubles as a re-arm check:
 	// if UserPromptSubmit hadn't re-armed, there'd be no intermediate Active
 	// and the second Stop would be a no-op status-wise.
-	if !waitForAgentSymbol(s, "○", 5000) {
-		t.Fatalf("never observed final Idle (○) after second Stop\nScreen:\n%s", s.Screenshot())
+	if !waitForAgentSymbol(s, "⏸", 5000) {
+		t.Fatalf("never observed final Idle (⏸) after second Stop\nScreen:\n%s", s.Screenshot())
 	}
 }
 
