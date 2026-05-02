@@ -178,3 +178,53 @@ func TestSessionRenameBranch_FailureLeavesStateUnchanged(t *testing.T) {
 		t.Error("HasClaudeName() should stay false on failure")
 	}
 }
+
+func TestUpdateBranch(t *testing.T) {
+	repo := setupTestRepo(t)
+
+	wt, err := git.CreateWorktree(repo, "warm-ibis", "", "", "")
+	if err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+	s := newSession("session-1", "warm-ibis", wt)
+
+	if s.HasClaudeName() {
+		t.Error("HasClaudeName() should be false before UpdateBranch")
+	}
+
+	s.UpdateBranch("baton/fix-login-bug")
+
+	if s.Branch() != "baton/fix-login-bug" {
+		t.Errorf("Branch() = %q, want %q", s.Branch(), "baton/fix-login-bug")
+	}
+	if s.CurrentName() != "fix-login-bug" {
+		t.Errorf("CurrentName() = %q, want %q", s.CurrentName(), "fix-login-bug")
+	}
+	if !s.HasClaudeName() {
+		t.Error("HasClaudeName() should be true after UpdateBranch")
+	}
+}
+
+func TestUpdateBranch_PreventsHaikuOverwrite(t *testing.T) {
+	repo := setupTestRepo(t)
+
+	wt, err := git.CreateWorktree(repo, "warm-ibis", "", "", "")
+	if err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+	s := newSession("session-1", "warm-ibis", wt)
+
+	s.UpdateBranch("baton/external-name")
+
+	// RenameBranch must be a no-op because hasClaudeName is now true.
+	actual, err := s.RenameBranch(repo, "baton/haiku-would-set-this")
+	if err != nil {
+		t.Fatalf("RenameBranch: %v", err)
+	}
+	if actual != "baton/external-name" {
+		t.Errorf("RenameBranch should no-op, got %q, want %q", actual, "baton/external-name")
+	}
+	if s.Branch() != "baton/external-name" {
+		t.Errorf("Branch() should stay %q after no-op, got %q", "baton/external-name", s.Branch())
+	}
+}
