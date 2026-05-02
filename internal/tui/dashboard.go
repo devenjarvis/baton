@@ -346,7 +346,7 @@ func (d dashboardModel) View() string {
 		BorderForeground(ColorMuted)
 
 	previewStyle := lipgloss.NewStyle().
-		Width(previewWidth).
+		Width(previewWidth + 2).
 		Height(d.contentHeight())
 	if d.panelFocus == focusTerminal || d.panelFocus == focusConfig {
 		// Size the bordered box so its inner content height matches the
@@ -357,7 +357,7 @@ func (d dashboardModel) View() string {
 		// truncation to hide the mismatch.
 		previewStyle = lipgloss.NewStyle().
 			Width(d.fixedTermWidth()).
-			Height(d.previewMetadataRows() + d.fixedTermHeight()).
+			Height(d.contentHeight() - 2).
 			Border(lipgloss.NormalBorder()).
 			BorderForeground(ColorSecondary)
 	}
@@ -798,7 +798,7 @@ func (d dashboardModel) renderPreview(width int) string {
 		if start < 0 {
 			start = 0
 		}
-		visibleLines := allLines[start:end]
+		visibleLines := vt.PadLines(allLines[start:end], vpWidth)
 		if d.selection.active && d.selection.dragSeen && d.selection.agentID == ag.ID {
 			sx, sy, ex, ey, _ := d.selectionRect()
 			render = applySelectionHighlight(visibleLines, vt.SelectionRect{
