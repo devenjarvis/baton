@@ -233,9 +233,9 @@ func TestPreviewMetadataRows(t *testing.T) {
 	}
 
 	tests := []struct {
-		name      string
+		name       string
 		cacheEntry *prCacheEntry
-		want      int
+		want       int
 	}{
 		{
 			name:       "no PR",
