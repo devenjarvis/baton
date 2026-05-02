@@ -60,6 +60,16 @@ type Terminal struct {
 	// Written by Write() (agent.readLoop), read by AltScreenEntered() (Bubble Tea).
 	// Protected by historyMu.
 	altScreenEntered bool
+
+	// cursorVisible mirrors the emulator's DECTCEM (mode 25) state. Updated by
+	// the CursorVisibility callback registered in New() — which fires from
+	// inside emu.Write() (agent.readLoop goroutine) — and read by
+	// CursorVisible() (Bubble Tea main goroutine). Default is true (DECTCEM
+	// defaults on); the callback only fires on transitions, so a never-toggled
+	// terminal stays visible. Guarded by its own mutex to avoid lock-order
+	// coupling with historyMu / stableRenderMu.
+	cursorVisible   bool
+	cursorVisibleMu sync.Mutex
 }
 
 // New creates a new Terminal with the given dimensions.
@@ -67,10 +77,23 @@ func New(width, height int) *Terminal {
 	emu := xvt.NewSafeEmulator(width, height)
 	pr, pw := io.Pipe()
 	t := &Terminal{
-		emu: emu,
-		pr:  pr,
-		pw:  pw,
+		emu:           emu,
+		pr:            pr,
+		pw:            pw,
+		cursorVisible: true, // DECTCEM defaults on; callback fires on transitions only.
 	}
+	// Register a CursorVisibility callback so we can answer CursorVisible()
+	// without reaching into emulator internals. The callback fires from inside
+	// emu.Write() (agent.readLoop), so cursorVisibleMu must stay independent
+	// of historyMu / stableRenderMu — never call back into Write while holding
+	// it.
+	emu.SetCallbacks(xvt.Callbacks{
+		CursorVisibility: func(visible bool) {
+			t.cursorVisibleMu.Lock()
+			t.cursorVisible = visible
+			t.cursorVisibleMu.Unlock()
+		},
+	})
 	go t.bridgeRead()
 	return t
 }
@@ -611,6 +634,16 @@ func (t *Terminal) Read(buf []byte) (int, error) {
 func (t *Terminal) CursorPosition() (x, y int) {
 	pos := t.emu.CursorPosition()
 	return pos.X, pos.Y
+}
+
+// CursorVisible reports whether the inner program currently wants the cursor
+// shown (DECTCEM, mode 25). Default is true; flips to false on `\e[?25l` and
+// back to true on `\e[?25h`. Used by the TUI to suppress the host-terminal
+// cursor when a full-screen app (e.g. Claude Code) draws its own.
+func (t *Terminal) CursorVisible() bool {
+	t.cursorVisibleMu.Lock()
+	defer t.cursorVisibleMu.Unlock()
+	return t.cursorVisible
 }
 
 // Width returns the terminal width in columns.

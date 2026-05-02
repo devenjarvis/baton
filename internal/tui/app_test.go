@@ -1246,3 +1246,152 @@ func TestRefreshAgentListRepoAffinity(t *testing.T) {
 		t.Errorf("expected cursor on repo header, got kind=%v", selected.kind)
 	}
 }
+
+// waitForCursorAt polls ag.CursorPosition() until it reports (wantX, wantY)
+// or the deadline expires. Used by the preview-cursor placement test to wait
+// for a positioning escape sequence to be processed by the emulator.
+func waitForCursorAt(t *testing.T, ag *agent.Agent, wantX, wantY int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if x, y := ag.CursorPosition(); x == wantX && y == wantY {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	x, y := ag.CursorPosition()
+	t.Fatalf("cursor did not reach (%d, %d) within timeout; got (%d, %d)", wantX, wantY, x, y)
+}
+
+// waitForCursorHidden polls ag.CursorVisible() until it reports false or the
+// deadline expires.
+func waitForCursorHidden(t *testing.T, ag *agent.Agent) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if !ag.CursorVisible() {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("cursor did not hide within timeout")
+}
+
+// TestPreviewCursorPlacement verifies that App.View() places the host cursor
+// on the screen cell the agent's VT cursor occupies. Regression test for the
+// off-by-one introduced in PR #95 (previewColOffset = 32 placed it one column
+// too far right) — with previewColOffset = 31 the host cursor lands exactly
+// on top of VT cell 0's screen column.
+func TestPreviewCursorPlacement(t *testing.T) {
+	dir, err := os.MkdirTemp("", "baton-cursorpos-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+
+	run := func(args ...string) {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("cmd %v: %v\n%s", args, err, out)
+		}
+	}
+	run("git", "init")
+	run("git", "config", "commit.gpgsign", "false")
+	run("git", "commit", "--allow-empty", "-m", "init")
+
+	mgr := agent.NewManager(dir, config.Resolve(nil, nil))
+	defer mgr.Shutdown()
+
+	// Position cursor at row 10, col 15 (1-indexed CUP) — that is VT cell
+	// (14, 9) in 0-indexed coordinates. Sleeping keeps the bash process alive
+	// so the agent stays in StatusActive.
+	sess, ag, err := mgr.CreateSessionWithCommand(agent.Config{
+		Name: "cursor-pos", Task: "test", RepoPath: dir, Rows: 24, Cols: 80,
+	}, func(_ string) *exec.Cmd {
+		return exec.Command("bash", "-c", `printf '\033[10;15H'; sleep 10`)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForCursorAt(t, ag, 14, 9)
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.managers[dir] = mgr
+	app.activeRepo = dir
+	app.dashboard.items = []listItem{
+		{kind: listItemAgent, repoPath: dir, session: sess, agent: ag},
+	}
+	app.dashboard.panelFocus = focusTerminal
+
+	v := app.View()
+	if v.Cursor == nil {
+		t.Fatal("expected non-nil view.Cursor in focusTerminal with visible cursor")
+	}
+	// Expected screen position:
+	//   X = previewColOffset(31) + previewLeftBorder(1) + cursorX(14) = 46
+	//   Y = dashboardTopY(0) + previewTopBorder(1) + previewMetadataRows(2) + cursorY(9) = 12
+	// With the pre-fix off-by-one (previewColOffset=32) X would be 47, which
+	// is the visible "shifted one to the right" symptom the user reported.
+	if v.Cursor.X != 46 || v.Cursor.Y != 12 {
+		t.Fatalf("expected cursor at screen (46, 12), got (%d, %d)", v.Cursor.X, v.Cursor.Y)
+	}
+}
+
+// TestPreviewCursorHiddenWhenAgentHidesIt verifies that App.View() leaves
+// view.Cursor nil after the inner program emits DECRST 25 (\e[?25l). Regression
+// test for the doubled-cursor symptom: full-screen TUIs (Claude Code) draw
+// their own visual cursor and hide the host terminal's — without this gate
+// baton would draw an extra blinking block on top.
+func TestPreviewCursorHiddenWhenAgentHidesIt(t *testing.T) {
+	dir, err := os.MkdirTemp("", "baton-cursorhide-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+
+	run := func(args ...string) {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("cmd %v: %v\n%s", args, err, out)
+		}
+	}
+	run("git", "init")
+	run("git", "config", "commit.gpgsign", "false")
+	run("git", "commit", "--allow-empty", "-m", "init")
+
+	mgr := agent.NewManager(dir, config.Resolve(nil, nil))
+	defer mgr.Shutdown()
+
+	sess, ag, err := mgr.CreateSessionWithCommand(agent.Config{
+		Name: "cursor-hide", Task: "test", RepoPath: dir, Rows: 24, Cols: 80,
+	}, func(_ string) *exec.Cmd {
+		return exec.Command("bash", "-c", `printf '\033[?25l'; sleep 10`)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForCursorHidden(t, ag)
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.managers[dir] = mgr
+	app.activeRepo = dir
+	app.dashboard.items = []listItem{
+		{kind: listItemAgent, repoPath: dir, session: sess, agent: ag},
+	}
+	app.dashboard.panelFocus = focusTerminal
+
+	v := app.View()
+	if v.Cursor != nil {
+		t.Fatalf("expected view.Cursor nil when agent hid cursor, got %+v", v.Cursor)
+	}
+}
