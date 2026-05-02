@@ -1428,9 +1428,10 @@ func (a *App) setError(msg string) {
 // should clamp to [0, fixedTermWidth) × [0, fixedTermHeight) themselves.
 //
 // The translation mirrors the dashboard layout: an optional error/confirm-quit
-// banner pushes content down, the list panel and its border occupy the first
-// 32 columns, and the preview's lipgloss frame plus the metadata rows above
-// the VT viewport offset the top-left cell.
+// banner pushes content down, the list panel and its border occupy columns
+// 0..30 (the preview's left border lives at column 31), and the preview's
+// lipgloss frame plus the metadata rows above the VT viewport offset the
+// top-left cell.
 func (a *App) screenToTermCell(screenX, screenY int) (termX, termY int, inViewport bool) {
 	dashboardTopY := 0
 	if a.err != "" {
@@ -1440,7 +1441,10 @@ func (a *App) screenToTermCell(screenX, screenY int) (termX, termY int, inViewpo
 		dashboardTopY++
 	}
 	const (
-		previewColOffset  = 32 // list panel width + list-panel right border
+		// previewColOffset is the screen column of the preview's left border
+		// (= listWidth + list-panel right border = 30 + 1). The preview's left
+		// border occupies that column; VT cell 0 sits at previewColOffset + 1.
+		previewColOffset  = 31
 		previewLeftBorder = 1
 		previewTopBorder  = 1
 	)
@@ -1617,7 +1621,7 @@ func (a App) View() tea.View {
 	if a.view == ViewDashboard {
 		v.MouseMode = tea.MouseModeCellMotion
 		if a.dashboard.panelFocus == focusTerminal && a.dashboard.scrollOffset == 0 {
-			if item := a.dashboard.selectedItem(); item != nil && item.kind == listItemAgent && item.agent != nil {
+			if item := a.dashboard.selectedItem(); item != nil && item.kind == listItemAgent && item.agent != nil && item.agent.CursorVisible() {
 				cursorX, cursorY := item.agent.CursorPosition()
 				dashboardTopY := 0
 				if a.err != "" {
@@ -1626,7 +1630,10 @@ func (a App) View() tea.View {
 				if a.confirmQuit {
 					dashboardTopY++
 				}
-				const previewColOffset = 32 // mirrors screenToTermCell constant
+				// previewColOffset is the column of the preview's left border;
+				// VT cell 0 lives one column to its right. Mirrors the constant
+				// in screenToTermCell — the two formulas must move in lockstep.
+				const previewColOffset = 31
 				screenX := cursorX + previewColOffset + 1
 				screenY := cursorY + dashboardTopY + 1 + a.dashboard.previewMetadataRows()
 				v.Cursor = tea.NewCursor(screenX, screenY)

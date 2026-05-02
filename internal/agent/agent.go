@@ -521,6 +521,13 @@ func (a *Agent) CursorPosition() (x, y int) {
 	return a.terminal.CursorPosition()
 }
 
+// CursorVisible reports whether the inner program wants the cursor shown
+// (DECTCEM, mode 25). Used by the TUI to suppress the host-terminal cursor
+// while a full-screen app draws its own.
+func (a *Agent) CursorVisible() bool {
+	return a.terminal.CursorVisible()
+}
+
 // SendText forwards text input to the VT terminal.
 func (a *Agent) SendText(text string) {
 	a.mu.Lock()
