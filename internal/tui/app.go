@@ -511,18 +511,30 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			return a, nil
 		}
-		// Lookup succeeded with no PR. If we had one before, the PR has been
-		// closed, merged, or its head branch was deleted — drop the stale entry
-		// so the UI reflects reality.
+		// Lookup succeeded with no PR. Apply a 2-consecutive-nil grace period
+		// before evicting the cache: a single nil is common during the rename
+		// gap (branch pushed under old name, remote SHA not yet updated) or a
+		// rapid force-push window. Two in a row means the PR is genuinely gone.
 		if msg.pr == nil {
 			if _, had := a.prCache[msg.sessionID]; had {
+				if ps != nil {
+					ps.consecutiveNilPolls++
+					if ps.consecutiveNilPolls < 2 {
+						return a, nil
+					}
+				}
 				delete(a.prCache, msg.sessionID)
 				if ps != nil {
 					ps.lastCheckState = ""
+					ps.consecutiveNilPolls = 0
 				}
 				a.updateDashboardPRCache()
 			}
 			return a, nil
+		}
+		// Successful poll: reset the nil counter.
+		if ps != nil {
+			ps.consecutiveNilPolls = 0
 		}
 		a.prCache[msg.sessionID] = &prCacheEntry{
 			pr:      msg.pr,
@@ -1780,7 +1792,7 @@ outer:
 			ps.lastPoll = now
 			ps.inFlight = true
 			a.prPollsInFlight++
-			cmds = append(cmds, a.refreshPRStatusForSession(sess.ID, sess.Branch(), repo.Path))
+			cmds = append(cmds, a.refreshPRStatusForSession(sess.ID, sess.Branch(), repo.Path, sess.Worktree.Path))
 		}
 	}
 	return cmds
@@ -1818,8 +1830,23 @@ func getRemoteSHA(repoPath, branch string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// getLocalHeadSHA returns the local HEAD SHA for a worktree. Used as a
+// fallback when getRemoteSHA returns "" (branch not yet pushed under the
+// current name after a rename). Silent on error.
+func getLocalHeadSHA(worktreePath string) string {
+	if worktreePath == "" {
+		return ""
+	}
+	out, err := exec.Command("git", "-C", worktreePath, "rev-parse", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
 // refreshPRStatusForSession returns a Cmd that polls PR, check, and review status for a single session.
-func (a *App) refreshPRStatusForSession(sessionID, branch, repoPath string) tea.Cmd {
+// worktreePath is used as a fallback SHA source when the branch hasn't been pushed under its current name.
+func (a *App) refreshPRStatusForSession(sessionID, branch, repoPath, worktreePath string) tea.Cmd {
 	ghClient := a.ghClient
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -1842,6 +1869,14 @@ func (a *App) refreshPRStatusForSession(sessionID, branch, repoPath string) tea.
 		sha := getRemoteSHA(repoPath, branch)
 		if sha != "" {
 			pr, _ = ghClient.GetPRBySHA(ctx, owner, repo, sha)
+		}
+		// If the remote SHA is missing (branch not yet pushed under current name
+		// after a rename), try the local HEAD SHA — the commit may have been
+		// pushed before the rename and GitHub still associates the PR with it.
+		if pr == nil && sha == "" {
+			if localSHA := getLocalHeadSHA(worktreePath); localSHA != "" {
+				pr, _ = ghClient.GetPRBySHA(ctx, owner, repo, localSHA)
+			}
 		}
 		if pr == nil {
 			var err error

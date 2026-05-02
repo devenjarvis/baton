@@ -44,6 +44,11 @@ type prSessionState struct {
 	// up quickly. Writes happen only from the Bubble Tea Update goroutine;
 	// no locking required.
 	burstUntil time.Time
+	// consecutiveNilPolls counts how many back-to-back polls returned nil (no
+	// open PR). A cached entry is only evicted after 2 consecutive nils so a
+	// single nil during the rename-gap or a rapid force-push window does not
+	// blank the UI.
+	consecutiveNilPolls int
 }
 
 // isMergeReady returns true when all conditions for merge readiness are met.

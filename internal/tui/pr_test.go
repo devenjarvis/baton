@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/devenjarvis/baton/internal/agent"
+	"github.com/devenjarvis/baton/internal/github"
 )
 
 // TestPrPollInterval_BurstOverridesBaseline verifies the burst window shortens
@@ -85,22 +86,63 @@ func TestPrPollMsg_ErrorPreservesCache(t *testing.T) {
 	}
 }
 
-// TestPrPollMsg_NilClearsPreviouslyCachedEntry verifies that a successful
-// lookup with no PR drops a stale cached entry — e.g. when the PR is
-// closed, merged, or its head branch is deleted.
-func TestPrPollMsg_NilClearsPreviouslyCachedEntry(t *testing.T) {
+// TestPrPollMsg_NilGracePeriod verifies the 2-consecutive-nil grace period:
+// the first nil preserves the cache entry, the second nil evicts it.
+func TestPrPollMsg_NilGracePeriod(t *testing.T) {
 	a := NewApp()
 	a.prPollsInFlight = 1
 	a.prPollStates["sess-1"] = &prSessionState{inFlight: true, lastCheckState: "success"}
 	a.prCache["sess-1"] = &prCacheEntry{}
 
+	// First nil: cache should be preserved.
 	model, _ := a.Update(prPollMsg{sessionID: "sess-1"})
 	got := model.(App)
-	if _, ok := got.prCache["sess-1"]; ok {
-		t.Errorf("cache entry should be cleared when lookup returns (nil, nil)")
+	if _, ok := got.prCache["sess-1"]; !ok {
+		t.Errorf("cache entry should be preserved on first nil poll (grace period)")
 	}
-	if got.prPollStates["sess-1"].lastCheckState != "" {
-		t.Errorf("lastCheckState should reset, got %q", got.prPollStates["sess-1"].lastCheckState)
+	if got.prPollStates["sess-1"].consecutiveNilPolls != 1 {
+		t.Errorf("consecutiveNilPolls = %d, want 1", got.prPollStates["sess-1"].consecutiveNilPolls)
+	}
+
+	// Second nil: cache should be cleared.
+	got.prPollsInFlight = 1
+	got.prPollStates["sess-1"].inFlight = true
+	model2, _ := got.Update(prPollMsg{sessionID: "sess-1"})
+	got2 := model2.(App)
+	if _, ok := got2.prCache["sess-1"]; ok {
+		t.Errorf("cache entry should be cleared after second consecutive nil poll")
+	}
+	if got2.prPollStates["sess-1"].lastCheckState != "" {
+		t.Errorf("lastCheckState should reset, got %q", got2.prPollStates["sess-1"].lastCheckState)
+	}
+	if got2.prPollStates["sess-1"].consecutiveNilPolls != 0 {
+		t.Errorf("consecutiveNilPolls should reset to 0 after eviction, got %d", got2.prPollStates["sess-1"].consecutiveNilPolls)
+	}
+}
+
+// TestPrPollMsg_NilThenSuccessResetsCounter verifies that a successful poll
+// after a nil resets the consecutiveNilPolls counter so the grace period
+// starts fresh on the next nil.
+func TestPrPollMsg_NilThenSuccessResetsCounter(t *testing.T) {
+	a := NewApp()
+	a.prPollsInFlight = 1
+	a.prPollStates["sess-1"] = &prSessionState{inFlight: true}
+	a.prCache["sess-1"] = &prCacheEntry{}
+
+	// First nil: increments counter.
+	model, _ := a.Update(prPollMsg{sessionID: "sess-1"})
+	got := model.(App)
+	if got.prPollStates["sess-1"].consecutiveNilPolls != 1 {
+		t.Fatalf("consecutiveNilPolls after first nil = %d, want 1", got.prPollStates["sess-1"].consecutiveNilPolls)
+	}
+
+	// Successful poll: counter resets.
+	got.prPollsInFlight = 1
+	got.prPollStates["sess-1"].inFlight = true
+	model2, _ := got.Update(prPollMsg{sessionID: "sess-1", pr: &github.PRState{Number: 1}})
+	got2 := model2.(App)
+	if got2.prPollStates["sess-1"].consecutiveNilPolls != 0 {
+		t.Errorf("consecutiveNilPolls should reset to 0 after success, got %d", got2.prPollStates["sess-1"].consecutiveNilPolls)
 	}
 }
 
