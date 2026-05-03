@@ -22,8 +22,8 @@ type Session struct {
 	agents         map[string]*Agent
 	nextAgentNum   int
 	displayName    string
-	hasClaudeName  bool   // true once the session's branch has been renamed from its random placeholder
-	renaming       bool   // true while an async branch-rename is in flight; gates double-dispatch
+	hasClaudeName  bool // true once the session's branch has been renamed from its random placeholder
+	renaming       bool // true while an async branch-rename is in flight; gates double-dispatch
 	lifecyclePhase LifecyclePhase
 	originalPrompt string
 	doneAt         time.Time
@@ -486,7 +486,8 @@ func (s *Session) OriginalPrompt() string {
 	return s.originalPrompt
 }
 
-// SetOriginalPrompt stores the prompt only if none has been set yet.
+// SetOriginalPrompt stores p as the session's original intent if none has been stored yet.
+// Empty strings are silently ignored — callers must filter non-actionable prompts before calling.
 func (s *Session) SetOriginalPrompt(p string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

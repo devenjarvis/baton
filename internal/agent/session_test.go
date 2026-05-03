@@ -677,3 +677,18 @@ func TestSession_MarkDone(t *testing.T) {
 		t.Error("MarkDone called twice should not update timestamp")
 	}
 }
+
+func TestSession_RestoreDoneAt(t *testing.T) {
+	s := newSession("id", "name", &git.WorktreeInfo{})
+	ts := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
+	s.RestoreDoneAt(ts)
+	if got := s.DoneAt(); !got.Equal(ts) {
+		t.Errorf("DoneAt = %v, want %v", got, ts)
+	}
+	// RestoreDoneAt overwrites unconditionally, unlike MarkDone which is idempotent.
+	ts2 := ts.Add(time.Hour)
+	s.RestoreDoneAt(ts2)
+	if got := s.DoneAt(); !got.Equal(ts2) {
+		t.Errorf("second RestoreDoneAt: DoneAt = %v, want %v", got, ts2)
+	}
+}
