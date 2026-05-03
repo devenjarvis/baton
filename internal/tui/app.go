@@ -120,8 +120,8 @@ type App struct {
 	newAgentPending     bool
 	focusSessionMinutes int // cached from resolved global settings
 	focusQueueIndex     int
-	focusAttentionIdx   int          // index of highlighted waiting/error agent row
-	focusLaunchAgent    *agent.Agent // agent open in focusLaunch terminal; nil otherwise
+	focusAttentionIdx   int
+	focusLaunchAgent    *agent.Agent
 	focusBacklogWarning bool                        // first n at backlog limit shows warning; second proceeds
 	reviewDiffCache     map[string]*reviewDiffEntry // keyed by session ID
 	reviewSession       *agent.Session              // session currently open in review panel
