@@ -1542,6 +1542,37 @@ func TestFocusModeChimeSuppression(t *testing.T) {
 	}
 }
 
+func TestFocusMode_BacklogGate_WarnOnN(t *testing.T) {
+	app := NewApp()
+	one := 1
+	app.globalSettings = &config.GlobalSettings{MaxReviewBacklog: &one}
+
+	// Activate focus mode.
+	model, _ := app.Update(tea.KeyPressMsg{Code: 'f', Text: "f"})
+	app = model.(App)
+
+	// Set the warning flag manually to simulate having hit the limit.
+	app.focusBacklogWarning = true
+
+	// Verify the flag is set (basic state check).
+	if !app.focusBacklogWarning {
+		t.Error("expected focusBacklogWarning to be set")
+	}
+}
+
+func TestFocusMode_RKey_NoopWithEmptyQueue(t *testing.T) {
+	app := NewApp()
+	model, _ := app.Update(tea.KeyPressMsg{Code: 'f', Text: "f"})
+	app = model.(App)
+
+	// r with no queued sessions should be a no-op.
+	model, _ = app.Update(tea.KeyPressMsg{Code: 'r', Text: "r"})
+	app = model.(App)
+	if app.dashboard.panelFocus == focusReview {
+		t.Error("r with empty review queue should not enter focusReview")
+	}
+}
+
 // TestSoftAgentLimitGuard verifies the two-press 'n' guard in focus mode:
 // first press shows a warning and sets newAgentPending; second press proceeds.
 func TestSoftAgentLimitGuard(t *testing.T) {

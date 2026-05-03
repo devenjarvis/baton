@@ -120,6 +120,9 @@ type App struct {
 	newAgentPending     bool
 	focusSessionMinutes int // cached from resolved global settings
 	focusQueueIndex     int
+	focusBacklogWarning bool                        // first n at backlog limit shows warning; second proceeds
+	reviewDiffCache     map[string]*reviewDiffEntry // keyed by session ID
+	reviewSession       *agent.Session              // session currently open in review panel
 
 	// Wellness counters (written to log on quit).
 	agentsCreatedCount   int
@@ -150,6 +153,7 @@ func NewApp() App {
 		resolvedCache:   make(map[string]config.ResolvedSettings),
 		lastKnownStatus: make(map[string]agent.Status),
 		diffStatsCache:  make(map[string]*diffStatsEntry),
+		reviewDiffCache: make(map[string]*reviewDiffEntry),
 		prCache:         make(map[string]*prCacheEntry),
 		prPollStates:    make(map[string]*prSessionState),
 		closingAgents:   make(map[string]bool),
@@ -632,6 +636,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.refreshAgentList()
 		return a, nil
 
+	case reviewDiffMsg:
+		if msg.err == nil && msg.entry != nil {
+			a.reviewDiffCache[msg.sessionID] = msg.entry
+		}
+		return a, nil
+
 	}
 
 	// Route to the active view.
@@ -728,6 +738,40 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			break
 		}
 
+		// Clear the agent-limit pending flag on any key that isn't n.
+		// Done here (before focus-mode early returns) so navigation keys clear it too.
+		if a.newAgentPending && msg.String() != "n" {
+			a.newAgentPending = false
+		}
+
+		// Focus-mode key handling (fullscreen pipeline view).
+		if a.focusModeActive && a.dashboard.panelFocus != focusReview {
+			switch msg.String() {
+			case "up", "k":
+				if a.focusQueueIndex > 0 {
+					a.focusQueueIndex--
+				}
+				return a, nil
+			case "down", "j":
+				if a.focusQueueIndex < len(a.dashboard.reviewQueueSessions())-1 {
+					a.focusQueueIndex++
+				}
+				return a, nil
+			case "m":
+				// Mark first Done-but-InProgress session as ReadyForReview.
+				for _, item := range a.dashboard.items {
+					if item.kind == listItemSession && item.session != nil &&
+						item.session.LifecyclePhase() == agent.LifecycleInProgress &&
+						!item.session.DoneAt().IsZero() {
+						item.session.SetLifecyclePhase(agent.LifecycleReadyForReview)
+						a.focusQueueIndex = 0
+						return a, a.fetchReviewDiffCmd(item.session)
+					}
+				}
+				return a, nil
+			}
+		}
+
 		// Enter/right on a repo header: open repo config in right panel.
 		if (msg.String() == "enter" || msg.String() == "right") && a.dashboard.panelFocus == focusList {
 			item := a.dashboard.selectedItem()
@@ -769,11 +813,6 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.confirmQuit = false
 		}
 
-		// Clear the agent-limit pending flag on any key that isn't n.
-		if a.newAgentPending && msg.String() != "n" {
-			a.newAgentPending = false
-		}
-
 		switch msg.String() {
 		case "f":
 			// Toggle focus mode. When exiting focus mode (entering review),
@@ -810,6 +849,29 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					// Second press: proceed, clear pending flag.
 					a.newAgentPending = false
+				}
+
+				// Soft review-backlog limit.
+				resolvedForBacklog := a.resolvedCache[a.activeRepo]
+				if resolvedForBacklog.MaxReviewBacklog > 0 {
+					var backlogCount int
+					if mgr := a.managers[a.activeRepo]; mgr != nil {
+						for _, sess := range mgr.ListSessions() {
+							if sess.LifecyclePhase() == agent.LifecycleReadyForReview {
+								backlogCount++
+							}
+						}
+					}
+					if backlogCount >= resolvedForBacklog.MaxReviewBacklog {
+						if !a.focusBacklogWarning {
+							a.focusBacklogWarning = true
+							a.setError(fmt.Sprintf("n again to override — %d sessions awaiting review", backlogCount))
+							return a, nil
+						}
+						a.focusBacklogWarning = false // second n: proceed
+					} else {
+						a.focusBacklogWarning = false
+					}
 				}
 			}
 
@@ -1681,6 +1743,9 @@ func (a App) View() tea.View {
 	case ViewDashboard:
 		body := a.dashboard.View()
 		hints := dashboardHints
+		if a.focusModeActive && a.dashboard.panelFocus != focusReview {
+			hints = focusModeHints
+		}
 		switch a.dashboard.panelFocus {
 		case focusTerminal:
 			hints = focusTerminalHints
@@ -2157,6 +2222,33 @@ func (a *App) writeWellnessLog() {
 	}
 	defer func() { _ = f.Close() }()
 	_, _ = f.WriteString(string(data) + "\n")
+}
+
+// reviewDiffEntry caches diff stats for a session in the review panel.
+type reviewDiffEntry struct {
+	files     []git.FileStat
+	aggregate *git.DiffStats
+}
+
+// reviewDiffMsg carries the result of an async review diff fetch.
+type reviewDiffMsg struct {
+	sessionID string
+	entry     *reviewDiffEntry
+	err       error
+}
+
+// fetchReviewDiffCmd returns a Cmd that fetches diff stats for a session to populate the review cache.
+func (a App) fetchReviewDiffCmd(sess *agent.Session) tea.Cmd {
+	sessID := sess.ID
+	wt := sess.Worktree
+	repoPath := a.activeRepo
+	return func() tea.Msg {
+		files, agg, err := git.GetPerFileDiffStats(repoPath, wt)
+		if err != nil {
+			return reviewDiffMsg{sessionID: sessID, err: err}
+		}
+		return reviewDiffMsg{sessionID: sessID, entry: &reviewDiffEntry{files: files, aggregate: agg}}
+	}
 }
 
 // ensureGitignore adds .baton/ to .gitignore in the given path if not already present.
