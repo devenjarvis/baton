@@ -758,7 +758,7 @@ func (d dashboardModel) reviewQueueSessions() []listItem {
 
 // renderAttentionRows renders Waiting/Error agents (same as current focus panel attention section).
 func (d dashboardModel) renderAttentionRows() []string {
-	var lines []string
+	lines := make([]string, 0, len(d.items))
 	for _, item := range d.items {
 		if item.kind != listItemAgent || item.agent == nil || item.agent.IsShell {
 			continue
@@ -784,7 +784,7 @@ func (d dashboardModel) renderAttentionRows() []string {
 
 // renderNudgeRows renders one dim line per session that is Done (process) but still InProgress (lifecycle).
 func (d dashboardModel) renderNudgeRows() []string {
-	var lines []string
+	lines := make([]string, 0, len(d.items))
 	for _, item := range d.items {
 		if item.kind != listItemSession || item.session == nil {
 			continue

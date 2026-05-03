@@ -100,7 +100,7 @@ func renderReviewPanel(sess *agent.Session, entry *reviewDiffEntry, width, heigh
 
 // renderFocusList returns left-column lines: total + top files + also-changed.
 func renderFocusList(entry *reviewDiffEntry, width int) []string {
-	var lines []string
+	lines := make([]string, 0, len(entry.files)+6)
 	agg := entry.aggregate
 	lines = append(lines, StyleSubtle.Render("CHANGES"))
 	totalLine := fmt.Sprintf("%d files · ", agg.Files) +
