@@ -1523,6 +1523,77 @@ func TestSmartBranchRename_CustomTemplateRendered(t *testing.T) {
 	}
 }
 
+// TestManager_StoresOriginalPromptOnFirstActionableHook verifies that the
+// first actionable UserPromptSubmit stores the prompt on the session, and
+// subsequent actionable prompts do not overwrite it.
+func TestManager_StoresOriginalPromptOnFirstActionableHook(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	cfg := Config{Name: "original-prompt-test", Task: "test", Rows: 24, Cols: 80}
+	sess, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 60")
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	// Drain the initial EventCreated event.
+	select {
+	case <-mgr.Events():
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for EventCreated")
+	}
+
+	// Non-actionable prompt — must not store.
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindUserPromptSubmit,
+		AgentID: ag.ID,
+		Prompt:  "  ",
+	}); err != nil {
+		t.Fatalf("SendEvent empty prompt: %v", err)
+	}
+	// Wait for the dispatcher to process the event.
+	time.Sleep(150 * time.Millisecond)
+	if sess.OriginalPrompt() != "" {
+		t.Error("empty prompt must not be stored")
+	}
+
+	// Actionable prompt — must store.
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindUserPromptSubmit,
+		AgentID: ag.ID,
+		Prompt:  "fix the auth bug",
+	}); err != nil {
+		t.Fatalf("SendEvent first prompt: %v", err)
+	}
+	// Wait for the dispatcher to process the event.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if sess.OriginalPrompt() == "fix the auth bug" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := sess.OriginalPrompt(); got != "fix the auth bug" {
+		t.Errorf("OriginalPrompt() = %q, want %q", got, "fix the auth bug")
+	}
+
+	// Second actionable prompt — must NOT overwrite.
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindUserPromptSubmit,
+		AgentID: ag.ID,
+		Prompt:  "second prompt",
+	}); err != nil {
+		t.Fatalf("SendEvent second prompt: %v", err)
+	}
+	time.Sleep(150 * time.Millisecond)
+	if got := sess.OriginalPrompt(); got != "fix the auth bug" {
+		t.Errorf("OriginalPrompt() after second hook = %q, want first prompt", got)
+	}
+}
+
 // TestSmartBranchRename_TemplateWithoutPlaceholderAppendsPrompt verifies the
 // defensive forgiveness: if a custom BranchNamePrompt forgets the {prompt}
 // token, the user's prompt is appended on its own paragraph rather than
