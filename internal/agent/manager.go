@@ -188,6 +188,9 @@ func (m *Manager) dispatchHookEvents() {
 
 		if e.Kind == hook.KindUserPromptSubmit {
 			m.maybeRenameFromPrompt(sess, a, e.Prompt)
+			if IsActionablePrompt(e.Prompt) {
+				sess.SetOriginalPrompt(e.Prompt)
+			}
 		}
 	}
 }
@@ -215,7 +218,7 @@ func (m *Manager) maybeRenameFromPrompt(sess *Session, a *Agent, prompt string) 
 	// Empty / slash-only prompts carry no actionable text. Skip before
 	// touching TryStartRename so legitimate retries on the next prompt
 	// aren't blocked by an in-flight gate that will never be released.
-	if !isActionablePrompt(prompt) {
+	if !IsActionablePrompt(prompt) {
 		return
 	}
 
@@ -303,10 +306,10 @@ func (m *Manager) maybeRenameFromPrompt(sess *Session, a *Agent, prompt string) 
 	}()
 }
 
-// isActionablePrompt reports whether prompt carries enough text for a
+// IsActionablePrompt reports whether prompt carries enough text for a
 // meaningful branch name. Empty/whitespace-only prompts and pure slash
 // commands (e.g. "/clear") return false.
-func isActionablePrompt(prompt string) bool {
+func IsActionablePrompt(prompt string) bool {
 	trimmed := strings.TrimSpace(prompt)
 	if trimmed == "" {
 		return false
@@ -394,6 +397,12 @@ func (m *Manager) findAgentAndSession(agentID string) (*Agent, *Session) {
 		}
 	}
 	return nil, nil
+}
+
+// FindAgentAndSession returns the agent and session for the given agent ID.
+// Returns nil, nil if not found.
+func (m *Manager) FindAgentAndSession(agentID string) (*Agent, *Session) {
+	return m.findAgentAndSession(agentID)
 }
 
 // UpdateSettings replaces the manager's resolved settings.
@@ -945,15 +954,22 @@ func (m *Manager) Detach() *state.BatonState {
 	// Snapshot state before killing agents.
 	sessionStates := make([]state.SessionState, 0, len(sessions))
 	for _, s := range sessions {
+		var doneAt *time.Time
+		if t := s.DoneAt(); !t.IsZero() {
+			doneAt = &t
+		}
 		ss := state.SessionState{
-			ID:            s.ID,
-			Name:          s.CurrentName(),
-			DisplayName:   s.GetDisplayName(),
-			WorktreePath:  s.Worktree.Path,
-			Branch:        s.Branch(),
-			BaseBranch:    s.Worktree.BaseBranch,
-			OwnsBranch:    s.ownsBranch,
-			HasClaudeName: s.HasClaudeName(),
+			ID:             s.ID,
+			Name:           s.CurrentName(),
+			DisplayName:    s.GetDisplayName(),
+			WorktreePath:   s.Worktree.Path,
+			Branch:         s.Branch(),
+			BaseBranch:     s.Worktree.BaseBranch,
+			OwnsBranch:     s.ownsBranch,
+			HasClaudeName:  s.HasClaudeName(),
+			LifecyclePhase: s.LifecyclePhase().String(),
+			OriginalPrompt: s.OriginalPrompt(),
+			DoneAt:         doneAt,
 		}
 		for _, a := range s.Agents() {
 			as := state.AgentState{
@@ -1018,6 +1034,13 @@ func (m *Manager) ResumeSession(ss state.SessionState, cfg Config) error {
 	sess.SetClaudeName(ss.HasClaudeName)
 	if ss.DisplayName != "" && ss.DisplayName != ss.Name {
 		sess.SetDisplayName(ss.DisplayName)
+	}
+	sess.SetLifecyclePhase(LifecyclePhaseFromString(ss.LifecyclePhase))
+	if ss.OriginalPrompt != "" {
+		sess.SetOriginalPrompt(ss.OriginalPrompt)
+	}
+	if ss.DoneAt != nil {
+		sess.RestoreDoneAt(*ss.DoneAt)
 	}
 
 	m.mu.Lock()

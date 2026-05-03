@@ -22,8 +22,11 @@ type Session struct {
 	agents         map[string]*Agent
 	nextAgentNum   int
 	displayName    string
-	hasClaudeName  bool   // true once the session's branch has been renamed from its random placeholder
-	renaming       bool   // true while an async branch-rename is in flight; gates double-dispatch
+	hasClaudeName  bool // true once the session's branch has been renamed from its random placeholder
+	renaming       bool // true while an async branch-rename is in flight; gates double-dispatch
+	lifecyclePhase LifecyclePhase
+	originalPrompt string
+	doneAt         time.Time
 	ownsBranch     bool   // true if this session created the branch (cleanup should delete it)
 	hookSocketPath string // absolute path to the manager's hook socket ("" disables hooks)
 }
@@ -31,11 +34,12 @@ type Session struct {
 // newSession creates a session with the given worktree.
 func newSession(id, name string, wt *git.WorktreeInfo) *Session {
 	return &Session{
-		ID:        id,
-		Name:      name,
-		Worktree:  wt,
-		CreatedAt: time.Now(),
-		agents:    make(map[string]*Agent),
+		ID:             id,
+		Name:           name,
+		Worktree:       wt,
+		CreatedAt:      time.Now(),
+		agents:         make(map[string]*Agent),
+		lifecyclePhase: LifecycleInProgress,
 	}
 }
 
@@ -459,4 +463,63 @@ func lastBranchSegment(branch string) string {
 // Elapsed returns how long the session has been running.
 func (s *Session) Elapsed() time.Duration {
 	return time.Since(s.CreatedAt)
+}
+
+// LifecyclePhase returns the current lifecycle phase of the session.
+func (s *Session) LifecyclePhase() LifecyclePhase {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.lifecyclePhase
+}
+
+// SetLifecyclePhase sets the lifecycle phase of the session.
+func (s *Session) SetLifecyclePhase(p LifecyclePhase) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lifecyclePhase = p
+}
+
+// OriginalPrompt returns the user's original prompt for this session.
+func (s *Session) OriginalPrompt() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.originalPrompt
+}
+
+// SetOriginalPrompt stores p as the session's original intent if none has been stored yet.
+// Empty strings are silently ignored — callers must filter non-actionable prompts before calling.
+func (s *Session) SetOriginalPrompt(p string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.originalPrompt == "" {
+		s.originalPrompt = p
+	}
+}
+
+// DoneAt returns the time the session's work finished, or zero if not yet marked done.
+func (s *Session) DoneAt() time.Time {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.doneAt
+}
+
+// MarkDone records the time the session's work finished. No-op if already set.
+func (s *Session) MarkDone() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.doneAt.IsZero() {
+		s.doneAt = time.Now()
+	}
+}
+
+// RestoreDoneAt sets doneAt directly (used only when restoring from persisted state).
+func (s *Session) RestoreDoneAt(t time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.doneAt = t
+}
+
+// NewSessionForTest creates a Session for use in tests outside the agent package.
+func NewSessionForTest(id, name string) *Session {
+	return newSession(id, name, &git.WorktreeInfo{})
 }

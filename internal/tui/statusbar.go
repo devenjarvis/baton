@@ -72,6 +72,13 @@ var (
 		{"backspace", "clear filter"},
 		{"esc", "cancel"},
 	}
+
+	focusModeHints = []keyHint{
+		{"m", "mark ready"},
+		{"r", "review"},
+		{"n", "new"},
+		{"f", "exit focus"},
+	}
 )
 
 func renderStatusBar(hints []keyHint, width int) string {

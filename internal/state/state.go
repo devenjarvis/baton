@@ -17,15 +17,18 @@ type BatonState struct {
 
 // SessionState captures the state of a single baton session (worktree).
 type SessionState struct {
-	ID            string       `json:"id"`
-	Name          string       `json:"name"`
-	DisplayName   string       `json:"displayName,omitempty"`
-	WorktreePath  string       `json:"worktreePath"`
-	Branch        string       `json:"branch"`
-	BaseBranch    string       `json:"baseBranch"`
-	OwnsBranch    bool         `json:"ownsBranch"`
-	HasClaudeName bool         `json:"hasClaudeName,omitempty"`
-	Agents        []AgentState `json:"agents"`
+	ID             string       `json:"id"`
+	Name           string       `json:"name"`
+	DisplayName    string       `json:"displayName,omitempty"`
+	WorktreePath   string       `json:"worktreePath"`
+	Branch         string       `json:"branch"`
+	BaseBranch     string       `json:"baseBranch"`
+	OwnsBranch     bool         `json:"ownsBranch"`
+	HasClaudeName  bool         `json:"hasClaudeName,omitempty"`
+	LifecyclePhase string       `json:"lifecyclePhase,omitempty"`
+	OriginalPrompt string       `json:"originalPrompt,omitempty"`
+	DoneAt         *time.Time   `json:"doneAt,omitempty"`
+	Agents         []AgentState `json:"agents"`
 }
 
 // AgentState captures the state of a single agent within a session.

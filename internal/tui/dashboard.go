@@ -118,6 +118,7 @@ type dashboardModel struct {
 	sessionElapsed      time.Duration
 	lastReviewAt        time.Time
 	focusSessionMinutes int
+	focusQueueIndex     int // index into ReadyForReview sessions in fullscreen focus mode
 
 	// prSectionY is the content-relative row index (0-indexed, after the AGENTS
 	// title and separator) where the PR checks summary begins, or -1 when absent.
@@ -345,15 +346,14 @@ func (d dashboardModel) View() string {
 		return d.emptyView()
 	}
 
+	if d.focusModeActive {
+		return d.renderFullscreenFocus(d.width, d.height)
+	}
+
 	listWidth := d.listWidth()
 	previewWidth := d.previewTermWidth()
 
-	var list string
-	if d.focusModeActive {
-		list = d.renderFocusPanel(listWidth)
-	} else {
-		list = d.renderList(listWidth)
-	}
+	list := d.renderList(listWidth)
 	preview := d.renderPreview(previewWidth)
 
 	listStyle := lipgloss.NewStyle().
@@ -744,177 +744,21 @@ func (d dashboardModel) renderList(width int) string {
 	return strings.Join(lines, "\n")
 }
 
-// renderFocusPanel renders the aggregate left panel shown in focus mode.
-// It shows session progress, status counts, waiting-agent attention rows,
-// last review time, and minimal key hints.
-func (d dashboardModel) renderFocusPanel(width int) string {
-	title := StyleTitle.Render("FOCUS")
-	sepWidth := width - 2
-	if sepWidth < 0 {
-		sepWidth = 0
-	}
-	separator := StyleSubtle.Render(strings.Repeat("─", sepWidth))
-
-	lines := make([]string, 0, 8)
-	lines = append(lines, title, separator)
-
-	// Progress bar: sessionElapsed vs focusSessionMinutes.
-	if d.focusSessionMinutes > 0 {
-		threshold := time.Duration(d.focusSessionMinutes) * time.Minute
-		elapsed := d.sessionElapsed
-		if elapsed > threshold {
-			elapsed = threshold
-		}
-		pct := float64(elapsed) / float64(threshold)
-		barWidth := width - 20
-		if barWidth < 5 {
-			barWidth = 5
-		}
-		filled := int(pct * float64(barWidth))
-		if filled > barWidth {
-			filled = barWidth
-		}
-		bar := strings.Repeat("=", filled)
-		if filled < barWidth {
-			bar += ">"
-			bar += strings.Repeat(" ", barWidth-filled-1)
-		}
-
-		elapsedMin := int(d.sessionElapsed.Minutes())
-		barStr := fmt.Sprintf("[%s] %dm / %dm", bar, elapsedMin, d.focusSessionMinutes)
-
-		var barStyle lipgloss.Style
-		switch {
-		case pct >= 1.0:
-			barStyle = lipgloss.NewStyle().Foreground(ColorError)
-		case pct >= 0.75:
-			barStyle = lipgloss.NewStyle().Foreground(ColorWarning)
-		default:
-			barStyle = lipgloss.NewStyle().Foreground(ColorMuted)
-		}
-		lines = append(lines, barStyle.Render(barStr))
-	}
-
-	// Status counts row.
-	var running, idle, done, waiting, errCount int
+// reviewQueueSessions returns listItems for sessions in ReadyForReview phase.
+func (d dashboardModel) reviewQueueSessions() []listItem {
+	var result []listItem
 	for _, item := range d.items {
-		if item.kind != listItemAgent || item.agent == nil || item.agent.IsShell {
-			continue
-		}
-		switch item.agent.Status() {
-		case agent.StatusActive:
-			running++
-		case agent.StatusIdle:
-			idle++
-		case agent.StatusDone:
-			done++
-		case agent.StatusWaiting:
-			waiting++
-		case agent.StatusError:
-			errCount++
+		if item.kind == listItemSession && item.session != nil &&
+			item.session.LifecyclePhase() == agent.LifecycleReadyForReview {
+			result = append(result, item)
 		}
 	}
-	statusLine := ""
-	if running > 0 {
-		statusLine += lipgloss.NewStyle().Foreground(ColorSecondary).Render(fmt.Sprintf("● %d running", running))
-	}
-	if waiting > 0 {
-		if statusLine != "" {
-			statusLine += "  "
-		}
-		statusLine += lipgloss.NewStyle().Foreground(ColorWaiting).Render(fmt.Sprintf("⏸ %d waiting", waiting))
-	}
-	if idle > 0 {
-		if statusLine != "" {
-			statusLine += "  "
-		}
-		statusLine += StyleSubtle.Render(fmt.Sprintf("⏸ %d idle", idle))
-	}
-	if done > 0 {
-		if statusLine != "" {
-			statusLine += "  "
-		}
-		statusLine += lipgloss.NewStyle().Foreground(ColorSuccess).Render(fmt.Sprintf("✓ %d done", done))
-	}
-	if errCount > 0 {
-		if statusLine != "" {
-			statusLine += "  "
-		}
-		statusLine += lipgloss.NewStyle().Foreground(ColorError).Render(fmt.Sprintf("✗ %d error", errCount))
-	}
-	if statusLine == "" {
-		statusLine = StyleSubtle.Render("no agents")
-	}
-	lines = append(lines, statusLine)
+	return result
+}
 
-	// Compact per-repo summary list.
-	type repoCounts struct {
-		index   int // index into d.items for this repo's listItemRepo
-		name    string
-		running int
-		waiting int
-		done    int
-		errC    int
-	}
-	var repos []repoCounts
-	repoIdx := -1
-	for i, item := range d.items {
-		switch item.kind {
-		case listItemRepo:
-			repos = append(repos, repoCounts{index: i, name: item.repoName})
-			repoIdx = len(repos) - 1
-		case listItemAgent:
-			if repoIdx < 0 || item.agent == nil || item.agent.IsShell {
-				continue
-			}
-			switch item.agent.Status() {
-			case agent.StatusActive:
-				repos[repoIdx].running++
-			case agent.StatusWaiting:
-				repos[repoIdx].waiting++
-			case agent.StatusDone:
-				repos[repoIdx].done++
-			case agent.StatusError:
-				repos[repoIdx].errC++
-			}
-		}
-	}
-	for _, rc := range repos {
-		cursor := " "
-		if d.selected == rc.index {
-			cursor = ">"
-		}
-		var counts string
-		if rc.running > 0 {
-			counts += lipgloss.NewStyle().Foreground(ColorSecondary).Render(fmt.Sprintf("● %d", rc.running)) + " "
-		}
-		if rc.waiting > 0 {
-			counts += lipgloss.NewStyle().Foreground(ColorWaiting).Render(fmt.Sprintf("⏸ %d", rc.waiting)) + " "
-		}
-		if rc.done > 0 {
-			counts += lipgloss.NewStyle().Foreground(ColorSuccess).Render(fmt.Sprintf("✓ %d", rc.done)) + " "
-		}
-		if rc.errC > 0 {
-			counts += lipgloss.NewStyle().Foreground(ColorError).Render(fmt.Sprintf("✗ %d", rc.errC)) + " "
-		}
-		counts = strings.TrimRight(counts, " ")
-		countsWidth := ansi.StringWidth(counts)
-		nameWidth := width - 2 - 1 - countsWidth // border(2) + cursor(1)
-		if countsWidth > 0 {
-			nameWidth-- // space between name and counts
-		}
-		if nameWidth < 4 {
-			nameWidth = 4
-		}
-		name := truncateVisible(rc.name, nameWidth)
-		row := cursor + " " + name
-		if countsWidth > 0 {
-			row += " " + counts
-		}
-		lines = append(lines, row)
-	}
-
-	// Attention rows: agents needing input (Waiting or Error).
+// renderAttentionRows renders Waiting/Error agents (same as current focus panel attention section).
+func (d dashboardModel) renderAttentionRows() []string {
+	lines := make([]string, 0, len(d.items))
 	for _, item := range d.items {
 		if item.kind != listItemAgent || item.agent == nil || item.agent.IsShell {
 			continue
@@ -927,51 +771,159 @@ func (d dashboardModel) renderFocusPanel(width int) string {
 		if item.session != nil {
 			label = item.session.GetDisplayName()
 		}
-		var attnStyle lipgloss.Style
-		var attnSuffix string
+		var style lipgloss.Style
 		if status == agent.StatusWaiting {
-			attnStyle = lipgloss.NewStyle().Foreground(ColorWaiting)
-			attnSuffix = "needs input"
+			style = lipgloss.NewStyle().Foreground(ColorWaiting)
 		} else {
-			attnStyle = lipgloss.NewStyle().Foreground(ColorError)
-			attnSuffix = "error"
+			style = lipgloss.NewStyle().Foreground(ColorError)
 		}
-		nameWidth := width - 4 - len(attnSuffix)
-		if nameWidth < 4 {
-			nameWidth = 4
+		lines = append(lines, style.Render(fmt.Sprintf("⏸ %s", label)))
+	}
+	return lines
+}
+
+// renderNudgeRows renders one dim line per session that is Done (process) but still InProgress (lifecycle).
+func (d dashboardModel) renderNudgeRows() []string {
+	lines := make([]string, 0, len(d.items))
+	for _, item := range d.items {
+		if item.kind != listItemSession || item.session == nil {
+			continue
 		}
-		label = truncateVisible(label, nameWidth)
-		lines = append(lines, attnStyle.Render("⏺ "+label+"  "+attnSuffix))
+		sess := item.session
+		if sess.LifecyclePhase() != agent.LifecycleInProgress || sess.DoneAt().IsZero() {
+			continue
+		}
+		lines = append(lines, StyleSubtle.Render(fmt.Sprintf("· %s finished — press m to mark ready", sess.GetDisplayName())))
+	}
+	return lines
+}
+
+// renderPipelineWidget renders the 4-cell pipeline row.
+func (d dashboardModel) renderPipelineWidget(width int) string {
+	var inProgress, readyForReview, inReview, shipping int
+	for _, item := range d.items {
+		if item.kind != listItemSession || item.session == nil {
+			continue
+		}
+		switch item.session.LifecyclePhase() {
+		case agent.LifecycleInProgress:
+			inProgress++
+		case agent.LifecycleReadyForReview:
+			readyForReview++
+		case agent.LifecycleInReview:
+			inReview++
+		case agent.LifecycleShipping:
+			shipping++
+		}
 	}
 
-	// Last reviewed row.
-	if !d.lastReviewAt.IsZero() {
-		ago := time.Since(d.lastReviewAt)
-		var agoStr string
+	cellWidth := (width - 6) / 4
+	if cellWidth < 12 {
+		cellWidth = 12
+	}
+
+	cell := func(label string, count int, color lipgloss.Color, highlight bool) string {
+		cnt := lipgloss.NewStyle().Foreground(color).Bold(true).Render(fmt.Sprintf("%d", count))
+		lbl := StyleSubtle.Render(label)
+		inner := fmt.Sprintf("%s\n%s", lbl, cnt)
+		style := lipgloss.NewStyle().Border(lipgloss.NormalBorder()).Padding(0, 1).Width(cellWidth)
+		if highlight {
+			style = style.BorderForeground(color)
+		}
+		return style.Render(inner)
+	}
+
+	return lipgloss.JoinHorizontal(lipgloss.Top,
+		cell("IN PROGRESS", inProgress, lipgloss.Color("#7ec8e3"), false),
+		cell("READY TO REVIEW", readyForReview, ColorWarning, readyForReview > 0),
+		cell("IN REVIEW", inReview, lipgloss.Color("#9b7fdb"), false),
+		cell("SHIPPING", shipping, lipgloss.Color("#5ab58a"), false),
+	)
+}
+
+// renderFullscreenFocus renders the fullscreen pipeline view shown when focusModeActive is true.
+func (d dashboardModel) renderFullscreenFocus(width, height int) string {
+	var lines []string
+
+	// Header: title + timer
+	title := StyleTitle.Render("FOCUS")
+	timerStr := ""
+	if d.focusSessionMinutes > 0 {
+		threshold := time.Duration(d.focusSessionMinutes) * time.Minute
+		elapsed := d.sessionElapsed
+		if elapsed > threshold {
+			elapsed = threshold
+		}
+		pct := float64(elapsed) / float64(threshold)
+		barWidth := width - 30
+		if barWidth < 5 {
+			barWidth = 5
+		}
+		filled := int(pct * float64(barWidth))
+		if filled > barWidth {
+			filled = barWidth
+		}
+		bar := strings.Repeat("=", filled)
+		if filled < barWidth {
+			bar += ">"
+			bar += strings.Repeat(" ", barWidth-filled-1)
+		}
+		elapsedMin := int(d.sessionElapsed.Minutes())
+		var barStyle lipgloss.Style
 		switch {
-		case ago < time.Minute:
-			agoStr = fmt.Sprintf("%ds ago", int(ago.Seconds()))
-		case ago < time.Hour:
-			agoStr = fmt.Sprintf("%dm ago", int(ago.Minutes()))
+		case pct >= 1.0:
+			barStyle = lipgloss.NewStyle().Foreground(ColorError)
+		case pct >= 0.75:
+			barStyle = lipgloss.NewStyle().Foreground(ColorWarning)
 		default:
-			agoStr = fmt.Sprintf("%dh ago", int(ago.Hours()))
+			barStyle = lipgloss.NewStyle().Foreground(ColorMuted)
 		}
-		lines = append(lines, StyleSubtle.Render("last review: "+agoStr))
-	} else {
-		lines = append(lines, StyleSubtle.Render("not yet reviewed"))
+		timerStr = barStyle.Render(fmt.Sprintf("[%s] %dm/%dm", bar, elapsedMin, d.focusSessionMinutes))
 	}
+	headerLine := title + "  " + timerStr
+	lines = append(lines, headerLine)
+	lines = append(lines, StyleSubtle.Render(strings.Repeat("─", width-2)))
 
-	// Pad to content height before adding bottom hint.
-	contentH := d.contentHeight()
-	hintText := "f review   n new agent"
-	if d.selected >= 0 && d.selected < len(d.items) && d.items[d.selected].kind == listItemRepo {
-		hintText = "f review   n new agent in " + d.items[d.selected].repoName
-	}
-	hintLine := StyleSubtle.Render(hintText)
-	for len(lines) < contentH-1 {
+	// Pipeline widget
+	lines = append(lines, d.renderPipelineWidget(width))
+	lines = append(lines, "")
+
+	// Review queue
+	reviewSessions := d.reviewQueueSessions()
+	if len(reviewSessions) > 0 {
+		lines = append(lines, StyleSubtle.Render("REVIEW QUEUE"))
+		for i, item := range reviewSessions {
+			sess := item.session
+			selected := i == d.focusQueueIndex
+			name := sess.GetDisplayName()
+			age := ""
+			if !sess.DoneAt().IsZero() {
+				mins := int(time.Since(sess.DoneAt()).Minutes())
+				age = fmt.Sprintf("done %dm ago", mins)
+			}
+			prefix := "  "
+			if selected {
+				prefix = "> "
+			}
+			var cardStyle lipgloss.Style
+			if selected {
+				cardStyle = lipgloss.NewStyle().Foreground(ColorWarning)
+			} else {
+				cardStyle = StyleSubtle
+			}
+			line := cardStyle.Render(fmt.Sprintf("%s%s", prefix, name))
+			if age != "" {
+				line += StyleSubtle.Render("  " + age)
+			}
+			lines = append(lines, line)
+		}
 		lines = append(lines, "")
 	}
-	lines = append(lines, hintLine)
+
+	// Attention + nudge
+	lines = append(lines, StyleSubtle.Render(strings.Repeat("─", width-2)))
+	lines = append(lines, d.renderAttentionRows()...)
+	lines = append(lines, d.renderNudgeRows()...)
 
 	return strings.Join(lines, "\n")
 }

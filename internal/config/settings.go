@@ -23,6 +23,7 @@ const (
 	DefaultFocusModeEnabled    = false
 	DefaultFocusSessionMinutes = 90
 	DefaultMaxConcurrentAgents = 3
+	DefaultMaxReviewBacklog    = 5
 
 	// DefaultBranchNamePrompt is the instruction sent to Haiku to summarize
 	// the user's first prompt into a branch slug. Users can override via the
@@ -58,6 +59,7 @@ type GlobalSettings struct {
 	FocusModeEnabled    *bool `json:"focus_mode_enabled,omitempty"`
 	FocusSessionMinutes *int  `json:"focus_session_minutes,omitempty"`
 	MaxConcurrentAgents *int  `json:"max_concurrent_agents,omitempty"`
+	MaxReviewBacklog    *int  `json:"max_review_backlog,omitempty"`
 }
 
 // RepoSettings holds per-repo overrides stored at <repo>/.baton/config.json.
@@ -89,6 +91,7 @@ type ResolvedSettings struct {
 	FocusModeEnabled    bool
 	FocusSessionMinutes int
 	MaxConcurrentAgents int
+	MaxReviewBacklog    int
 }
 
 // Resolve merges global and repo settings over built-in defaults.
@@ -105,6 +108,7 @@ func Resolve(global *GlobalSettings, repo *RepoSettings) ResolvedSettings {
 		FocusModeEnabled:    DefaultFocusModeEnabled,
 		FocusSessionMinutes: DefaultFocusSessionMinutes,
 		MaxConcurrentAgents: DefaultMaxConcurrentAgents,
+		MaxReviewBacklog:    DefaultMaxReviewBacklog,
 	}
 
 	if global != nil {
@@ -140,6 +144,9 @@ func Resolve(global *GlobalSettings, repo *RepoSettings) ResolvedSettings {
 		}
 		if global.MaxConcurrentAgents != nil {
 			r.MaxConcurrentAgents = *global.MaxConcurrentAgents
+		}
+		if global.MaxReviewBacklog != nil {
+			r.MaxReviewBacklog = *global.MaxReviewBacklog
 		}
 	}
 

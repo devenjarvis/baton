@@ -12,6 +12,7 @@ const (
 	fieldFocusMode    = "Focus Mode"
 	fieldFocusSession = "Focus Session (min)"
 	fieldMaxAgents    = "Max Concurrent Agents"
+	fieldMaxReview    = "Max Review Backlog"
 )
 
 // globalConfigSaveMsg is emitted when the global config form is saved.
@@ -76,6 +77,10 @@ func newGlobalConfigModel(gs *config.GlobalSettings, width, height int) globalCo
 	if gs.MaxConcurrentAgents != nil {
 		maxConcurrentAgents = strconv.Itoa(*gs.MaxConcurrentAgents)
 	}
+	maxReviewBacklog := ""
+	if gs.MaxReviewBacklog != nil {
+		maxReviewBacklog = strconv.Itoa(*gs.MaxReviewBacklog)
+	}
 
 	inputWidth := 30
 
@@ -90,6 +95,7 @@ func newGlobalConfigModel(gs *config.GlobalSettings, width, height int) globalCo
 	fields = addToggle(fields, fieldFocusMode, focusModeEnabled)
 	fields = addTextInput(fields, fieldFocusSession, focusSessionMinutes, strconv.Itoa(config.DefaultFocusSessionMinutes), inputWidth)
 	fields = addTextInput(fields, fieldMaxAgents, maxConcurrentAgents, strconv.Itoa(config.DefaultMaxConcurrentAgents), inputWidth)
+	fields = addTextInput(fields, fieldMaxReview, maxReviewBacklog, strconv.Itoa(config.DefaultMaxReviewBacklog), inputWidth)
 
 	return globalConfigModel{
 		form:   newConfigForm(fields, width),
@@ -174,6 +180,11 @@ func (m globalConfigModel) extractSettings() *config.GlobalSettings {
 	if v := m.form.textValue(fieldMaxAgents); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			s.MaxConcurrentAgents = &n
+		}
+	}
+	if v := m.form.textValue(fieldMaxReview); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 { // 0 means "off"
+			s.MaxReviewBacklog = &n
 		}
 	}
 
