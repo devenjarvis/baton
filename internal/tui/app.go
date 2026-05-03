@@ -744,6 +744,12 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.newAgentPending = false
 		}
 
+		// Clear the backlog warning flag on any key that isn't n.
+		// Done here (before focus-mode early returns) so navigation keys clear it too.
+		if a.focusBacklogWarning && msg.String() != "n" {
+			a.focusBacklogWarning = false
+		}
+
 		// Focus-mode key handling (fullscreen pipeline view).
 		if a.focusModeActive && a.dashboard.panelFocus != focusReview {
 			switch msg.String() {

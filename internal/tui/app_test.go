@@ -1544,19 +1544,26 @@ func TestFocusModeChimeSuppression(t *testing.T) {
 
 func TestFocusMode_BacklogGate_WarnOnN(t *testing.T) {
 	app := NewApp()
-	one := 1
-	app.globalSettings = &config.GlobalSettings{MaxReviewBacklog: &one}
+	two := 2
+	app.globalSettings = &config.GlobalSettings{MaxReviewBacklog: &two}
 
 	// Activate focus mode.
 	model, _ := app.Update(tea.KeyPressMsg{Code: 'f', Text: "f"})
 	app = model.(App)
 
-	// Set the warning flag manually to simulate having hit the limit.
-	app.focusBacklogWarning = true
+	// First n when no backlog — no warning, focusBacklogWarning stays false.
+	model, _ = app.Update(tea.KeyPressMsg{Code: 'n', Text: "n"})
+	app = model.(App)
+	if app.focusBacklogWarning {
+		t.Error("focusBacklogWarning should not be set when backlog is below limit")
+	}
 
-	// Verify the flag is set (basic state check).
-	if !app.focusBacklogWarning {
-		t.Error("expected focusBacklogWarning to be set")
+	// Verify the warning is cleared when a non-n key is pressed after being set.
+	app.focusBacklogWarning = true
+	model, _ = app.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
+	app = model.(App)
+	if app.focusBacklogWarning {
+		t.Error("focusBacklogWarning should be cleared by a non-n key press")
 	}
 }
 
