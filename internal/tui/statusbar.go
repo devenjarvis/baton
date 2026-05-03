@@ -77,7 +77,14 @@ var (
 		{"m", "mark ready"},
 		{"r", "review"},
 		{"n", "new"},
+		{"N", "change repo"},
+		{"space", "interact"},
 		{"f", "exit focus"},
+	}
+
+	focusLaunchHints = []keyHint{
+		{"f/esc", "back to focus"},
+		{"enter", "send"},
 	}
 )
 

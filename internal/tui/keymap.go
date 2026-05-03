@@ -19,4 +19,5 @@ const (
 	focusTerminal                   // preview: keys forwarded to agent
 	focusConfig                     // preview: repo config form
 	focusReview                     // preview: review panel (fullscreen focus mode)
+	focusLaunch                     // focus mode paused — viewing an agent terminal
 )
