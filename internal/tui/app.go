@@ -766,6 +766,9 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			a.focusModeActive = !a.focusModeActive
 			a.focusModeSwitches++
+			if a.focusModeActive {
+				a.dashboard.clampToRepo()
+			}
 			return a, nil
 
 		case "n":
@@ -1632,15 +1635,21 @@ func (a *App) refreshAgentList() {
 		a.dashboard.selected = len(items) - 1
 	}
 	a.dashboard.items = items
-	a.dashboard.clampToAgent()
+	if a.focusModeActive {
+		a.dashboard.clampToRepo()
+	} else {
+		a.dashboard.clampToAgent()
+	}
 
 	// If the selection landed in a different repo, search backward for the
 	// nearest item in the original repo (an agent or the repo header).
 	if prevRepo != "" && len(items) > 0 && items[a.dashboard.selected].repoPath != prevRepo {
 		for i := a.dashboard.selected; i >= 0; i-- {
 			if items[i].repoPath == prevRepo && items[i].kind != listItemSession {
-				a.dashboard.selected = i
-				break
+				if !a.focusModeActive || items[i].kind == listItemRepo {
+					a.dashboard.selected = i
+					break
+				}
 			}
 		}
 	}
