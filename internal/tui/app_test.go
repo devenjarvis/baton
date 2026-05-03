@@ -1646,10 +1646,10 @@ func TestClampToRepo(t *testing.T) {
 	ag := &agent.Agent{Name: "a"}
 
 	items := []listItem{
-		{kind: listItemRepo, repoPath: "/r1", repoName: "repo1"},   // 0
-		{kind: listItemSession, repoPath: "/r1", session: sess},     // 1
+		{kind: listItemRepo, repoPath: "/r1", repoName: "repo1"},         // 0
+		{kind: listItemSession, repoPath: "/r1", session: sess},          // 1
 		{kind: listItemAgent, repoPath: "/r1", session: sess, agent: ag}, // 2
-		{kind: listItemRepo, repoPath: "/r2", repoName: "repo2"},   // 3
+		{kind: listItemRepo, repoPath: "/r2", repoName: "repo2"},         // 3
 		{kind: listItemAgent, repoPath: "/r2", session: sess, agent: ag}, // 4
 	}
 
@@ -1702,10 +1702,10 @@ func TestFocusModeNavigationOnlyLandsOnRepos(t *testing.T) {
 	d.height = 39
 	d.focusModeActive = true
 	d.items = []listItem{
-		{kind: listItemRepo, repoPath: "/r1", repoName: "repo1"},        // 0
+		{kind: listItemRepo, repoPath: "/r1", repoName: "repo1"},         // 0
 		{kind: listItemSession, repoPath: "/r1", session: sess},          // 1
 		{kind: listItemAgent, repoPath: "/r1", session: sess, agent: ag}, // 2
-		{kind: listItemRepo, repoPath: "/r2", repoName: "repo2"},        // 3
+		{kind: listItemRepo, repoPath: "/r2", repoName: "repo2"},         // 3
 		{kind: listItemAgent, repoPath: "/r2", session: sess, agent: ag}, // 4
 	}
 	d.selected = 0
