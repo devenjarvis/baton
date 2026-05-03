@@ -705,6 +705,68 @@ func TestUserPromptSubmitSlashWithArgRenamesBranch(t *testing.T) {
 	}
 }
 
+// TestWaitingReasonStoredAndCleared verifies that WaitingReason() is set when a
+// KindNotification event fires and cleared when KindPreToolUse follows.
+func TestWaitingReasonStoredAndCleared(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	cfg := Config{Name: "waiting-reason", Task: "test", Rows: 24, Cols: 80}
+	_, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-mgr.Events():
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for EventCreated")
+	}
+
+	// SessionStart → Active.
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindSessionStart,
+		AgentID: ag.ID,
+	}); err != nil {
+		t.Fatalf("SendEvent SessionStart: %v", err)
+	}
+	if !waitForStatus(t, ag, StatusActive, 2*time.Second) {
+		t.Fatalf("expected Active after SessionStart, got %s", ag.Status())
+	}
+
+	// Notification → Waiting; reason must be stored.
+	const wantReason = "Claude needs permission"
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindNotification,
+		AgentID: ag.ID,
+		Message: wantReason,
+	}); err != nil {
+		t.Fatalf("SendEvent Notification: %v", err)
+	}
+	if !waitForStatus(t, ag, StatusWaiting, 2*time.Second) {
+		t.Fatalf("expected Waiting after Notification, got %s", ag.Status())
+	}
+	if got := ag.WaitingReason(); got != wantReason {
+		t.Errorf("WaitingReason() = %q, want %q", got, wantReason)
+	}
+
+	// PreToolUse → Active; reason must be cleared.
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindPreToolUse,
+		AgentID: ag.ID,
+	}); err != nil {
+		t.Fatalf("SendEvent PreToolUse: %v", err)
+	}
+	if !waitForStatus(t, ag, StatusActive, 2*time.Second) {
+		t.Fatalf("expected Active after PreToolUse, got %s", ag.Status())
+	}
+	if got := ag.WaitingReason(); got != "" {
+		t.Errorf("WaitingReason() = %q after PreToolUse, want empty", got)
+	}
+}
+
 // waitForStatus polls the agent status up to d for the desired value.
 func waitForStatus(t *testing.T, a *Agent, want Status, d time.Duration) bool {
 	t.Helper()

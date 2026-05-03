@@ -120,6 +120,8 @@ type App struct {
 	newAgentPending     bool
 	focusSessionMinutes int // cached from resolved global settings
 	focusQueueIndex     int
+	focusAttentionIdx   int
+	focusLaunchAgent    *agent.Agent
 	focusBacklogWarning bool                        // first n at backlog limit shows warning; second proceeds
 	reviewDiffCache     map[string]*reviewDiffEntry // keyed by session ID
 	reviewSession       *agent.Session              // session currently open in review panel
@@ -509,7 +511,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			for i, item := range a.dashboard.items {
 				if item.kind == listItemAgent && item.agent != nil && item.agent.ID == msg.agentID {
 					a.dashboard.selected = i
-					a.dashboard.panelFocus = focusTerminal
+					if a.focusModeActive {
+						a.focusLaunchAgent = item.agent
+						a.dashboard.panelFocus = focusLaunch
+					} else {
+						a.dashboard.panelFocus = focusTerminal
+					}
 					break
 				}
 			}
@@ -527,11 +534,20 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case killScopeAgent:
 			delete(a.closingAgents, msg.agentID)
 			delete(a.lastKnownStatus, msg.agentID)
+			// Exit focusLaunch if the killed agent is the one being viewed.
+			if a.focusLaunchAgent != nil && a.focusLaunchAgent.ID == msg.agentID {
+				a.focusLaunchAgent = nil
+				a.dashboard.panelFocus = focusList
+			}
 		case killScopeSession:
 			delete(a.closingSessions, msg.sessionID)
 			for _, id := range msg.agentIDs {
 				delete(a.closingAgents, id)
 				delete(a.lastKnownStatus, id)
+				if a.focusLaunchAgent != nil && a.focusLaunchAgent.ID == id {
+					a.focusLaunchAgent = nil
+					a.dashboard.panelFocus = focusList
+				}
 			}
 			delete(a.diffStatsCache, msg.sessionID)
 		}
@@ -745,6 +761,27 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case tea.KeyPressMsg:
+		// focusLaunch: forward all keys to the launch agent; f/esc returns to focus pipeline.
+		if a.dashboard.panelFocus == focusLaunch {
+			a.confirmQuit = false
+			if a.focusLaunchAgent == nil {
+				a.dashboard.panelFocus = focusList
+				return a, nil
+			}
+			switch msg.String() {
+			case "f", "esc":
+				a.focusLaunchAgent = nil
+				a.dashboard.panelFocus = focusList
+			default:
+				if msg.Text != "" {
+					a.focusLaunchAgent.SendText(msg.Text)
+				} else {
+					a.focusLaunchAgent.SendKey(xvt.KeyPressEvent(msg))
+				}
+			}
+			return a, nil
+		}
+
 		// When the terminal or config panel has focus, skip all app-level bindings.
 		if a.dashboard.panelFocus == focusTerminal || a.dashboard.panelFocus == focusConfig {
 			a.confirmQuit = false
@@ -829,10 +866,42 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if a.focusQueueIndex > 0 {
 					a.focusQueueIndex--
 				}
+				if attAgents := a.dashboard.attentionAgents(); len(attAgents) > 0 && a.focusAttentionIdx > 0 {
+					a.focusAttentionIdx--
+				}
 				return a, nil
 			case "down", "j":
 				if a.focusQueueIndex < len(a.dashboard.reviewQueueSessions())-1 {
 					a.focusQueueIndex++
+				}
+				if attAgents := a.dashboard.attentionAgents(); len(attAgents) > 0 && a.focusAttentionIdx < len(attAgents)-1 {
+					a.focusAttentionIdx++
+				}
+				return a, nil
+			case "space", "enter":
+				attAgents := a.dashboard.attentionAgents()
+				if len(attAgents) > 0 {
+					idx := a.focusAttentionIdx
+					if idx >= len(attAgents) {
+						idx = len(attAgents) - 1
+					}
+					a.focusLaunchAgent = attAgents[idx]
+					a.dashboard.panelFocus = focusLaunch
+					return a, nil
+				}
+				// No attention rows: fall through to normal enter handling.
+			case "N":
+				if a.cfg != nil && len(a.cfg.Repos) > 0 {
+					currentIdx := -1
+					for i, repo := range a.cfg.Repos {
+						if repo.Path == a.activeRepo {
+							currentIdx = i
+							break
+						}
+					}
+					nextIdx := (currentIdx + 1) % len(a.cfg.Repos)
+					a.activeRepo = a.cfg.Repos[nextIdx].Path
+					a.refreshAgentList()
 				}
 				return a, nil
 			case "m":
@@ -915,6 +984,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// record the review time.
 			if a.focusModeActive {
 				a.lastReviewAt = time.Now()
+				a.focusLaunchAgent = nil
 			}
 			a.focusModeActive = !a.focusModeActive
 			a.focusModeSwitches++
@@ -1670,6 +1740,21 @@ func (a *App) setError(msg string) {
 	a.errTicks = 30
 }
 
+// activeRepoDisplayName returns the display name for the active repo (alias or base path).
+func (a App) activeRepoDisplayName() string {
+	if a.activeRepo == "" {
+		return ""
+	}
+	if a.cfg != nil {
+		for _, repo := range a.cfg.Repos {
+			if repo.Path == a.activeRepo {
+				return repo.DisplayName()
+			}
+		}
+	}
+	return filepath.Base(a.activeRepo)
+}
+
 // screenToTermCell converts a screen-space mouse coordinate to a VT cell
 // coordinate inside the agent preview viewport. inViewport is false when the
 // point lies outside the viewport rectangle — callers that want clamping
@@ -1739,6 +1824,9 @@ func (a *App) refreshAgentList() {
 	a.dashboard.lastReviewAt = a.lastReviewAt
 	a.dashboard.focusSessionMinutes = a.focusSessionMinutes
 	a.dashboard.focusQueueIndex = a.focusQueueIndex
+	a.dashboard.focusAttentionIdx = a.focusAttentionIdx
+	a.dashboard.activeRepoName = a.activeRepoDisplayName()
+	a.dashboard.focusLaunchAgent = a.focusLaunchAgent
 	if a.cfg == nil {
 		// Fallback used in tests that set up managers directly without cfg.
 		if mgr := a.managers[a.activeRepo]; mgr != nil {
@@ -1829,6 +1917,13 @@ func (a *App) refreshAgentList() {
 			}
 		}
 	}
+	// Clamp focusAttentionIdx so the selection marker stays visible if agents
+	// leave the attention list (e.g. a permission prompt was just approved).
+	if n := len(a.dashboard.attentionAgents()); a.focusAttentionIdx >= n && n > 0 {
+		a.focusAttentionIdx = n - 1
+	} else if n == 0 {
+		a.focusAttentionIdx = 0
+	}
 	a.recomputePRSectionY()
 }
 
@@ -1851,6 +1946,8 @@ func (a App) View() tea.View {
 			hints = focusTerminalHints
 		case focusConfig:
 			hints = repoConfigHints
+		case focusLaunch:
+			hints = focusLaunchHints
 		}
 		// Prepend a break hint when focus mode is active and the session
 		// duration has exceeded the configured threshold.

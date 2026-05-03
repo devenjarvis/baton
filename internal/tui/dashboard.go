@@ -118,7 +118,10 @@ type dashboardModel struct {
 	sessionElapsed      time.Duration
 	lastReviewAt        time.Time
 	focusSessionMinutes int
-	focusQueueIndex     int // index into ReadyForReview sessions in fullscreen focus mode
+	focusQueueIndex     int          // index into ReadyForReview sessions in fullscreen focus mode
+	focusAttentionIdx   int          // index of highlighted waiting/error agent row
+	activeRepoName      string       // display name of the active repo
+	focusLaunchAgent    *agent.Agent // agent open in focusLaunch terminal; nil otherwise
 
 	// prSectionY is the content-relative row index (0-indexed, after the AGENTS
 	// title and separator) where the PR checks summary begins, or -1 when absent.
@@ -344,6 +347,10 @@ func (d dashboardModel) listWidth() int {
 func (d dashboardModel) View() string {
 	if len(d.items) == 0 {
 		return d.emptyView()
+	}
+
+	if d.focusModeActive && d.panelFocus == focusLaunch {
+		return d.renderFocusLaunchView(d.width, d.height)
 	}
 
 	if d.focusModeActive {
@@ -756,9 +763,25 @@ func (d dashboardModel) reviewQueueSessions() []listItem {
 	return result
 }
 
-// renderAttentionRows renders Waiting/Error agents (same as current focus panel attention section).
+// attentionAgents returns agents in StatusWaiting or StatusError (non-shell only).
+func (d dashboardModel) attentionAgents() []*agent.Agent {
+	var result []*agent.Agent
+	for _, item := range d.items {
+		if item.kind != listItemAgent || item.agent == nil || item.agent.IsShell {
+			continue
+		}
+		status := item.agent.Status()
+		if status == agent.StatusWaiting || status == agent.StatusError {
+			result = append(result, item.agent)
+		}
+	}
+	return result
+}
+
+// renderAttentionRows renders Waiting/Error agents with selection marker and waiting reason.
 func (d dashboardModel) renderAttentionRows() []string {
 	lines := make([]string, 0, len(d.items))
+	idx := 0
 	for _, item := range d.items {
 		if item.kind != listItemAgent || item.agent == nil || item.agent.IsShell {
 			continue
@@ -777,7 +800,16 @@ func (d dashboardModel) renderAttentionRows() []string {
 		} else {
 			style = lipgloss.NewStyle().Foreground(ColorError)
 		}
-		lines = append(lines, style.Render(fmt.Sprintf("⏸ %s", label)))
+		prefix := "  "
+		if idx == d.focusAttentionIdx {
+			prefix = "> "
+		}
+		line := style.Render(fmt.Sprintf("%s⏸ %s", prefix, label))
+		if reason := item.agent.WaitingReason(); reason != "" {
+			line += StyleSubtle.Render(" — " + truncateVisible(reason, 50))
+		}
+		lines = append(lines, line)
+		idx++
 	}
 	return lines
 }
@@ -841,6 +873,42 @@ func (d dashboardModel) renderPipelineWidget(width int) string {
 	)
 }
 
+// renderFocusLaunchView renders the "focus mode paused" view with a single agent terminal.
+func (d dashboardModel) renderFocusLaunchView(width, height int) string {
+	ag := d.focusLaunchAgent
+	if ag == nil {
+		return d.renderFullscreenFocus(width, height)
+	}
+
+	banner := StyleWarning.Render("Focus mode paused — press f to return")
+
+	agentName := ag.GetDisplayName()
+	var sessionBranch string
+	for _, item := range d.items {
+		if item.kind == listItemAgent && item.agent == ag && item.session != nil {
+			sessionBranch = item.session.Branch()
+			break
+		}
+	}
+	headerParts := []string{fmt.Sprintf("agent: %s", agentName)}
+	if sessionBranch != "" {
+		headerParts = append(headerParts, fmt.Sprintf("branch: %s", sessionBranch))
+	}
+	header := StyleSubtle.Render(strings.Join(headerParts, "  "))
+
+	termWidth := d.fixedTermWidth()
+	if termWidth < 1 {
+		termWidth = width
+	}
+	termHeight := d.fixedTermHeight()
+	if termHeight < 1 {
+		termHeight = height - 2
+	}
+	render := ag.RenderPadded(termWidth, termHeight)
+
+	return strings.Join([]string{banner, header, render}, "\n")
+}
+
 // renderFullscreenFocus renders the fullscreen pipeline view shown when focusModeActive is true.
 func (d dashboardModel) renderFullscreenFocus(width, height int) string {
 	var lines []string
@@ -881,6 +949,9 @@ func (d dashboardModel) renderFullscreenFocus(width, height int) string {
 		timerStr = barStyle.Render(fmt.Sprintf("[%s] %dm/%dm", bar, elapsedMin, d.focusSessionMinutes))
 	}
 	headerLine := title + "  " + timerStr
+	if d.activeRepoName != "" {
+		headerLine += "  " + StyleSubtle.Render("repo: "+d.activeRepoName)
+	}
 	lines = append(lines, headerLine)
 	lines = append(lines, StyleSubtle.Render(strings.Repeat("─", width-2)))
 

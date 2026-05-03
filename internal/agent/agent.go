@@ -33,6 +33,7 @@ type Agent struct {
 	claudeSessionID  string
 	hasClaudeName    bool
 	status           Status
+	waitingReason    string
 	lastOutput       time.Time
 	lastInput        time.Time
 	composing        bool
@@ -398,6 +399,7 @@ func (a *Agent) OnHookEvent(e hook.Event) (statusChanged bool) {
 		if a.status == StatusDone || a.status == StatusError {
 			return false
 		}
+		a.waitingReason = ""
 		// Claude finished its turn; the user is now in control. Clear the
 		// composing flag so input-display logic returns to its idle baseline.
 		a.composing = false
@@ -411,6 +413,7 @@ func (a *Agent) OnHookEvent(e hook.Event) (statusChanged bool) {
 		// Flag a clean exit for observability. Actual teardown still goes
 		// through the PTY close path (readLoop -> close(done)).
 		a.cleanExit = true
+		a.waitingReason = ""
 		return false
 
 	case hook.KindNotification:
@@ -419,6 +422,7 @@ func (a *Agent) OnHookEvent(e hook.Event) (statusChanged bool) {
 		// Done or Error agent, and don't clobber Idle either — if Claude sent
 		// Stop already, a trailing Notification shouldn't re-attention the row.
 		if a.status == StatusActive || a.status == StatusWaiting {
+			a.waitingReason = e.Message
 			if a.status != StatusWaiting {
 				a.status = StatusWaiting
 				return true
@@ -435,6 +439,7 @@ func (a *Agent) OnHookEvent(e hook.Event) (statusChanged bool) {
 		if a.status == StatusDone || a.status == StatusError {
 			return false
 		}
+		a.waitingReason = ""
 		a.chimedForTurn = false
 		if a.status != StatusActive {
 			a.status = StatusActive
@@ -453,6 +458,7 @@ func (a *Agent) OnHookEvent(e hook.Event) (statusChanged bool) {
 		if a.status == StatusDone || a.status == StatusError {
 			return false
 		}
+		a.waitingReason = ""
 		if a.status != StatusActive {
 			a.status = StatusActive
 			return true
@@ -593,6 +599,16 @@ func (a *Agent) Status() Status {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.status
+}
+
+// WaitingReason returns the message from the most recent KindNotification event
+// that drove the agent to StatusWaiting, or "" if the agent is not waiting.
+// The reason is cleared when the agent transitions away from StatusWaiting via
+// KindPreToolUse, KindStop, or KindUserPromptSubmit.
+func (a *Agent) WaitingReason() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.waitingReason
 }
 
 // SetDisplayName sets the human-readable display name for this agent.
