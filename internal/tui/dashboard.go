@@ -118,6 +118,7 @@ type dashboardModel struct {
 	sessionElapsed      time.Duration
 	lastReviewAt        time.Time
 	focusSessionMinutes int
+	focusQueueIndex     int // index into ReadyForReview sessions in fullscreen focus mode
 
 	// prSectionY is the content-relative row index (0-indexed, after the AGENTS
 	// title and separator) where the PR checks summary begins, or -1 when absent.
@@ -343,6 +344,10 @@ func (d dashboardModel) listWidth() int {
 func (d dashboardModel) View() string {
 	if len(d.items) == 0 {
 		return d.emptyView()
+	}
+
+	if d.focusModeActive {
+		return d.renderFullscreenFocus(d.width, d.height)
 	}
 
 	listWidth := d.listWidth()
@@ -972,6 +977,190 @@ func (d dashboardModel) renderFocusPanel(width int) string {
 		lines = append(lines, "")
 	}
 	lines = append(lines, hintLine)
+
+	return strings.Join(lines, "\n")
+}
+
+// reviewQueueSessions returns listItems for sessions in ReadyForReview phase.
+func (d dashboardModel) reviewQueueSessions() []listItem {
+	var result []listItem
+	for _, item := range d.items {
+		if item.kind == listItemSession && item.session != nil &&
+			item.session.LifecyclePhase() == agent.LifecycleReadyForReview {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+// renderAttentionRows renders Waiting/Error agents (same as current focus panel attention section).
+func (d dashboardModel) renderAttentionRows() []string {
+	var lines []string
+	for _, item := range d.items {
+		if item.kind != listItemAgent || item.agent == nil || item.agent.IsShell {
+			continue
+		}
+		status := item.agent.Status()
+		if status != agent.StatusWaiting && status != agent.StatusError {
+			continue
+		}
+		label := item.agent.GetDisplayName()
+		if item.session != nil {
+			label = item.session.GetDisplayName()
+		}
+		var style lipgloss.Style
+		if status == agent.StatusWaiting {
+			style = lipgloss.NewStyle().Foreground(ColorWaiting)
+		} else {
+			style = lipgloss.NewStyle().Foreground(ColorError)
+		}
+		lines = append(lines, style.Render(fmt.Sprintf("⏸ %s", label)))
+	}
+	return lines
+}
+
+// renderNudgeRows renders one dim line per session that is Done (process) but still InProgress (lifecycle).
+func (d dashboardModel) renderNudgeRows() []string {
+	var lines []string
+	for _, item := range d.items {
+		if item.kind != listItemSession || item.session == nil {
+			continue
+		}
+		sess := item.session
+		if sess.LifecyclePhase() != agent.LifecycleInProgress || sess.DoneAt().IsZero() {
+			continue
+		}
+		lines = append(lines, StyleSubtle.Render(fmt.Sprintf("· %s finished — press m to mark ready", sess.GetDisplayName())))
+	}
+	return lines
+}
+
+// renderPipelineWidget renders the 4-cell pipeline row.
+func (d dashboardModel) renderPipelineWidget(width int) string {
+	var inProgress, readyForReview, inReview, shipping int
+	for _, item := range d.items {
+		if item.kind != listItemSession || item.session == nil {
+			continue
+		}
+		switch item.session.LifecyclePhase() {
+		case agent.LifecycleInProgress:
+			inProgress++
+		case agent.LifecycleReadyForReview:
+			readyForReview++
+		case agent.LifecycleInReview:
+			inReview++
+		case agent.LifecycleShipping:
+			shipping++
+		}
+	}
+
+	cellWidth := (width - 6) / 4
+	if cellWidth < 12 {
+		cellWidth = 12
+	}
+
+	cell := func(label string, count int, color lipgloss.Color, highlight bool) string {
+		cnt := lipgloss.NewStyle().Foreground(color).Bold(true).Render(fmt.Sprintf("%d", count))
+		lbl := StyleSubtle.Render(label)
+		inner := fmt.Sprintf("%s\n%s", lbl, cnt)
+		style := lipgloss.NewStyle().Border(lipgloss.NormalBorder()).Padding(0, 1).Width(cellWidth)
+		if highlight {
+			style = style.BorderForeground(color)
+		}
+		return style.Render(inner)
+	}
+
+	return lipgloss.JoinHorizontal(lipgloss.Top,
+		cell("IN PROGRESS", inProgress, lipgloss.Color("#7ec8e3"), false),
+		cell("READY TO REVIEW", readyForReview, ColorWarning, readyForReview > 0),
+		cell("IN REVIEW", inReview, lipgloss.Color("#9b7fdb"), false),
+		cell("SHIPPING", shipping, lipgloss.Color("#5ab58a"), false),
+	)
+}
+
+// renderFullscreenFocus renders the fullscreen pipeline view shown when focusModeActive is true.
+func (d dashboardModel) renderFullscreenFocus(width, height int) string {
+	var lines []string
+
+	// Header: title + timer
+	title := StyleTitle.Render("FOCUS")
+	timerStr := ""
+	if d.focusSessionMinutes > 0 {
+		threshold := time.Duration(d.focusSessionMinutes) * time.Minute
+		elapsed := d.sessionElapsed
+		if elapsed > threshold {
+			elapsed = threshold
+		}
+		pct := float64(elapsed) / float64(threshold)
+		barWidth := width - 30
+		if barWidth < 5 {
+			barWidth = 5
+		}
+		filled := int(pct * float64(barWidth))
+		if filled > barWidth {
+			filled = barWidth
+		}
+		bar := strings.Repeat("=", filled)
+		if filled < barWidth {
+			bar += ">"
+			bar += strings.Repeat(" ", barWidth-filled-1)
+		}
+		elapsedMin := int(d.sessionElapsed.Minutes())
+		var barStyle lipgloss.Style
+		switch {
+		case pct >= 1.0:
+			barStyle = lipgloss.NewStyle().Foreground(ColorError)
+		case pct >= 0.75:
+			barStyle = lipgloss.NewStyle().Foreground(ColorWarning)
+		default:
+			barStyle = lipgloss.NewStyle().Foreground(ColorMuted)
+		}
+		timerStr = barStyle.Render(fmt.Sprintf("[%s] %dm/%dm", bar, elapsedMin, d.focusSessionMinutes))
+	}
+	headerLine := title + "  " + timerStr
+	lines = append(lines, headerLine)
+	lines = append(lines, StyleSubtle.Render(strings.Repeat("─", width-2)))
+
+	// Pipeline widget
+	lines = append(lines, d.renderPipelineWidget(width))
+	lines = append(lines, "")
+
+	// Review queue
+	reviewSessions := d.reviewQueueSessions()
+	if len(reviewSessions) > 0 {
+		lines = append(lines, StyleSubtle.Render("REVIEW QUEUE"))
+		for i, item := range reviewSessions {
+			sess := item.session
+			selected := i == d.focusQueueIndex
+			name := sess.GetDisplayName()
+			age := ""
+			if !sess.DoneAt().IsZero() {
+				mins := int(time.Since(sess.DoneAt()).Minutes())
+				age = fmt.Sprintf("done %dm ago", mins)
+			}
+			prefix := "  "
+			if selected {
+				prefix = "> "
+			}
+			var cardStyle lipgloss.Style
+			if selected {
+				cardStyle = lipgloss.NewStyle().Foreground(ColorWarning)
+			} else {
+				cardStyle = StyleSubtle
+			}
+			line := cardStyle.Render(fmt.Sprintf("%s%s", prefix, name))
+			if age != "" {
+				line += StyleSubtle.Render("  " + age)
+			}
+			lines = append(lines, line)
+		}
+		lines = append(lines, "")
+	}
+
+	// Attention + nudge
+	lines = append(lines, StyleSubtle.Render(strings.Repeat("─", width-2)))
+	lines = append(lines, d.renderAttentionRows()...)
+	lines = append(lines, d.renderNudgeRows()...)
 
 	return strings.Join(lines, "\n")
 }

@@ -119,6 +119,7 @@ type App struct {
 	lastReviewAt        time.Time
 	newAgentPending     bool
 	focusSessionMinutes int // cached from resolved global settings
+	focusQueueIndex     int
 
 	// Wellness counters (written to log on quit).
 	agentsCreatedCount   int
@@ -436,6 +437,22 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			a.lastKnownStatus[msg.event.AgentID] = msg.event.Status
+			if msg.event.Status == agent.StatusDone || msg.event.Status == agent.StatusError {
+				if mgr := a.managers[msg.repoPath]; mgr != nil {
+					if _, sess := mgr.FindAgentAndSession(msg.event.AgentID); sess != nil {
+						allDone := true
+						for _, ag := range sess.Agents() {
+							if !ag.IsShell && ag.Status() != agent.StatusDone && ag.Status() != agent.StatusError {
+								allDone = false
+								break
+							}
+						}
+						if allDone {
+							sess.MarkDone()
+						}
+					}
+				}
+			}
 		}
 		// Branch rename invalidates any PR-by-branch lookup. Schedule a burst of
 		// short-interval polls so the SHA-based lookup can rediscover the PR
@@ -1563,6 +1580,7 @@ func (a *App) refreshAgentList() {
 	a.dashboard.sessionElapsed = time.Since(a.sessionStart)
 	a.dashboard.lastReviewAt = a.lastReviewAt
 	a.dashboard.focusSessionMinutes = a.focusSessionMinutes
+	a.dashboard.focusQueueIndex = a.focusQueueIndex
 	if a.cfg == nil {
 		// Fallback used in tests that set up managers directly without cfg.
 		if mgr := a.managers[a.activeRepo]; mgr != nil {
