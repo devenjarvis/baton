@@ -79,6 +79,13 @@ var (
 		{"n", "new"},
 		{"f", "exit focus"},
 	}
+
+	focusReviewHints = []keyHint{
+		{"p", "open PR"},
+		{"e", "editor"},
+		{"d", "defer"},
+		{"esc", "back"},
+	}
 )
 
 func renderStatusBar(hints []keyHint, width int) string {

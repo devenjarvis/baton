@@ -1580,6 +1580,24 @@ func TestFocusMode_RKey_NoopWithEmptyQueue(t *testing.T) {
 	}
 }
 
+func TestFocusMode_RKey_EntersReviewPanel(t *testing.T) {
+	app := NewApp()
+	// Toggle focus mode on.
+	model, _ := app.Update(tea.KeyPressMsg{Code: 'f', Text: "f"})
+	app = model.(App)
+
+	if !app.focusModeActive {
+		t.Fatal("expected focus mode to be active")
+	}
+
+	// r with no queued sessions should be a no-op (no panic, no state change).
+	model, _ = app.Update(tea.KeyPressMsg{Code: 'r', Text: "r"})
+	app = model.(App)
+	if app.dashboard.panelFocus == focusReview {
+		t.Error("r with empty review queue should not enter focusReview")
+	}
+}
+
 // TestSoftAgentLimitGuard verifies the two-press 'n' guard in focus mode:
 // first press shows a warning and sets newAgentPending; second press proceeds.
 func TestSoftAgentLimitGuard(t *testing.T) {

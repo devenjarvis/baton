@@ -603,6 +603,19 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			reviews: msg.reviews,
 			stack:   msg.stack,
 		}
+		// Detect PR merge/close and transition to Complete lifecycle phase.
+		if msg.pr != nil && (msg.pr.State == "merged" || msg.pr.State == "closed") {
+			repoPath := a.repoPathForSession(msg.sessionID)
+			if repoPath != "" {
+				if mgr := a.managers[repoPath]; mgr != nil {
+					if sess := mgr.GetSession(msg.sessionID); sess != nil {
+						if sess.LifecyclePhase() == agent.LifecycleShipping {
+							sess.SetLifecyclePhase(agent.LifecycleComplete)
+						}
+					}
+				}
+			}
+		}
 		// Detect check state transitions and fire notifications.
 		if ps != nil && msg.checks != nil {
 			prevState := ps.lastCheckState
@@ -750,6 +763,65 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.focusBacklogWarning = false
 		}
 
+		// Review panel key handling.
+		if a.dashboard.panelFocus == focusReview && a.reviewSession != nil {
+			switch msg.String() {
+			case "esc":
+				// Return to focus mode; session stays InReview.
+				a.dashboard.panelFocus = focusList
+				a.reviewSession = nil
+				return a, nil
+			case "d":
+				// Defer: back to ReadyForReview, return to focus.
+				a.reviewSession.SetLifecyclePhase(agent.LifecycleReadyForReview)
+				a.dashboard.panelFocus = focusList
+				a.reviewSession = nil
+				return a, nil
+			case "p":
+				// Ship: open PR URL if one exists, transition to Shipping.
+				sess := a.reviewSession
+				if entry := a.prCache[sess.ID]; entry != nil && entry.pr != nil && entry.pr.URL != "" {
+					if err := openURL(entry.pr.URL); err != nil {
+						a.setError(err.Error())
+						return a, nil
+					}
+					sess.SetLifecyclePhase(agent.LifecycleShipping)
+					a.dashboard.panelFocus = focusList
+					a.reviewSession = nil
+				} else {
+					a.setError("no open PR yet — create one in GitHub first")
+				}
+				return a, nil
+			case "e":
+				// Open in editor — same pattern as the existing "i" key handler.
+				sess := a.reviewSession
+				if sess != nil && sess.Worktree != nil {
+					repoPath := a.activeRepo
+					ideCmd := strings.TrimSpace(a.resolvedCache[repoPath].IDECommand)
+					if ideCmd == "" {
+						a.setError("No IDE configured (set 'IDE Command' in settings)")
+						return a, nil
+					}
+					parts := splitIDECommand(ideCmd)
+					if len(parts) == 0 {
+						a.setError("No IDE configured (set 'IDE Command' in settings)")
+						return a, nil
+					}
+					worktreePath := sess.Worktree.Path
+					exe := parts[0]
+					args := append(parts[1:], worktreePath)
+					go func() {
+						cmd := exec.Command(exe, args...)
+						cmd.Dir = worktreePath
+						_ = cmd.Start()
+					}()
+				}
+				return a, nil
+			}
+			// All other keys are no-ops in review panel.
+			return a, nil
+		}
+
 		// Focus-mode key handling (fullscreen pipeline view).
 		if a.focusModeActive && a.dashboard.panelFocus != focusReview {
 			switch msg.String() {
@@ -773,6 +845,24 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 						a.focusQueueIndex = 0
 						return a, a.fetchReviewDiffCmd(item.session)
 					}
+				}
+				return a, nil
+			case "r":
+				reviewItems := a.dashboard.reviewQueueSessions()
+				if len(reviewItems) == 0 {
+					return a, nil
+				}
+				idx := a.focusQueueIndex
+				if idx >= len(reviewItems) {
+					idx = len(reviewItems) - 1
+				}
+				sess := reviewItems[idx].session
+				sess.SetLifecyclePhase(agent.LifecycleInReview)
+				a.reviewSession = sess
+				a.dashboard.panelFocus = focusReview
+				// Fetch diff stats if not already cached.
+				if _, ok := a.reviewDiffCache[sess.ID]; !ok {
+					return a, a.fetchReviewDiffCmd(sess)
 				}
 				return a, nil
 			}
@@ -1747,6 +1837,10 @@ func (a App) View() tea.View {
 
 	switch a.view {
 	case ViewDashboard:
+		if a.dashboard.panelFocus == focusReview && a.reviewSession != nil {
+			entry := a.reviewDiffCache[a.reviewSession.ID]
+			return tea.NewView(renderReviewPanel(a.reviewSession, entry, a.width, a.height))
+		}
 		body := a.dashboard.View()
 		hints := dashboardHints
 		if a.focusModeActive && a.dashboard.panelFocus != focusReview {
@@ -1757,6 +1851,8 @@ func (a App) View() tea.View {
 			hints = focusTerminalHints
 		case focusConfig:
 			hints = repoConfigHints
+		case focusReview:
+			hints = focusReviewHints
 		}
 		// Prepend a break hint when focus mode is active and the session
 		// duration has exceeded the configured threshold.
