@@ -9,9 +9,9 @@ import (
 )
 
 const (
-	fieldFocusMode       = "Focus Mode"
-	fieldFocusSession    = "Focus Session (min)"
-	fieldMaxAgents       = "Max Concurrent Agents"
+	fieldFocusMode    = "Focus Mode"
+	fieldFocusSession = "Focus Session (min)"
+	fieldMaxAgents    = "Max Concurrent Agents"
 )
 
 // globalConfigSaveMsg is emitted when the global config form is saved.

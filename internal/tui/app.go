@@ -2088,11 +2088,11 @@ func (a *App) activeAgentCount() int {
 
 // wellnessLogEntry is the JSON structure written on session end.
 type wellnessLogEntry struct {
-	Date             string `json:"date"`
-	DurationMin      int    `json:"duration_min"`
-	AgentsCreated    int    `json:"agents_created"`
-	SessionsCreated  int    `json:"sessions_created"`
-	FocusSwitches    int    `json:"focus_switches"`
+	Date            string `json:"date"`
+	DurationMin     int    `json:"duration_min"`
+	AgentsCreated   int    `json:"agents_created"`
+	SessionsCreated int    `json:"sessions_created"`
+	FocusSwitches   int    `json:"focus_switches"`
 }
 
 // writeWellnessLog appends a single JSON line to <repoPath>/.baton/logs/wellness.log.

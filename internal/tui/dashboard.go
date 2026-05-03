@@ -743,7 +743,7 @@ func (d dashboardModel) renderFocusPanel(width int) string {
 	}
 	separator := StyleSubtle.Render(strings.Repeat("─", sepWidth))
 
-	var lines []string
+	lines := make([]string, 0, 8)
 	lines = append(lines, title, separator)
 
 	// Progress bar: sessionElapsed vs focusSessionMinutes.
