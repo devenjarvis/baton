@@ -27,7 +27,7 @@ type SessionState struct {
 	HasClaudeName  bool         `json:"hasClaudeName,omitempty"`
 	LifecyclePhase string       `json:"lifecyclePhase,omitempty"`
 	OriginalPrompt string       `json:"originalPrompt,omitempty"`
-	DoneAt         time.Time    `json:"doneAt,omitempty"`
+	DoneAt         *time.Time   `json:"doneAt,omitempty"`
 	Agents         []AgentState `json:"agents"`
 }
 

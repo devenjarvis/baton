@@ -37,6 +37,8 @@ func LifecyclePhaseFromString(s string) LifecyclePhase {
 	switch s {
 	case "planning":
 		return LifecyclePlanning
+	case "in_progress":
+		return LifecycleInProgress
 	case "ready_for_review":
 		return LifecycleReadyForReview
 	case "in_review":

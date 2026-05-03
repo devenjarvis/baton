@@ -204,6 +204,7 @@ func TestSaveCreatesBatonDir(t *testing.T) {
 func TestSessionState_LifecyclePersistence(t *testing.T) {
 	dir := t.TempDir()
 
+	doneAt := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
 	original := &BatonState{
 		Version: 1,
 		Sessions: []SessionState{
@@ -214,7 +215,7 @@ func TestSessionState_LifecyclePersistence(t *testing.T) {
 				Branch:         "main",
 				LifecyclePhase: "ready_for_review",
 				OriginalPrompt: "fix the auth bug",
-				DoneAt:         time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC),
+				DoneAt:         &doneAt,
 			},
 		},
 	}
@@ -238,7 +239,7 @@ func TestSessionState_LifecyclePersistence(t *testing.T) {
 	if s.OriginalPrompt != "fix the auth bug" {
 		t.Errorf("OriginalPrompt = %q, want %q", s.OriginalPrompt, "fix the auth bug")
 	}
-	if !s.DoneAt.Equal(time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)) {
+	if s.DoneAt == nil || !s.DoneAt.Equal(time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)) {
 		t.Errorf("DoneAt = %v, want 2026-05-03T12:00:00Z", s.DoneAt)
 	}
 }

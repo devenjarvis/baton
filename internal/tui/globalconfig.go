@@ -183,7 +183,7 @@ func (m globalConfigModel) extractSettings() *config.GlobalSettings {
 		}
 	}
 	if v := m.form.textValue(fieldMaxReview); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 { // 0 means "off"
 			s.MaxReviewBacklog = &n
 		}
 	}
