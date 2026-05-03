@@ -200,3 +200,69 @@ func TestSaveCreatesBatonDir(t *testing.T) {
 		t.Errorf("Version: got %d, want 1", loaded.Version)
 	}
 }
+
+func TestSessionState_LifecyclePersistence(t *testing.T) {
+	dir := t.TempDir()
+
+	original := &BatonState{
+		Version: 1,
+		Sessions: []SessionState{
+			{
+				ID:             "sess-1",
+				Name:           "test",
+				WorktreePath:   "/tmp/wt",
+				Branch:         "main",
+				LifecyclePhase: "ready_for_review",
+				OriginalPrompt: "fix the auth bug",
+				DoneAt:         time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC),
+			},
+		},
+	}
+
+	if err := Save(dir, original); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	loaded, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if len(loaded.Sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(loaded.Sessions))
+	}
+	s := loaded.Sessions[0]
+	if s.LifecyclePhase != "ready_for_review" {
+		t.Errorf("LifecyclePhase = %q, want %q", s.LifecyclePhase, "ready_for_review")
+	}
+	if s.OriginalPrompt != "fix the auth bug" {
+		t.Errorf("OriginalPrompt = %q, want %q", s.OriginalPrompt, "fix the auth bug")
+	}
+	if !s.DoneAt.Equal(time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)) {
+		t.Errorf("DoneAt = %v, want 2026-05-03T12:00:00Z", s.DoneAt)
+	}
+}
+
+func TestSessionState_BackwardsCompatibility(t *testing.T) {
+	// A state file without lifecycle fields should load with empty defaults.
+	dir := t.TempDir()
+	raw := `{"version":1,"savedAt":"2026-05-03T00:00:00Z","sessions":[{"id":"s1","name":"test","worktreePath":"/tmp","branch":"main","ownsBranch":true,"agents":[]}]}`
+	batonDir := filepath.Join(dir, ".baton")
+	if err := os.MkdirAll(batonDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(batonDir, "state.json"), []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(loaded.Sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(loaded.Sessions))
+	}
+	if loaded.Sessions[0].LifecyclePhase != "" {
+		// Empty string means InProgress when parsed — that's the zero value default.
+		t.Errorf("expected empty LifecyclePhase for backwards compat, got %q", loaded.Sessions[0].LifecyclePhase)
+	}
+}
