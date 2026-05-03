@@ -1639,3 +1639,98 @@ func TestSoftAgentLimitGuard(t *testing.T) {
 		t.Fatal("Expected newAgentPending cleared by non-n key press")
 	}
 }
+
+// TestClampToRepo verifies that clampToRepo always lands on a listItemRepo row.
+func TestClampToRepo(t *testing.T) {
+	sess := &agent.Session{Name: "s"}
+	ag := &agent.Agent{Name: "a"}
+
+	items := []listItem{
+		{kind: listItemRepo, repoPath: "/r1", repoName: "repo1"},         // 0
+		{kind: listItemSession, repoPath: "/r1", session: sess},          // 1
+		{kind: listItemAgent, repoPath: "/r1", session: sess, agent: ag}, // 2
+		{kind: listItemRepo, repoPath: "/r2", repoName: "repo2"},         // 3
+		{kind: listItemAgent, repoPath: "/r2", session: sess, agent: ag}, // 4
+	}
+
+	// Already on a repo row: no-op.
+	d := newDashboardModel()
+	d.items = items
+	d.selected = 0
+	d.clampToRepo()
+	if d.selected != 0 {
+		t.Fatalf("no-op case: expected 0, got %d", d.selected)
+	}
+
+	// On an agent row: should find the owning repo header above (backward search).
+	d.selected = 2
+	d.clampToRepo()
+	if d.selected != 0 {
+		t.Fatalf("agent in repo1: expected 0 (repo1 header), got %d", d.selected)
+	}
+
+	// On the session row: should find the repo header above.
+	d.selected = 1
+	d.clampToRepo()
+	if d.selected != 0 {
+		t.Fatalf("session row: expected 0 (repo1 header), got %d", d.selected)
+	}
+
+	// On agent in repo2 (index 4): repo2 header is at index 3, above.
+	d.selected = 4
+	d.clampToRepo()
+	if d.selected != 3 {
+		t.Fatalf("agent in repo2: expected 3 (repo2 header), got %d", d.selected)
+	}
+
+	// Out-of-range selected: should clamp down and then find a repo.
+	d.selected = 99
+	d.clampToRepo()
+	if d.items[d.selected].kind != listItemRepo {
+		t.Fatalf("out-of-range: expected listItemRepo, got kind=%d at selected=%d", d.items[d.selected].kind, d.selected)
+	}
+}
+
+// TestFocusModeNavigationOnlyLandsOnRepos verifies that j/k in focus mode only
+// move between listItemRepo rows, skipping sessions and agents entirely.
+func TestFocusModeNavigationOnlyLandsOnRepos(t *testing.T) {
+	sess := &agent.Session{Name: "s"}
+	ag := &agent.Agent{Name: "a"}
+
+	d := newDashboardModel()
+	d.width = 120
+	d.height = 39
+	d.focusModeActive = true
+	d.items = []listItem{
+		{kind: listItemRepo, repoPath: "/r1", repoName: "repo1"},         // 0
+		{kind: listItemSession, repoPath: "/r1", session: sess},          // 1
+		{kind: listItemAgent, repoPath: "/r1", session: sess, agent: ag}, // 2
+		{kind: listItemRepo, repoPath: "/r2", repoName: "repo2"},         // 3
+		{kind: listItemAgent, repoPath: "/r2", session: sess, agent: ag}, // 4
+	}
+	d.selected = 0
+
+	// j from repo1 should skip session and agent, land on repo2.
+	d, _ = d.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
+	if d.selected != 3 {
+		t.Fatalf("j from repo1: expected 3 (repo2), got %d", d.selected)
+	}
+
+	// j from repo2 (last repo): no-op, stays at 3.
+	d, _ = d.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
+	if d.selected != 3 {
+		t.Fatalf("j from last repo: expected 3 (no-op), got %d", d.selected)
+	}
+
+	// k from repo2 should land on repo1.
+	d, _ = d.Update(tea.KeyPressMsg{Code: 'k', Text: "k"})
+	if d.selected != 0 {
+		t.Fatalf("k from repo2: expected 0 (repo1), got %d", d.selected)
+	}
+
+	// k from repo1 (first repo): no-op, stays at 0.
+	d, _ = d.Update(tea.KeyPressMsg{Code: 'k', Text: "k"})
+	if d.selected != 0 {
+		t.Fatalf("k from first repo: expected 0 (no-op), got %d", d.selected)
+	}
+}

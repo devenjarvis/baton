@@ -292,7 +292,13 @@ func (d dashboardModel) Update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 		switch msg.String() {
 		case "j", "down":
 			for next := d.selected + 1; next < len(d.items); next++ {
-				if d.items[next].kind != listItemSession {
+				if d.focusModeActive {
+					if d.items[next].kind == listItemRepo {
+						d.selected = next
+						d.scrollOffset = 0
+						break
+					}
+				} else if d.items[next].kind != listItemSession {
 					d.selected = next
 					d.scrollOffset = 0
 					break
@@ -300,7 +306,13 @@ func (d dashboardModel) Update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 			}
 		case "k", "up":
 			for next := d.selected - 1; next >= 0; next-- {
-				if d.items[next].kind != listItemSession {
+				if d.focusModeActive {
+					if d.items[next].kind == listItemRepo {
+						d.selected = next
+						d.scrollOffset = 0
+						break
+					}
+				} else if d.items[next].kind != listItemSession {
 					d.selected = next
 					d.scrollOffset = 0
 					break
@@ -835,6 +847,73 @@ func (d dashboardModel) renderFocusPanel(width int) string {
 	}
 	lines = append(lines, statusLine)
 
+	// Compact per-repo summary list.
+	type repoCounts struct {
+		index   int // index into d.items for this repo's listItemRepo
+		name    string
+		running int
+		waiting int
+		done    int
+		errC    int
+	}
+	var repos []repoCounts
+	repoIdx := -1
+	for i, item := range d.items {
+		switch item.kind {
+		case listItemRepo:
+			repos = append(repos, repoCounts{index: i, name: item.repoName})
+			repoIdx = len(repos) - 1
+		case listItemAgent:
+			if repoIdx < 0 || item.agent == nil || item.agent.IsShell {
+				continue
+			}
+			switch item.agent.Status() {
+			case agent.StatusActive:
+				repos[repoIdx].running++
+			case agent.StatusWaiting:
+				repos[repoIdx].waiting++
+			case agent.StatusDone:
+				repos[repoIdx].done++
+			case agent.StatusError:
+				repos[repoIdx].errC++
+			}
+		}
+	}
+	for _, rc := range repos {
+		cursor := " "
+		if d.selected == rc.index {
+			cursor = ">"
+		}
+		var counts string
+		if rc.running > 0 {
+			counts += lipgloss.NewStyle().Foreground(ColorSecondary).Render(fmt.Sprintf("● %d", rc.running)) + " "
+		}
+		if rc.waiting > 0 {
+			counts += lipgloss.NewStyle().Foreground(ColorWaiting).Render(fmt.Sprintf("⏸ %d", rc.waiting)) + " "
+		}
+		if rc.done > 0 {
+			counts += lipgloss.NewStyle().Foreground(ColorSuccess).Render(fmt.Sprintf("✓ %d", rc.done)) + " "
+		}
+		if rc.errC > 0 {
+			counts += lipgloss.NewStyle().Foreground(ColorError).Render(fmt.Sprintf("✗ %d", rc.errC)) + " "
+		}
+		counts = strings.TrimRight(counts, " ")
+		countsWidth := ansi.StringWidth(counts)
+		nameWidth := width - 2 - 1 - countsWidth // border(2) + cursor(1)
+		if countsWidth > 0 {
+			nameWidth-- // space between name and counts
+		}
+		if nameWidth < 4 {
+			nameWidth = 4
+		}
+		name := truncateVisible(rc.name, nameWidth)
+		row := cursor + " " + name
+		if countsWidth > 0 {
+			row += " " + counts
+		}
+		lines = append(lines, row)
+	}
+
 	// Attention rows: agents needing input (Waiting or Error).
 	for _, item := range d.items {
 		if item.kind != listItemAgent || item.agent == nil || item.agent.IsShell {
@@ -884,7 +963,11 @@ func (d dashboardModel) renderFocusPanel(width int) string {
 
 	// Pad to content height before adding bottom hint.
 	contentH := d.contentHeight()
-	hintLine := StyleSubtle.Render("f review   n new agent")
+	hintText := "f review   n new agent"
+	if d.selected >= 0 && d.selected < len(d.items) && d.items[d.selected].kind == listItemRepo {
+		hintText = "f review   n new agent in " + d.items[d.selected].repoName
+	}
+	hintLine := StyleSubtle.Render(hintText)
 	for len(lines) < contentH-1 {
 		lines = append(lines, "")
 	}
@@ -1099,6 +1182,37 @@ func (d dashboardModel) selectedRepoPath() string {
 		return ""
 	}
 	return item.repoPath
+}
+
+// clampToRepo adjusts selected to the nearest listItemRepo row.
+// Searches backward first (repo headers appear above their agents), then forward.
+func (d *dashboardModel) clampToRepo() {
+	if len(d.items) == 0 {
+		return
+	}
+	if d.selected >= len(d.items) {
+		d.selected = len(d.items) - 1
+	}
+	if d.selected < 0 {
+		d.selected = 0
+	}
+	if d.items[d.selected].kind == listItemRepo {
+		return
+	}
+	// Search backward first: repo headers appear above their agents.
+	for i := d.selected - 1; i >= 0; i-- {
+		if d.items[i].kind == listItemRepo {
+			d.selected = i
+			return
+		}
+	}
+	// Fall forward if no repo header above (shouldn't happen in a valid list).
+	for i := d.selected + 1; i < len(d.items); i++ {
+		if d.items[i].kind == listItemRepo {
+			d.selected = i
+			return
+		}
+	}
 }
 
 // clampToAgent adjusts selected to the nearest non-session row.
