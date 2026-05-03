@@ -634,3 +634,46 @@ func TestAddAgentDefaultAssignsUniqueName(t *testing.T) {
 		t.Errorf("explicit name should be preserved, got %q", ag3.Name)
 	}
 }
+
+func TestSession_LifecyclePhase_DefaultIsInProgress(t *testing.T) {
+	s := newSession("id", "name", &git.WorktreeInfo{})
+	if got := s.LifecyclePhase(); got != LifecycleInProgress {
+		t.Errorf("default LifecyclePhase = %v, want LifecycleInProgress", got)
+	}
+}
+
+func TestSession_SetLifecyclePhase(t *testing.T) {
+	s := newSession("id", "name", &git.WorktreeInfo{})
+	s.SetLifecyclePhase(LifecycleReadyForReview)
+	if got := s.LifecyclePhase(); got != LifecycleReadyForReview {
+		t.Errorf("LifecyclePhase() = %v, want LifecycleReadyForReview", got)
+	}
+}
+
+func TestSession_OriginalPrompt_SetOnlyOnce(t *testing.T) {
+	s := newSession("id", "name", &git.WorktreeInfo{})
+	if s.OriginalPrompt() != "" {
+		t.Fatal("expected empty initial prompt")
+	}
+	s.SetOriginalPrompt("first prompt")
+	s.SetOriginalPrompt("second prompt") // must be ignored
+	if got := s.OriginalPrompt(); got != "first prompt" {
+		t.Errorf("OriginalPrompt() = %q, want %q", got, "first prompt")
+	}
+}
+
+func TestSession_MarkDone(t *testing.T) {
+	s := newSession("id", "name", &git.WorktreeInfo{})
+	if !s.DoneAt().IsZero() {
+		t.Fatal("expected zero DoneAt before MarkDone")
+	}
+	s.MarkDone()
+	if s.DoneAt().IsZero() {
+		t.Error("DoneAt should be set after MarkDone")
+	}
+	before := s.DoneAt()
+	s.MarkDone() // second call must be no-op
+	if s.DoneAt() != before {
+		t.Error("MarkDone called twice should not update timestamp")
+	}
+}
