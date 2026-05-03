@@ -1851,8 +1851,6 @@ func (a App) View() tea.View {
 			hints = focusTerminalHints
 		case focusConfig:
 			hints = repoConfigHints
-		case focusReview:
-			hints = focusReviewHints
 		}
 		// Prepend a break hint when focus mode is active and the session
 		// duration has exceeded the configured threshold.
