@@ -8,6 +8,12 @@ import (
 	"github.com/devenjarvis/baton/internal/config"
 )
 
+const (
+	fieldFocusMode    = "Focus Mode"
+	fieldFocusSession = "Focus Session (min)"
+	fieldMaxAgents    = "Max Concurrent Agents"
+)
+
 // globalConfigSaveMsg is emitted when the global config form is saved.
 type globalConfigSaveMsg struct {
 	settings *config.GlobalSettings
@@ -58,6 +64,19 @@ func newGlobalConfigModel(gs *config.GlobalSettings, width, height int) globalCo
 		sidebarWidth = strconv.Itoa(*gs.SidebarWidth)
 	}
 
+	focusModeEnabled := config.DefaultFocusModeEnabled
+	if gs.FocusModeEnabled != nil {
+		focusModeEnabled = *gs.FocusModeEnabled
+	}
+	focusSessionMinutes := ""
+	if gs.FocusSessionMinutes != nil {
+		focusSessionMinutes = strconv.Itoa(*gs.FocusSessionMinutes)
+	}
+	maxConcurrentAgents := ""
+	if gs.MaxConcurrentAgents != nil {
+		maxConcurrentAgents = strconv.Itoa(*gs.MaxConcurrentAgents)
+	}
+
 	inputWidth := 30
 
 	var fields []formField
@@ -68,6 +87,9 @@ func newGlobalConfigModel(gs *config.GlobalSettings, width, height int) globalCo
 	fields = addTextInput(fields, "Agent Program", agentProgram, config.DefaultAgentProgram, inputWidth)
 	fields = addEditorFields(fields, ideCommand, inputWidth)
 	fields = addTextInput(fields, "Sidebar Width", sidebarWidth, strconv.Itoa(config.DefaultSidebarWidth), inputWidth)
+	fields = addToggle(fields, fieldFocusMode, focusModeEnabled)
+	fields = addTextInput(fields, fieldFocusSession, focusSessionMinutes, strconv.Itoa(config.DefaultFocusSessionMinutes), inputWidth)
+	fields = addTextInput(fields, fieldMaxAgents, maxConcurrentAgents, strconv.Itoa(config.DefaultMaxConcurrentAgents), inputWidth)
 
 	return globalConfigModel{
 		form:   newConfigForm(fields, width),
@@ -138,6 +160,20 @@ func (m globalConfigModel) extractSettings() *config.GlobalSettings {
 		if n, err := strconv.Atoi(v); err == nil {
 			clamped := config.ClampSidebarWidth(n)
 			s.SidebarWidth = &clamped
+		}
+	}
+
+	focusMode := m.form.toggleValue(fieldFocusMode)
+	s.FocusModeEnabled = &focusMode
+
+	if v := m.form.textValue(fieldFocusSession); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			s.FocusSessionMinutes = &n
+		}
+	}
+	if v := m.form.textValue(fieldMaxAgents); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			s.MaxConcurrentAgents = &n
 		}
 	}
 

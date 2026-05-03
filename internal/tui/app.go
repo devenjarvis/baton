@@ -3,6 +3,8 @@ package tui
 import (
 	"bufio"
 	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -111,6 +113,18 @@ type App struct {
 	lastKnownStatus map[string]agent.Status
 	audioPlayer     *audio.Player
 
+	// Wellness / focus mode state.
+	focusModeActive     bool
+	sessionStart        time.Time
+	lastReviewAt        time.Time
+	newAgentPending     bool
+	focusSessionMinutes int // cached from resolved global settings
+
+	// Wellness counters (written to log on quit).
+	agentsCreatedCount   int
+	sessionsCreatedCount int
+	focusModeSwitches    int
+
 	// closingAgents and closingSessions track in-flight kill requests so the
 	// dashboard can render a "closing…" indicator while the async teardown runs.
 	// Lives in the TUI because it's purely a UI concern.
@@ -211,6 +225,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		a.cfg = msg.cfg
+		a.sessionStart = time.Now()
 
 		// Load global settings and run one-time migration.
 		globalSettings, err := config.LoadGlobalSettings()
@@ -220,7 +235,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.globalSettings = globalSettings
 			_ = config.MigrateBypassPermissions(a.cfg)
 		}
-		a.dashboard.sidebarWidth = config.Resolve(a.globalSettings, nil).SidebarWidth
+		resolved := config.Resolve(a.globalSettings, nil)
+		a.dashboard.sidebarWidth = resolved.SidebarWidth
+		a.focusModeActive = resolved.FocusModeEnabled
+		a.focusSessionMinutes = resolved.FocusSessionMinutes
 
 		// Load per-repo settings and build resolved cache.
 		for _, repo := range msg.cfg.Repos {
@@ -401,12 +419,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// (Claude needs user input). ChimedForTurn is the shared gate:
 			// whichever fires first in a turn wins, and the other is
 			// silently skipped. The flag resets on Enter or UserPromptSubmit.
+			// In focus mode, StatusIdle chimes are suppressed — only
+			// StatusWaiting (permission prompts) still fires.
 			if msg.event.Status == agent.StatusIdle || msg.event.Status == agent.StatusWaiting {
 				if mgr := a.managers[msg.repoPath]; mgr != nil {
 					if ag := mgr.Get(msg.event.AgentID); ag != nil && !ag.IsShell {
 						if ag.HasReceivedInput() && !ag.ChimedForTurn() {
 							resolved := a.resolvedCache[msg.repoPath]
-							if resolved.AudioEnabled && a.audioPlayer != nil {
+							chimeAllowed := !a.focusModeActive || msg.event.Status == agent.StatusWaiting
+							if resolved.AudioEnabled && a.audioPlayer != nil && chimeAllowed {
 								a.audioPlayer.Play()
 								ag.MarkChimedForTurn()
 							}
@@ -445,6 +466,21 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			a.setError(msg.err.Error())
 			return a, nil
+		}
+		a.agentsCreatedCount++
+		if msg.sessionID != "" && msg.agentID != "" {
+			// Count new sessions (agentID present means a session was also created).
+			// Distinguish new session (sessionID returned fresh from CreateSession)
+			// vs AddAgent (sessionID pre-existing) by checking if agentID is the
+			// first agent in the session.
+			if mgr := a.managers[a.activeRepo]; mgr != nil {
+				for _, sess := range mgr.ListSessions() {
+					if sess.ID == msg.sessionID && sess.AgentCount() == 1 {
+						a.sessionsCreatedCount++
+						break
+					}
+				}
+			}
 		}
 		a.refreshAgentList()
 		// Find the new agent by ID, select it, and auto-focus its terminal.
@@ -710,12 +746,28 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if a.audioPlayer != nil {
 				a.audioPlayer.Close()
 			}
+			a.writeWellnessLog()
 			return a, tea.Quit
 		default:
 			a.confirmQuit = false
 		}
 
+		// Clear the agent-limit pending flag on any key that isn't n.
+		if a.newAgentPending && msg.String() != "n" {
+			a.newAgentPending = false
+		}
+
 		switch msg.String() {
+		case "f":
+			// Toggle focus mode. When exiting focus mode (entering review),
+			// record the review time.
+			if a.focusModeActive {
+				a.lastReviewAt = time.Now()
+			}
+			a.focusModeActive = !a.focusModeActive
+			a.focusModeSwitches++
+			return a, nil
+
 		case "n":
 			// Create a new session in the repo of the currently selected item.
 			repoPath := a.dashboard.selectedRepoPath()
@@ -726,6 +778,21 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, nil
 			}
 			a.activeRepo = repoPath
+
+			// Soft agent-count guidance in focus mode.
+			if a.focusModeActive {
+				resolved := a.resolvedCache[repoPath]
+				if resolved.MaxConcurrentAgents > 0 && a.activeAgentCount() >= resolved.MaxConcurrentAgents {
+					if !a.newAgentPending {
+						a.newAgentPending = true
+						a.setError(fmt.Sprintf("n again to override — %d+ agents shown to reduce productivity", resolved.MaxConcurrentAgents))
+						return a, nil
+					}
+					// Second press: proceed, clear pending flag.
+					a.newAgentPending = false
+				}
+			}
+
 			fixedW := a.dashboard.fixedTermWidth()
 			fixedH := a.dashboard.fixedTermHeight()
 			if fixedW <= 0 || fixedH <= 0 {
@@ -1372,11 +1439,14 @@ func (a App) updateGlobalConfig(msg tea.Msg) (tea.Model, tea.Cmd) {
 				mgr.UpdateSettings(a.resolvedCache[repoPath])
 			}
 		}
-		newSidebarWidth := config.Resolve(a.globalSettings, nil).SidebarWidth
-		if newSidebarWidth != a.dashboard.sidebarWidth {
-			a.dashboard.sidebarWidth = newSidebarWidth
+		newResolved := config.Resolve(a.globalSettings, nil)
+		if newResolved.SidebarWidth != a.dashboard.sidebarWidth {
+			a.dashboard.sidebarWidth = newResolved.SidebarWidth
 			a.resizeAllForDashboard()
 		}
+		// Refresh wellness settings from updated global config.
+		a.focusSessionMinutes = newResolved.FocusSessionMinutes
+		a.focusModeActive = newResolved.FocusModeEnabled
 		a.view = ViewDashboard
 		return a, nil
 	case globalConfigCancelMsg:
@@ -1486,6 +1556,10 @@ func (a *App) forwardWheelToAgent(ag *agent.Agent, msg tea.MouseWheelMsg) {
 func (a *App) refreshAgentList() {
 	a.dashboard.closingAgents = a.closingAgents
 	a.dashboard.closingSessions = a.closingSessions
+	a.dashboard.focusModeActive = a.focusModeActive
+	a.dashboard.sessionElapsed = time.Since(a.sessionStart)
+	a.dashboard.lastReviewAt = a.lastReviewAt
+	a.dashboard.focusSessionMinutes = a.focusSessionMinutes
 	if a.cfg == nil {
 		// Fallback used in tests that set up managers directly without cfg.
 		if mgr := a.managers[a.activeRepo]; mgr != nil {
@@ -1585,6 +1659,18 @@ func (a App) View() tea.View {
 			hints = focusTerminalHints
 		case focusConfig:
 			hints = repoConfigHints
+		}
+		// Prepend a break hint when focus mode is active and the session
+		// duration has exceeded the configured threshold.
+		if a.focusModeActive && a.focusSessionMinutes > 0 {
+			elapsed := time.Since(a.sessionStart)
+			if elapsed >= time.Duration(a.focusSessionMinutes)*time.Minute {
+				breakHint := keyHint{
+					key:  "⌛",
+					desc: fmt.Sprintf("%dm — take a break before reviewing", a.focusSessionMinutes),
+				}
+				hints = append([]keyHint{breakHint}, hints...)
+			}
 		}
 		statusbar := renderStatusBar(hints, a.width)
 		content = lipgloss.JoinVertical(lipgloss.Left, body, statusbar)
@@ -1982,6 +2068,68 @@ func (a *App) refreshPRStatusForSession(sessionID, branch, repoPath, worktreePat
 			stack:     stack,
 		}
 	}
+}
+
+// activeAgentCount returns the count of live non-shell agents across all repos.
+// Used to enforce the soft concurrent-agent limit in focus mode.
+func (a *App) activeAgentCount() int {
+	count := 0
+	for _, mgr := range a.managers {
+		for _, sess := range mgr.ListSessions() {
+			for _, ag := range sess.Agents() {
+				if !ag.IsShell {
+					count++
+				}
+			}
+		}
+	}
+	return count
+}
+
+// wellnessLogEntry is the JSON structure written on session end.
+type wellnessLogEntry struct {
+	Date            string `json:"date"`
+	DurationMin     int    `json:"duration_min"`
+	AgentsCreated   int    `json:"agents_created"`
+	SessionsCreated int    `json:"sessions_created"`
+	FocusSwitches   int    `json:"focus_switches"`
+}
+
+// writeWellnessLog appends a single JSON line to <repoPath>/.baton/logs/wellness.log.
+// Best-effort: any error is silently dropped so it never blocks shutdown.
+func (a *App) writeWellnessLog() {
+	repoPath := a.activeRepo
+	if repoPath == "" && a.cfg != nil && len(a.cfg.Repos) > 0 {
+		repoPath = a.cfg.Repos[0].Path
+	}
+	if repoPath == "" {
+		return
+	}
+
+	logPath := filepath.Join(repoPath, ".baton", "logs", "wellness.log")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		return
+	}
+
+	elapsed := time.Since(a.sessionStart)
+	entry := wellnessLogEntry{
+		Date:            time.Now().UTC().Format(time.RFC3339),
+		DurationMin:     int(elapsed.Minutes()),
+		AgentsCreated:   a.agentsCreatedCount,
+		SessionsCreated: a.sessionsCreatedCount,
+		FocusSwitches:   a.focusModeSwitches,
+	}
+	data, err := json.Marshal(entry)
+	if err != nil {
+		return
+	}
+
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer func() { _ = f.Close() }()
+	_, _ = f.WriteString(string(data) + "\n")
 }
 
 // ensureGitignore adds .baton/ to .gitignore in the given path if not already present.

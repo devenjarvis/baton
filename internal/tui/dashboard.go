@@ -113,6 +113,12 @@ type dashboardModel struct {
 	closingAgents   map[string]bool            // keyed by agent ID, passed from App
 	closingSessions map[string]bool            // keyed by session ID, passed from App
 
+	// Focus mode state, synced from App on every refresh.
+	focusModeActive     bool
+	sessionElapsed      time.Duration
+	lastReviewAt        time.Time
+	focusSessionMinutes int
+
 	// prSectionY is the content-relative row index (0-indexed, after the AGENTS
 	// title and separator) where the PR checks summary begins, or -1 when absent.
 	prSectionY int
@@ -330,7 +336,12 @@ func (d dashboardModel) View() string {
 	listWidth := d.listWidth()
 	previewWidth := d.previewTermWidth()
 
-	list := d.renderList(listWidth)
+	var list string
+	if d.focusModeActive {
+		list = d.renderFocusPanel(listWidth)
+	} else {
+		list = d.renderList(listWidth)
+	}
 	preview := d.renderPreview(previewWidth)
 
 	listStyle := lipgloss.NewStyle().
@@ -717,6 +728,167 @@ func (d dashboardModel) renderList(width int) string {
 		}
 		lines = append(lines, bottomLines...)
 	}
+
+	return strings.Join(lines, "\n")
+}
+
+// renderFocusPanel renders the aggregate left panel shown in focus mode.
+// It shows session progress, status counts, waiting-agent attention rows,
+// last review time, and minimal key hints.
+func (d dashboardModel) renderFocusPanel(width int) string {
+	title := StyleTitle.Render("FOCUS")
+	sepWidth := width - 2
+	if sepWidth < 0 {
+		sepWidth = 0
+	}
+	separator := StyleSubtle.Render(strings.Repeat("─", sepWidth))
+
+	lines := make([]string, 0, 8)
+	lines = append(lines, title, separator)
+
+	// Progress bar: sessionElapsed vs focusSessionMinutes.
+	if d.focusSessionMinutes > 0 {
+		threshold := time.Duration(d.focusSessionMinutes) * time.Minute
+		elapsed := d.sessionElapsed
+		if elapsed > threshold {
+			elapsed = threshold
+		}
+		pct := float64(elapsed) / float64(threshold)
+		barWidth := width - 20
+		if barWidth < 5 {
+			barWidth = 5
+		}
+		filled := int(pct * float64(barWidth))
+		if filled > barWidth {
+			filled = barWidth
+		}
+		bar := strings.Repeat("=", filled)
+		if filled < barWidth {
+			bar += ">"
+			bar += strings.Repeat(" ", barWidth-filled-1)
+		}
+
+		elapsedMin := int(d.sessionElapsed.Minutes())
+		barStr := fmt.Sprintf("[%s] %dm / %dm", bar, elapsedMin, d.focusSessionMinutes)
+
+		var barStyle lipgloss.Style
+		switch {
+		case pct >= 1.0:
+			barStyle = lipgloss.NewStyle().Foreground(ColorError)
+		case pct >= 0.75:
+			barStyle = lipgloss.NewStyle().Foreground(ColorWarning)
+		default:
+			barStyle = lipgloss.NewStyle().Foreground(ColorMuted)
+		}
+		lines = append(lines, barStyle.Render(barStr))
+	}
+
+	// Status counts row.
+	var running, idle, done, waiting, errCount int
+	for _, item := range d.items {
+		if item.kind != listItemAgent || item.agent == nil || item.agent.IsShell {
+			continue
+		}
+		switch item.agent.Status() {
+		case agent.StatusActive:
+			running++
+		case agent.StatusIdle:
+			idle++
+		case agent.StatusDone:
+			done++
+		case agent.StatusWaiting:
+			waiting++
+		case agent.StatusError:
+			errCount++
+		}
+	}
+	statusLine := ""
+	if running > 0 {
+		statusLine += lipgloss.NewStyle().Foreground(ColorSecondary).Render(fmt.Sprintf("● %d running", running))
+	}
+	if waiting > 0 {
+		if statusLine != "" {
+			statusLine += "  "
+		}
+		statusLine += lipgloss.NewStyle().Foreground(ColorWaiting).Render(fmt.Sprintf("⏸ %d waiting", waiting))
+	}
+	if idle > 0 {
+		if statusLine != "" {
+			statusLine += "  "
+		}
+		statusLine += StyleSubtle.Render(fmt.Sprintf("⏸ %d idle", idle))
+	}
+	if done > 0 {
+		if statusLine != "" {
+			statusLine += "  "
+		}
+		statusLine += lipgloss.NewStyle().Foreground(ColorSuccess).Render(fmt.Sprintf("✓ %d done", done))
+	}
+	if errCount > 0 {
+		if statusLine != "" {
+			statusLine += "  "
+		}
+		statusLine += lipgloss.NewStyle().Foreground(ColorError).Render(fmt.Sprintf("✗ %d error", errCount))
+	}
+	if statusLine == "" {
+		statusLine = StyleSubtle.Render("no agents")
+	}
+	lines = append(lines, statusLine)
+
+	// Attention rows: agents needing input (Waiting or Error).
+	for _, item := range d.items {
+		if item.kind != listItemAgent || item.agent == nil || item.agent.IsShell {
+			continue
+		}
+		status := item.agent.Status()
+		if status != agent.StatusWaiting && status != agent.StatusError {
+			continue
+		}
+		label := item.agent.GetDisplayName()
+		if item.session != nil {
+			label = item.session.GetDisplayName()
+		}
+		var attnStyle lipgloss.Style
+		var attnSuffix string
+		if status == agent.StatusWaiting {
+			attnStyle = lipgloss.NewStyle().Foreground(ColorWaiting)
+			attnSuffix = "needs input"
+		} else {
+			attnStyle = lipgloss.NewStyle().Foreground(ColorError)
+			attnSuffix = "error"
+		}
+		nameWidth := width - 4 - len(attnSuffix)
+		if nameWidth < 4 {
+			nameWidth = 4
+		}
+		label = truncateVisible(label, nameWidth)
+		lines = append(lines, attnStyle.Render("⏺ "+label+"  "+attnSuffix))
+	}
+
+	// Last reviewed row.
+	if !d.lastReviewAt.IsZero() {
+		ago := time.Since(d.lastReviewAt)
+		var agoStr string
+		switch {
+		case ago < time.Minute:
+			agoStr = fmt.Sprintf("%ds ago", int(ago.Seconds()))
+		case ago < time.Hour:
+			agoStr = fmt.Sprintf("%dm ago", int(ago.Minutes()))
+		default:
+			agoStr = fmt.Sprintf("%dh ago", int(ago.Hours()))
+		}
+		lines = append(lines, StyleSubtle.Render("last review: "+agoStr))
+	} else {
+		lines = append(lines, StyleSubtle.Render("not yet reviewed"))
+	}
+
+	// Pad to content height before adding bottom hint.
+	contentH := d.contentHeight()
+	hintLine := StyleSubtle.Render("f review   n new agent")
+	for len(lines) < contentH-1 {
+		lines = append(lines, "")
+	}
+	lines = append(lines, hintLine)
 
 	return strings.Join(lines, "\n")
 }

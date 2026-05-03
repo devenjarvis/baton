@@ -21,6 +21,7 @@ var (
 		{"e", "open in IDE"},
 		{"p", "open PR"},
 		{"click PR#", "open"},
+		{"f", "focus mode"},
 		{"s", "settings"},
 		{"a", "add repo"},
 		{"o", "open branch"},

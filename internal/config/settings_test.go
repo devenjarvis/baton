@@ -478,3 +478,53 @@ func TestClampSidebarWidth(t *testing.T) {
 		t.Errorf("ClampSidebarWidth(35) = %d, want 35", got)
 	}
 }
+
+// ---- Wellness defaults ----
+
+func TestResolve_WellnessDefaults(t *testing.T) {
+	r := config.Resolve(nil, nil)
+
+	if r.FocusModeEnabled != config.DefaultFocusModeEnabled {
+		t.Errorf("FocusModeEnabled = %v, want %v", r.FocusModeEnabled, config.DefaultFocusModeEnabled)
+	}
+	if r.FocusSessionMinutes != config.DefaultFocusSessionMinutes {
+		t.Errorf("FocusSessionMinutes = %d, want %d", r.FocusSessionMinutes, config.DefaultFocusSessionMinutes)
+	}
+	if r.MaxConcurrentAgents != config.DefaultMaxConcurrentAgents {
+		t.Errorf("MaxConcurrentAgents = %d, want %d", r.MaxConcurrentAgents, config.DefaultMaxConcurrentAgents)
+	}
+}
+
+func TestResolve_WellnessGlobalOverride(t *testing.T) {
+	enabled := true
+	minutes := 60
+	maxAgents := 5
+	g := &config.GlobalSettings{
+		FocusModeEnabled:    &enabled,
+		FocusSessionMinutes: &minutes,
+		MaxConcurrentAgents: &maxAgents,
+	}
+	r := config.Resolve(g, nil)
+
+	if !r.FocusModeEnabled {
+		t.Error("FocusModeEnabled should be true (global override)")
+	}
+	if r.FocusSessionMinutes != 60 {
+		t.Errorf("FocusSessionMinutes = %d, want 60", r.FocusSessionMinutes)
+	}
+	if r.MaxConcurrentAgents != 5 {
+		t.Errorf("MaxConcurrentAgents = %d, want 5", r.MaxConcurrentAgents)
+	}
+}
+
+func TestResolve_WellnessNotInRepoSettings(t *testing.T) {
+	// Wellness fields are global-only; repo settings should not override them.
+	g := &config.GlobalSettings{
+		FocusSessionMinutes: intPtr(45),
+	}
+	// RepoSettings has no wellness fields by design.
+	r := config.Resolve(g, &config.RepoSettings{})
+	if r.FocusSessionMinutes != 45 {
+		t.Errorf("FocusSessionMinutes = %d, want 45 (from global)", r.FocusSessionMinutes)
+	}
+}
