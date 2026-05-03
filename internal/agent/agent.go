@@ -413,6 +413,7 @@ func (a *Agent) OnHookEvent(e hook.Event) (statusChanged bool) {
 		// Flag a clean exit for observability. Actual teardown still goes
 		// through the PTY close path (readLoop -> close(done)).
 		a.cleanExit = true
+		a.waitingReason = ""
 		return false
 
 	case hook.KindNotification:

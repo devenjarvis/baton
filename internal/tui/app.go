@@ -984,6 +984,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// record the review time.
 			if a.focusModeActive {
 				a.lastReviewAt = time.Now()
+				a.focusLaunchAgent = nil
 			}
 			a.focusModeActive = !a.focusModeActive
 			a.focusModeSwitches++
