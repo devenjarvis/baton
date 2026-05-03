@@ -528,3 +528,19 @@ func TestResolve_WellnessNotInRepoSettings(t *testing.T) {
 		t.Errorf("FocusSessionMinutes = %d, want 45 (from global)", r.FocusSessionMinutes)
 	}
 }
+
+func TestMaxReviewBacklog_Default(t *testing.T) {
+	resolved := config.Resolve(nil, nil)
+	if resolved.MaxReviewBacklog != config.DefaultMaxReviewBacklog {
+		t.Errorf("MaxReviewBacklog default = %d, want %d", resolved.MaxReviewBacklog, config.DefaultMaxReviewBacklog)
+	}
+}
+
+func TestMaxReviewBacklog_GlobalOverride(t *testing.T) {
+	two := 2
+	global := &config.GlobalSettings{MaxReviewBacklog: &two}
+	resolved := config.Resolve(global, nil)
+	if resolved.MaxReviewBacklog != 2 {
+		t.Errorf("MaxReviewBacklog = %d, want 2", resolved.MaxReviewBacklog)
+	}
+}
