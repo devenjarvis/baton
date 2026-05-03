@@ -19,6 +19,11 @@ const (
 	MinSidebarWidth          = 20
 	MaxSidebarWidth          = 60
 
+	// Wellness defaults.
+	DefaultFocusModeEnabled    = false
+	DefaultFocusSessionMinutes = 90
+	DefaultMaxConcurrentAgents = 3
+
 	// DefaultBranchNamePrompt is the instruction sent to Haiku to summarize
 	// the user's first prompt into a branch slug. Users can override via the
 	// branch_name_prompt key in global or per-repo config; the {prompt} token
@@ -48,6 +53,11 @@ type GlobalSettings struct {
 	AgentProgram      *string `json:"agent_program,omitempty"`
 	IDECommand        *string `json:"ide_command,omitempty"`
 	SidebarWidth      *int    `json:"sidebar_width,omitempty"`
+
+	// Wellness settings — global preferences, not per-repo.
+	FocusModeEnabled    *bool `json:"focus_mode_enabled,omitempty"`
+	FocusSessionMinutes *int  `json:"focus_session_minutes,omitempty"`
+	MaxConcurrentAgents *int  `json:"max_concurrent_agents,omitempty"`
 }
 
 // RepoSettings holds per-repo overrides stored at <repo>/.baton/config.json.
@@ -74,19 +84,27 @@ type ResolvedSettings struct {
 	IDECommand        string
 	WorktreeDir       string
 	SidebarWidth      int
+
+	// Wellness settings.
+	FocusModeEnabled    bool
+	FocusSessionMinutes int
+	MaxConcurrentAgents int
 }
 
 // Resolve merges global and repo settings over built-in defaults.
 // Global overrides defaults; repo overrides global.
 func Resolve(global *GlobalSettings, repo *RepoSettings) ResolvedSettings {
 	r := ResolvedSettings{
-		AudioEnabled:      DefaultAudioEnabled,
-		BypassPermissions: DefaultBypassPermissions,
-		BranchPrefix:      DefaultBranchPrefix,
-		BranchNamePrompt:  DefaultBranchNamePrompt,
-		AgentProgram:      DefaultAgentProgram,
-		WorktreeDir:       DefaultWorktreeDir,
-		SidebarWidth:      DefaultSidebarWidth,
+		AudioEnabled:        DefaultAudioEnabled,
+		BypassPermissions:   DefaultBypassPermissions,
+		BranchPrefix:        DefaultBranchPrefix,
+		BranchNamePrompt:    DefaultBranchNamePrompt,
+		AgentProgram:        DefaultAgentProgram,
+		WorktreeDir:         DefaultWorktreeDir,
+		SidebarWidth:        DefaultSidebarWidth,
+		FocusModeEnabled:    DefaultFocusModeEnabled,
+		FocusSessionMinutes: DefaultFocusSessionMinutes,
+		MaxConcurrentAgents: DefaultMaxConcurrentAgents,
 	}
 
 	if global != nil {
@@ -113,6 +131,15 @@ func Resolve(global *GlobalSettings, repo *RepoSettings) ResolvedSettings {
 		}
 		if global.SidebarWidth != nil {
 			r.SidebarWidth = ClampSidebarWidth(*global.SidebarWidth)
+		}
+		if global.FocusModeEnabled != nil {
+			r.FocusModeEnabled = *global.FocusModeEnabled
+		}
+		if global.FocusSessionMinutes != nil {
+			r.FocusSessionMinutes = *global.FocusSessionMinutes
+		}
+		if global.MaxConcurrentAgents != nil {
+			r.MaxConcurrentAgents = *global.MaxConcurrentAgents
 		}
 	}
 

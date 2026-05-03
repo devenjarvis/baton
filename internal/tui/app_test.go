@@ -8,7 +8,9 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	xvt "github.com/charmbracelet/x/vt"
 	"github.com/devenjarvis/baton/internal/agent"
+	"github.com/devenjarvis/baton/internal/audio"
 	"github.com/devenjarvis/baton/internal/config"
 )
 
@@ -1393,5 +1395,247 @@ func TestPreviewCursorHiddenWhenAgentHidesIt(t *testing.T) {
 	v := app.View()
 	if v.Cursor != nil {
 		t.Fatalf("expected view.Cursor nil when agent hid cursor, got %+v", v.Cursor)
+	}
+}
+
+// TestFocusModeToggle verifies that pressing 'f' toggles focusModeActive and
+// increments focusModeSwitches. Toggling off (focus→review) also sets lastReviewAt.
+func TestFocusModeToggle(t *testing.T) {
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+
+	if app.focusModeActive {
+		t.Fatal("Expected focusModeActive=false initially")
+	}
+
+	// First toggle: off → on.
+	model, _ := app.Update(tea.KeyPressMsg{Code: 'f', Text: "f"})
+	app = model.(App)
+	if !app.focusModeActive {
+		t.Fatal("Expected focusModeActive=true after first f press")
+	}
+	if app.focusModeSwitches != 1 {
+		t.Errorf("Expected focusModeSwitches=1, got %d", app.focusModeSwitches)
+	}
+	// lastReviewAt should not be set when entering focus mode.
+	if !app.lastReviewAt.IsZero() {
+		t.Error("Expected lastReviewAt unset when entering focus mode")
+	}
+
+	// Second toggle: on → off (entering review). lastReviewAt should be set.
+	model, _ = app.Update(tea.KeyPressMsg{Code: 'f', Text: "f"})
+	app = model.(App)
+	if app.focusModeActive {
+		t.Fatal("Expected focusModeActive=false after second f press")
+	}
+	if app.focusModeSwitches != 2 {
+		t.Errorf("Expected focusModeSwitches=2, got %d", app.focusModeSwitches)
+	}
+	if app.lastReviewAt.IsZero() {
+		t.Error("Expected lastReviewAt set when exiting focus mode (entering review)")
+	}
+}
+
+// TestFocusModeChimeSuppression verifies that in focus mode StatusIdle events
+// do not mark chime-for-turn, but StatusWaiting events still do.
+// When an audio player is available, the test asserts ChimedForTurn state
+// directly; otherwise it still validates the gate logic runs without error.
+func TestFocusModeChimeSuppression(t *testing.T) {
+	dir, err := os.MkdirTemp("", "baton-chime-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+
+	run := func(args ...string) {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("cmd %v: %v\n%s", args, err, out)
+		}
+	}
+	run("git", "init")
+	run("git", "config", "commit.gpgsign", "false")
+	run("git", "commit", "--allow-empty", "-m", "init")
+
+	mgr := agent.NewManager(dir, config.Resolve(nil, nil))
+	defer mgr.Shutdown()
+
+	sess, ag, err := mgr.CreateSessionWithCommand(agent.Config{
+		Name: "chime-test", Task: "test", RepoPath: dir, Rows: 24, Cols: 80,
+	}, func(_ string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 10")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate that the agent has received input, then reset ChimedForTurn so
+	// the gate logic can fire in the expected direction.
+	ag.SendKey(xvt.KeyPressEvent{Code: tea.KeyEnter})
+
+	resolved := config.Resolve(nil, nil)
+	resolved.AudioEnabled = true
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.managers[dir] = mgr
+	app.activeRepo = dir
+	app.resolvedCache[dir] = resolved
+	app.dashboard.items = []listItem{
+		{kind: listItemAgent, repoPath: dir, session: sess, agent: ag},
+	}
+
+	// Try to wire up a real audio player so MarkChimedForTurn() can actually
+	// fire. Best-effort — if the environment has no audio device the player
+	// will be nil and we fall back to the structural assertion below.
+	if p, playerErr := audio.NewPlayer(); playerErr == nil {
+		app.audioPlayer = p
+		defer p.Close()
+	}
+
+	app.focusModeActive = true
+
+	// Case 1: StatusIdle in focus mode — chime should be suppressed.
+	// Reset chimed flag by simulating Enter (which resets ChimedForTurn).
+	ag.SendKey(xvt.KeyPressEvent{Code: tea.KeyEnter})
+	idleEvent := agentEventMsg{
+		event: agent.Event{
+			Type:    agent.EventStatusChanged,
+			AgentID: ag.ID,
+			Status:  agent.StatusIdle,
+		},
+		repoPath: dir,
+	}
+	model, _ := app.Update(idleEvent)
+	app = model.(App)
+	if !app.focusModeActive {
+		t.Error("Expected focusModeActive unchanged after idle event")
+	}
+	if app.audioPlayer != nil && ag.ChimedForTurn() {
+		t.Error("Expected ChimedForTurn=false after idle event in focus mode (chime suppressed)")
+	}
+
+	// Case 2: StatusWaiting in focus mode — chime should fire.
+	ag.SendKey(xvt.KeyPressEvent{Code: tea.KeyEnter}) // reset ChimedForTurn
+	waitEvent := agentEventMsg{
+		event: agent.Event{
+			Type:    agent.EventStatusChanged,
+			AgentID: ag.ID,
+			Status:  agent.StatusWaiting,
+		},
+		repoPath: dir,
+	}
+	model, _ = app.Update(waitEvent)
+	app = model.(App)
+	if !app.focusModeActive {
+		t.Error("Expected focusModeActive unchanged after waiting event")
+	}
+	if app.audioPlayer != nil && !ag.ChimedForTurn() {
+		t.Error("Expected ChimedForTurn=true after waiting event in focus mode (chime allowed)")
+	}
+}
+
+// TestSoftAgentLimitGuard verifies the two-press 'n' guard in focus mode:
+// first press shows a warning and sets newAgentPending; second press proceeds.
+func TestSoftAgentLimitGuard(t *testing.T) {
+	requireClaude(t)
+	dir, err := os.MkdirTemp("", "baton-softlimit-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+
+	run := func(args ...string) {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("cmd %v: %v\n%s", args, err, out)
+		}
+	}
+	run("git", "init")
+	run("git", "config", "commit.gpgsign", "false")
+	run("git", "commit", "--allow-empty", "-m", "init")
+
+	mgr := agent.NewManager(dir, config.ResolvedSettings{
+		BypassPermissions:   true,
+		AgentProgram:        "claude",
+		MaxConcurrentAgents: 1, // limit to 1 so we hit it immediately
+	})
+	defer mgr.Shutdown()
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.managers[dir] = mgr
+	app.activeRepo = dir
+	app.resolvedCache[dir] = config.ResolvedSettings{
+		BypassPermissions:   true,
+		AgentProgram:        "claude",
+		MaxConcurrentAgents: 1,
+	}
+
+	// Create the first agent to reach the limit.
+	app = createAgent(t, app)
+	if app.err != "" {
+		t.Fatalf("Error creating first agent: %s", app.err)
+	}
+	if mgr.AgentCount() != 1 {
+		t.Fatalf("Expected 1 agent, got %d", mgr.AgentCount())
+	}
+
+	// Return to list focus so 'n' reaches the app-level handler.
+	model, _ := app.Update(tea.KeyPressMsg{Code: 'e', Mod: tea.ModCtrl})
+	app = model.(App)
+	if app.dashboard.panelFocus != focusList {
+		t.Fatalf("Expected focusList after ctrl+e, got %v", app.dashboard.panelFocus)
+	}
+
+	// Enable focus mode.
+	app.focusModeActive = true
+
+	// First 'n' press: should set newAgentPending and show error, not create agent.
+	model, cmd := app.Update(tea.KeyPressMsg{Code: 'n', Text: "n"})
+	app = model.(App)
+	if cmd != nil {
+		// If a cmd was returned, execute it to check if it created an agent.
+		// We don't expect this in the first press.
+		msg := cmd()
+		if _, ok := msg.(createResultMsg); ok {
+			t.Fatal("Expected no agent creation on first 'n' press at limit")
+		}
+	}
+	if !app.newAgentPending {
+		t.Fatal("Expected newAgentPending=true after first 'n' at limit")
+	}
+	if app.err == "" {
+		t.Fatal("Expected warning message after first 'n' at limit")
+	}
+
+	// Second 'n' press: should clear pending and proceed with creation.
+	model, cmd = app.Update(tea.KeyPressMsg{Code: 'n', Text: "n"})
+	app = model.(App)
+	if app.newAgentPending {
+		t.Fatal("Expected newAgentPending=false after second 'n'")
+	}
+	// cmd should be non-nil (agent creation is dispatched).
+	if cmd == nil {
+		t.Fatal("Expected non-nil cmd from second 'n' press (agent creation)")
+	}
+
+	// Any other key press should clear newAgentPending.
+	app.newAgentPending = true
+	model, _ = app.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
+	app = model.(App)
+	if app.newAgentPending {
+		t.Fatal("Expected newAgentPending cleared by non-n key press")
 	}
 }
