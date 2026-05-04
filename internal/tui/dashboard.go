@@ -118,12 +118,12 @@ type dashboardModel struct {
 	sessionElapsed      time.Duration
 	lastReviewAt        time.Time
 	focusSessionMinutes int
-	focusActiveIdx      int          // index of highlighted in-progress session row
-	focusQueueIndex     int          // index into ReadyForReview sessions in fullscreen focus mode
-	focusAttentionIdx   int          // index of highlighted waiting/error agent row
-	focusCursorSection  focusSection // which fullscreen-focus section the cursor is on
-	activeRepoName      string       // display name of the active repo
-	activeRepoPath      string       // canonical path of the active repo (for pipeline filtering)
+	focusActiveIdx      int            // index of highlighted in-progress session row
+	focusQueueIndex     int            // index into ReadyForReview sessions in fullscreen focus mode
+	focusAttentionIdx   int            // index of highlighted waiting/error agent row
+	focusCursorSection  focusSection   // which fullscreen-focus section the cursor is on
+	activeRepoName      string         // display name of the active repo
+	activeRepoPath      string         // canonical path of the active repo (for pipeline filtering)
 	focusLaunchAgent    *agent.Agent   // agent open in focusLaunch terminal; nil otherwise
 	focusLaunchSession  *agent.Session // session owning focusLaunchAgent; nil otherwise
 
