@@ -1989,3 +1989,73 @@ func TestClampFocusCursorHopsToNonEmptySection(t *testing.T) {
 		t.Fatalf("expected review index 0, got %d", app.focusQueueIndex)
 	}
 }
+
+// TestFocusModeResetsPanelFocus verifies that entering focus mode resets
+// panelFocus to focusList so that focus mode key handlers are reachable.
+// Reproduces the bug where panelFocus==focusReview with no reviewSession left
+// focus mode's j/k/m/r guard (`panelFocus != focusReview`) permanently false.
+func TestFocusModeResetsPanelFocus(t *testing.T) {
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+
+	// Simulate panelFocus==focusReview with a nil reviewSession (e.g. after the
+	// review was handled but panelFocus was not cleaned up). From this state the
+	// focusReview guard at the top of the key handler does NOT fire (it requires
+	// a non-nil reviewSession), so "f" falls through to the toggle handler.
+	app.dashboard.panelFocus = focusReview
+	app.reviewSession = nil
+
+	// Press "f" to enter focus mode.
+	model, _ := app.Update(tea.KeyPressMsg{Code: 'f', Text: "f"})
+	app = model.(App)
+
+	if !app.focusModeActive {
+		t.Fatal("expected focusModeActive=true after pressing f")
+	}
+	// Without the fix panelFocus would stay focusReview, making the focus-mode
+	// handler guard (`panelFocus != focusReview`) permanently false and blocking j/k/m/r.
+	if app.dashboard.panelFocus != focusList {
+		t.Errorf("expected panelFocus=focusList after entering focus mode, got %v", app.dashboard.panelFocus)
+	}
+}
+
+// TestFocusModeBlocksDKey verifies that pressing "d" in focus mode is a no-op
+// and does not delete repos or trigger the diff view.
+func TestFocusModeBlocksDKey(t *testing.T) {
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+
+	app.cfg = &config.Config{
+		Repos: []config.Repo{
+			{Path: "/repo1", Name: "repo1"},
+		},
+	}
+	app.dashboard.items = []listItem{
+		{kind: listItemRepo, repoPath: "/repo1", repoName: "repo1"},
+	}
+	app.dashboard.selected = 0
+
+	// Enter focus mode.
+	model, _ := app.Update(tea.KeyPressMsg{Code: 'f', Text: "f"})
+	app = model.(App)
+	if !app.focusModeActive {
+		t.Fatal("expected focusModeActive=true after pressing f")
+	}
+
+	// Press "d" in focus mode — should be a no-op.
+	model, _ = app.Update(tea.KeyPressMsg{Code: 'd', Text: "d"})
+	app = model.(App)
+
+	if len(app.cfg.Repos) != 1 {
+		t.Errorf("expected repo count=1 after d in focus mode, got %d", len(app.cfg.Repos))
+	}
+	if app.view != ViewDashboard {
+		t.Errorf("expected view=ViewDashboard after d in focus mode, got %v", app.view)
+	}
+}

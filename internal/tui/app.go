@@ -1009,6 +1009,8 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return a, a.fetchReviewDiffCmd(sess)
 				}
 				return a, nil
+			case "d":
+				return a, nil
 			case "n":
 				if a.cfg != nil && len(a.cfg.Repos) > 1 {
 					var options []string
@@ -1086,6 +1088,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.focusModeActive = !a.focusModeActive
 			a.focusModeSwitches++
 			if a.focusModeActive {
+				a.dashboard.panelFocus = focusList
 				a.dashboard.clampToRepo()
 				// Park the cursor on the first non-empty section so the
 				// selection marker is visible the moment focus mode opens,
