@@ -1683,8 +1683,8 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// (sidebar nav, esc, click on the list, etc.) drops it.
 	if a.dashboard.selection.active {
 		ag := a.dashboard.selectedAgent()
-		if !((a.dashboard.panelFocus == focusTerminal && ag != nil && ag.ID == a.dashboard.selection.agentID) ||
-			(a.dashboard.panelFocus == focusLaunch && a.focusLaunchAgent != nil && a.focusLaunchAgent.ID == a.dashboard.selection.agentID)) {
+		if (a.dashboard.panelFocus != focusTerminal || ag == nil || ag.ID != a.dashboard.selection.agentID) &&
+			(a.dashboard.panelFocus != focusLaunch || a.focusLaunchAgent == nil || a.focusLaunchAgent.ID != a.dashboard.selection.agentID) {
 			a.dashboard.clearSelection()
 		}
 	}
