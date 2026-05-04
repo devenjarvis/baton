@@ -121,6 +121,7 @@ type dashboardModel struct {
 	focusQueueIndex     int          // index into ReadyForReview sessions in fullscreen focus mode
 	focusAttentionIdx   int          // index of highlighted waiting/error agent row
 	activeRepoName      string       // display name of the active repo
+	activeRepoPath      string       // canonical path of the active repo (for pipeline filtering)
 	focusLaunchAgent    *agent.Agent // agent open in focusLaunch terminal; nil otherwise
 
 	// prSectionY is the content-relative row index (0-indexed, after the AGENTS
@@ -790,9 +791,15 @@ func (d dashboardModel) renderAttentionRows() []string {
 		if status != agent.StatusWaiting && status != agent.StatusError {
 			continue
 		}
-		label := item.agent.GetDisplayName()
+		agentName := item.agent.GetDisplayName()
+		label := agentName
 		if item.session != nil {
-			label = item.session.GetDisplayName()
+			sessName := item.session.GetDisplayName()
+			if sessName != agentName {
+				label = sessName + " › " + agentName
+			} else {
+				label = sessName
+			}
 		}
 		var style lipgloss.Style
 		if status == agent.StatusWaiting {
@@ -837,6 +844,9 @@ func (d dashboardModel) renderPipelineWidget(width int) string {
 		if item.kind != listItemSession || item.session == nil {
 			continue
 		}
+		if d.focusModeActive && d.activeRepoPath != "" && item.repoPath != d.activeRepoPath {
+			continue
+		}
 		switch item.session.LifecyclePhase() {
 		case agent.LifecycleInProgress:
 			inProgress++
@@ -849,14 +859,14 @@ func (d dashboardModel) renderPipelineWidget(width int) string {
 		}
 	}
 
-	cellWidth := (width - 6) / 4
-	if cellWidth < 12 {
-		cellWidth = 12
+	cellWidth := (width - 8) / 4
+	if cellWidth < 18 {
+		cellWidth = 18
 	}
 
 	cell := func(label string, count int, color lipgloss.Color, highlight bool) string {
 		cnt := lipgloss.NewStyle().Foreground(color).Bold(true).Render(fmt.Sprintf("%d", count))
-		lbl := StyleSubtle.Render(label)
+		lbl := StyleSubtle.Render(truncateVisible(label, cellWidth-2))
 		inner := fmt.Sprintf("%s\n%s", lbl, cnt)
 		style := lipgloss.NewStyle().Border(lipgloss.NormalBorder()).Padding(0, 1).Width(cellWidth)
 		if highlight {
@@ -952,6 +962,53 @@ func (d dashboardModel) renderFullscreenFocus(width, height int) string {
 	if d.activeRepoName != "" {
 		headerLine += "  " + StyleSubtle.Render("repo: "+d.activeRepoName)
 	}
+	// Cross-repo summary: collect repo names and per-repo agent status counts.
+	type repoStat struct {
+		name    string
+		path    string
+		active  int
+		waiting int
+	}
+	var repoOrder []string
+	repoStats := make(map[string]*repoStat)
+	for _, item := range d.items {
+		if item.kind == listItemRepo {
+			if _, ok := repoStats[item.repoPath]; !ok {
+				repoOrder = append(repoOrder, item.repoPath)
+				repoStats[item.repoPath] = &repoStat{name: item.repoName, path: item.repoPath}
+			}
+		} else if item.kind == listItemAgent && item.agent != nil && !item.agent.IsShell {
+			if rs, ok := repoStats[item.repoPath]; ok {
+				switch item.agent.Status() {
+				case agent.StatusActive:
+					rs.active++
+				case agent.StatusWaiting:
+					rs.waiting++
+				}
+			}
+		}
+	}
+	if len(repoOrder) > 1 {
+		var parts []string
+		for _, path := range repoOrder {
+			rs := repoStats[path]
+			var sym string
+			if rs.active > 0 {
+				sym = fmt.Sprintf("%d⚡", rs.active)
+			} else if rs.waiting > 0 {
+				sym = fmt.Sprintf("%d⏸", rs.waiting)
+			} else {
+				sym = "0"
+			}
+			entry := rs.name + "(" + sym + ")"
+			if path == d.activeRepoPath {
+				parts = append(parts, StyleActive.Render(entry))
+			} else {
+				parts = append(parts, StyleSubtle.Render(entry))
+			}
+		}
+		headerLine += "  " + strings.Join(parts, StyleSubtle.Render(" | "))
+	}
 	lines = append(lines, headerLine)
 	lines = append(lines, StyleSubtle.Render(strings.Repeat("─", width-2)))
 
@@ -983,6 +1040,11 @@ func (d dashboardModel) renderFullscreenFocus(width, height int) string {
 				cardStyle = StyleSubtle
 			}
 			line := cardStyle.Render(fmt.Sprintf("%s%s", prefix, name))
+			if prEntry := d.prCache[sess.ID]; prEntry != nil {
+				if ind := prIndicator(prEntry); ind != "" {
+					line += "  " + ind
+				}
+			}
 			if age != "" {
 				line += StyleSubtle.Render("  " + age)
 			}

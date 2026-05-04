@@ -123,6 +123,8 @@ type App struct {
 	focusAttentionIdx   int
 	focusLaunchAgent    *agent.Agent
 	focusBacklogWarning bool                        // first n at backlog limit shows warning; second proceeds
+	repoPickerActive    bool
+	repoPickerForm      *configForm
 	reviewDiffCache     map[string]*reviewDiffEntry // keyed by session ID
 	reviewSession       *agent.Session              // session currently open in review panel
 
@@ -859,6 +861,55 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 
+		// Repo picker overlay: intercept all keys when active.
+		if a.repoPickerActive && a.repoPickerForm != nil {
+			switch msg.String() {
+			case "enter":
+				selectedIdx := a.repoPickerForm.selectIndex("Repo")
+				a.repoPickerActive = false
+				a.repoPickerForm = nil
+				if a.cfg != nil && selectedIdx >= 0 && selectedIdx < len(a.cfg.Repos) {
+					a.activeRepo = a.cfg.Repos[selectedIdx].Path
+					a.refreshAgentList()
+				}
+				repoPath := a.activeRepo
+				if repoPath == "" {
+					return a, nil
+				}
+				fixedW := a.dashboard.fixedTermWidth()
+				fixedH := a.dashboard.fixedTermHeight()
+				if fixedW <= 0 || fixedH <= 0 {
+					a.setError("Terminal size not yet known; try again")
+					return a, nil
+				}
+				resolved := a.resolvedCache[repoPath]
+				mgr := a.managers[repoPath]
+				if mgr == nil {
+					return a, nil
+				}
+				pickerCfg := agent.Config{
+					Rows:              fixedH,
+					Cols:              fixedW,
+					BypassPermissions: resolved.BypassPermissions,
+					AgentProgram:      resolved.AgentProgram,
+				}
+				return a, func() tea.Msg {
+					sess, ag, err := mgr.CreateSession(pickerCfg)
+					if err != nil {
+						return createResultMsg{err: err}
+					}
+					return createResultMsg{sessionID: sess.ID, agentID: ag.ID}
+				}
+			case "esc":
+				a.repoPickerActive = false
+				a.repoPickerForm = nil
+				return a, nil
+			default:
+				cmd := a.repoPickerForm.Update(msg)
+				return a, cmd
+			}
+		}
+
 		// Focus-mode key handling (fullscreen pipeline view).
 		if a.focusModeActive && a.dashboard.panelFocus != focusReview {
 			switch msg.String() {
@@ -934,6 +985,28 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return a, a.fetchReviewDiffCmd(sess)
 				}
 				return a, nil
+			case "n":
+				if a.cfg != nil && len(a.cfg.Repos) > 1 {
+					var options []string
+					activeIdx := 0
+					for i, repo := range a.cfg.Repos {
+						options = append(options, repo.DisplayName())
+						if repo.Path == a.activeRepo {
+							activeIdx = i
+						}
+					}
+					fields := addSelect(nil, "Repo", options, activeIdx)
+					form := newConfigForm(fields, 40)
+					a.repoPickerActive = true
+					a.repoPickerForm = &form
+					return a, nil
+				}
+				// Single repo: exits this case without returning, so control
+				// continues past this switch to the general "n" handler below
+				// (which includes the agent-count / backlog soft-limit checks).
+				// Multi-repo path skips those checks intentionally: picker
+				// navigation clears the pending flags anyway, and the user's
+				// explicit repo selection signals clear intent.
 			}
 		}
 
@@ -1826,6 +1899,7 @@ func (a *App) refreshAgentList() {
 	a.dashboard.focusQueueIndex = a.focusQueueIndex
 	a.dashboard.focusAttentionIdx = a.focusAttentionIdx
 	a.dashboard.activeRepoName = a.activeRepoDisplayName()
+	a.dashboard.activeRepoPath = a.activeRepo
 	a.dashboard.focusLaunchAgent = a.focusLaunchAgent
 	if a.cfg == nil {
 		// Fallback used in tests that set up managers directly without cfg.
@@ -1960,6 +2034,28 @@ func (a App) View() tea.View {
 				}
 				hints = append([]keyHint{breakHint}, hints...)
 			}
+		}
+		// Repo picker overlay: replace body with centered picker when active.
+		if a.repoPickerActive && a.repoPickerForm != nil {
+			hints = repoPickerHints
+			pickerW := a.width / 2
+			if pickerW > 50 {
+				pickerW = 50
+			}
+			if pickerW < 30 {
+				pickerW = 30
+			}
+			overlayContent := lipgloss.JoinVertical(lipgloss.Left,
+				StyleTitle.Render("New session in..."),
+				"",
+				a.repoPickerForm.View(),
+			)
+			overlay := lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				Padding(0, 1).
+				Width(pickerW).
+				Render(overlayContent)
+			body = lipgloss.Place(a.width, a.height-1, lipgloss.Center, lipgloss.Center, overlay)
 		}
 		statusbar := renderStatusBar(hints, a.width)
 		content = lipgloss.JoinVertical(lipgloss.Left, body, statusbar)

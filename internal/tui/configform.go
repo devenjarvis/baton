@@ -261,3 +261,13 @@ func (f configForm) selectValue(label string) string {
 	}
 	return ""
 }
+
+// selectIndex returns the index of the currently selected option for a select field.
+func (f configForm) selectIndex(label string) int {
+	for _, field := range f.fields {
+		if field.label == label && field.kind == fieldSelect {
+			return field.selected
+		}
+	}
+	return 0
+}

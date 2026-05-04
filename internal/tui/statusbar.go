@@ -86,6 +86,12 @@ var (
 		{"f/esc", "back to focus"},
 		{"enter", "send"},
 	}
+
+	repoPickerHints = []keyHint{
+		{"←/→", "cycle repo"},
+		{"enter", "confirm"},
+		{"esc", "cancel"},
+	}
 )
 
 func renderStatusBar(hints []keyHint, width int) string {
