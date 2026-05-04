@@ -1071,7 +1071,6 @@ func (d dashboardModel) renderFullscreenFocus(width, height int) string {
 					idleCount++
 				}
 			}
-			summary := fmt.Sprintf("%d active, %d idle", activeCount, idleCount)
 			selected := d.focusCursorSection == focusSectionActive && i == d.focusActiveIdx
 			prefix := "  "
 			nameStyled := name
@@ -1079,7 +1078,13 @@ func (d dashboardModel) renderFullscreenFocus(width, height int) string {
 				prefix = StyleActive.Render("> ")
 				nameStyled = lipgloss.NewStyle().Foreground(ColorText).Bold(true).Render(name)
 			}
-			lines = append(lines, fmt.Sprintf("%s%s  %s", prefix, nameStyled, StyleSubtle.Render(summary)))
+			var summaryStyled string
+			if activeCount == 0 && idleCount > 0 {
+				summaryStyled = lipgloss.NewStyle().Foreground(ColorSuccess).Render("finished — awaiting prompt")
+			} else {
+				summaryStyled = StyleSubtle.Render(fmt.Sprintf("%d active, %d idle", activeCount, idleCount))
+			}
+			lines = append(lines, fmt.Sprintf("%s%s  %s", prefix, nameStyled, summaryStyled))
 		}
 		lines = append(lines, "")
 	}
