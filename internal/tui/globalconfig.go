@@ -129,7 +129,8 @@ func (m globalConfigModel) View() string {
 	title := StyleTitle.Render("Global Settings")
 	hint := StyleSubtle.Render("j/k navigate  ←/→ select  enter edit/toggle  ctrl+s save  esc cancel")
 
-	content := lipgloss.JoinVertical(lipgloss.Left,
+	content := lipgloss.JoinVertical(
+		lipgloss.Left,
 		title, "",
 		m.form.View(), "",
 		hint,

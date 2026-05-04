@@ -231,7 +231,8 @@ func applyHookEnv(cmd *exec.Cmd, cfg Config, agentID, socketPath string) {
 	if socketPath == "" || !supportsHooks(cfg) {
 		return
 	}
-	cmd.Env = append(cmd.Env,
+	cmd.Env = append(
+		cmd.Env,
 		"BATON_HOOK_SOCKET="+socketPath,
 		"BATON_AGENT_ID="+agentID,
 	)

@@ -141,7 +141,8 @@ func TestHookSubcommandForwards(t *testing.T) {
 			// Strip parent BATON_* env to avoid leaking outer baton session
 			// state into the test subprocess.
 			cleanEnv := envWithout(os.Environ(), "BATON_HOOK_SOCKET", "BATON_AGENT_ID")
-			cmd.Env = append(cleanEnv,
+			cmd.Env = append(
+				cleanEnv,
 				"BATON_HOOK_SOCKET="+socket,
 				"BATON_AGENT_ID=test-agent-42",
 			)

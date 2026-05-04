@@ -99,7 +99,8 @@ func newSession(t *testing.T) *Session {
 
 	// Write a minimal gitconfig in fake HOME (we redirect GIT_CONFIG_GLOBAL
 	// here in Start() to avoid picking up the developer's real ~/.gitconfig).
-	writeFile(t, filepath.Join(home, ".gitconfig"),
+	writeFile(
+		t, filepath.Join(home, ".gitconfig"),
 		"[user]\n\tname = e2e-test\n\temail = e2e@test.local\n[init]\n\tdefaultBranch = main\n",
 	)
 
@@ -178,7 +179,8 @@ func (s *Session) Start() {
 // WaitForText waits until the screen content matches the given regex.
 func (s *Session) WaitForText(pattern string, timeoutMs int) {
 	s.t.Helper()
-	cmd := exec.Command("tu", "wait",
+	cmd := exec.Command(
+		"tu", "wait",
 		"--name", s.name,
 		"--text", pattern,
 		"--timeout", fmt.Sprintf("%d", timeoutMs),
@@ -198,7 +200,8 @@ func (s *Session) WaitForText(pattern string, timeoutMs int) {
 // or content assertions for actual synchronization.
 func (s *Session) WaitStable(ms int) {
 	s.t.Helper()
-	cmd := exec.Command("tu", "wait",
+	cmd := exec.Command(
+		"tu", "wait",
 		"--name", s.name,
 		"--stable", fmt.Sprintf("%d", ms),
 		"--timeout", fmt.Sprintf("%d", ms+5000),
@@ -399,7 +402,8 @@ func runGit(t *testing.T, dir, home string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(
+		os.Environ(),
 		"HOME="+home,
 		"GIT_CONFIG_GLOBAL="+filepath.Join(home, ".gitconfig"),
 		"GIT_CONFIG_SYSTEM=/dev/null",

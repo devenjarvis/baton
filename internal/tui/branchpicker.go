@@ -252,7 +252,8 @@ func (m branchPickerModel) View() string {
 		Width(rightWidth).
 		Height(m.height)
 
-	return lipgloss.JoinHorizontal(lipgloss.Top,
+	return lipgloss.JoinHorizontal(
+		lipgloss.Top,
 		leftStyle.Render(left),
 		rightStyle.Render(right),
 	)
