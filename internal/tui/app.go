@@ -122,7 +122,7 @@ type App struct {
 	focusQueueIndex     int
 	focusAttentionIdx   int
 	focusLaunchAgent    *agent.Agent
-	focusBacklogWarning bool                        // first n at backlog limit shows warning; second proceeds
+	focusBacklogWarning bool // first n at backlog limit shows warning; second proceeds
 	repoPickerActive    bool
 	repoPickerForm      *configForm
 	reviewDiffCache     map[string]*reviewDiffEntry // keyed by session ID
