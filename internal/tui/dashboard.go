@@ -764,6 +764,18 @@ func (d dashboardModel) reviewQueueSessions() []listItem {
 	return result
 }
 
+// inProgressSessions returns listItems for sessions in InProgress phase with agents still running.
+func (d dashboardModel) inProgressSessions() []listItem {
+	var result []listItem
+	for _, item := range d.items {
+		if item.kind == listItemSession && item.session != nil &&
+			item.session.LifecyclePhase() == agent.LifecycleInProgress && item.session.DoneAt().IsZero() {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
 // attentionAgents returns agents in StatusWaiting or StatusError (non-shell only).
 func (d dashboardModel) attentionAgents() []*agent.Agent {
 	var result []*agent.Agent
@@ -1037,6 +1049,31 @@ func (d dashboardModel) renderFullscreenFocus(width, height int) string {
 	// Pipeline widget
 	lines = append(lines, d.renderPipelineWidget(width))
 	lines = append(lines, "")
+
+	// Active sessions
+	activeSessions := d.inProgressSessions()
+	if len(activeSessions) > 0 {
+		lines = append(lines, StyleSubtle.Render("ACTIVE"))
+		for _, item := range activeSessions {
+			sess := item.session
+			name := sess.GetDisplayName()
+			var activeCount, idleCount int
+			for _, ag := range d.items {
+				if ag.kind != listItemAgent || ag.agent == nil || ag.agent.IsShell || ag.session != sess {
+					continue
+				}
+				switch ag.agent.Status() {
+				case agent.StatusActive:
+					activeCount++
+				case agent.StatusIdle:
+					idleCount++
+				}
+			}
+			summary := fmt.Sprintf("%d active, %d idle", activeCount, idleCount)
+			lines = append(lines, fmt.Sprintf("  %s  %s", name, StyleSubtle.Render(summary)))
+		}
+		lines = append(lines, "")
+	}
 
 	// Review queue
 	reviewSessions := d.reviewQueueSessions()

@@ -531,7 +531,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Set initial dimensions before any output arrives. The alt-screen
 		// transition detector in the tick handler will fire a follow-up resize
 		// once Claude's TUI enters alternate screen mode.
-		a.resizeSelectedForDashboard()
+		// Skip the bulk resize when focusLaunch is active — the agent was already
+		// resized to fullscreen above and resizeSelectedForDashboard would shrink it.
+		if a.dashboard.panelFocus != focusLaunch {
+			a.resizeSelectedForDashboard()
+		}
 		return a, nil
 
 	case killResultMsg:
