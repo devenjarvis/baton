@@ -57,6 +57,12 @@ If you use Claude Code regularly, you've probably wanted to run multiple tasks a
 
 No tmux required. No context switching.
 
+Running three or more parallel agents creates real cognitive overhead that's easy to underestimate. BCG research (2026) found that developers managing more than roughly three concurrent agents experienced 33% more decision fatigue and made 39% more errors — a "brain fry" effect that compounds quickly as you add more threads. The instinct to spin up another agent is almost always right; the instinct to monitor all of them simultaneously is not.
+
+The design targets behind Baton come from two well-established findings: context-switch recovery takes on average 9.5 minutes, and deep work cycles around a 90-minute block. Every unnecessary interrupt — a glance at a stuck agent, a quick tab-switch to check output — drains from those budgets in ways that don't show up until you're staring at your screen at 4 pm wondering where the day went.
+
+Focus Mode is Baton's answer to that problem. It replaces the multi-agent dashboard with a pipeline view: one active terminal to drive, a review queue for sessions ready to merge, and an attention list for anything that needs a decision. You work in flow; Baton does the monitoring.
+
 ## Usage
 
 Run `baton` inside a git repository:
@@ -86,8 +92,9 @@ The first run auto-registers the current directory and adds `.baton/` to `.gitig
 | `x`       | Kill the selected agent                                    |
 | `X`       | Kill the selected agent's entire session                   |
 | `q`       | Detach and exit (prompts if agents are running)            |
+| `f`       | Toggle Focus Mode                                          |
 
-**Focus mode** (terminal preview focused):
+**Terminal preview** (terminal preview focused):
 
 | Key              | Action                                        |
 |------------------|-----------------------------------------------|
@@ -116,7 +123,7 @@ The first run auto-registers the current directory and adds `.baton/` to `.gitig
 | `esc`     | Back to summary   |
 | `q`       | Back to dashboard |
 
-Click support on the dashboard: click a row in the list to select it; click in the preview panel to enter focus mode.
+Click support on the dashboard: click a row in the list to select it; click in the preview panel to enter terminal preview.
 
 ### Branch naming
 
@@ -128,6 +135,29 @@ The prefix is configurable via `BranchPrefix` in global or per-repo settings, an
 - `{date}` — today's date in `YYYY-MM-DD`
 
 Unknown `{tokens}` are left literal. Example: `BranchPrefix: "{user}/"` produces `dj/add-dark-mode` after the first-prompt rename.
+
+### Focus Mode
+
+Focus Mode is a pipeline view that reduces cognitive overhead when managing parallel agents. Press `f` from the dashboard to activate it.
+
+| Key              | Action                                        |
+|------------------|-----------------------------------------------|
+| `j` / `k`        | Navigate between panels and agents            |
+| `n`              | New session                                   |
+| `space` / `⏎`   | Open agent terminal fullscreen                |
+| `N`              | Cycle to next repo                            |
+| `esc` / `ctrl+e` | Return to dashboard                           |
+| `shift+esc`      | Send ESC interrupt to agent                   |
+| `pgup` / `pgdn`  | Scroll terminal output                        |
+| `home`           | Jump to live output                           |
+
+Focus Mode is controlled by three config keys (global or per-repo settings):
+
+- `focus_mode_enabled` — enable Focus Mode (default: `false`)
+- `focus_session_minutes` — session block length in minutes (default: `90`)
+- `max_concurrent_agents` — soft cap on parallel agents (default: `3`)
+
+When `focus_session_minutes` elapses, Baton surfaces a break hint in the TUI and appends a session record to `.baton/logs/wellness.log`.
 
 ## How It Works
 
