@@ -118,7 +118,7 @@ type App struct {
 	sessionStart        time.Time
 	lastReviewAt        time.Time
 	newAgentPending     bool
-	focusSessionMinutes int // cached from resolved global settings
+	focusSessionMinutes int          // cached from resolved global settings
 	focusActiveIdx      int          // index into inProgressSessions
 	focusQueueIndex     int          // index into reviewQueueSessions
 	focusAttentionIdx   int          // index into attentionAgents
