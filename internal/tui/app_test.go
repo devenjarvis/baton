@@ -1772,3 +1772,220 @@ func TestFocusModeNavigationOnlyLandsOnRepos(t *testing.T) {
 		t.Fatalf("k from first repo: expected 0 (no-op), got %d", d.selected)
 	}
 }
+
+// makeFocusModeApp wires up an App in focus mode with two in-progress sessions
+// and one ready-for-review session, plus a single waiting agent. Used by the
+// tests below to exercise unified cursor navigation across the three sections.
+func makeFocusModeApp(t *testing.T) (App, *agent.Session, *agent.Session, *agent.Session) {
+	t.Helper()
+	sessA := &agent.Session{Name: "active-a"}
+	sessA.SetLifecyclePhase(agent.LifecycleInProgress)
+	sessB := &agent.Session{Name: "active-b"}
+	sessB.SetLifecyclePhase(agent.LifecycleInProgress)
+	sessR := &agent.Session{Name: "review-r"}
+	sessR.SetLifecyclePhase(agent.LifecycleReadyForReview)
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.focusModeActive = true
+	app.dashboard.focusModeActive = true
+	app.dashboard.items = []listItem{
+		{kind: listItemRepo, repoPath: "/r", repoName: "repo"},
+		{kind: listItemSession, repoPath: "/r", session: sessA},
+		{kind: listItemSession, repoPath: "/r", session: sessB},
+		{kind: listItemSession, repoPath: "/r", session: sessR},
+	}
+	return app, sessA, sessB, sessR
+}
+
+// TestFocusModeNavigationCrossesSections verifies that j/k in focus mode
+// traverses Active → Review → Attention in render order, transitioning between
+// sections at the boundaries instead of bouncing two indices in lockstep.
+func TestFocusModeNavigationCrossesSections(t *testing.T) {
+	app, _, _, _ := makeFocusModeApp(t)
+	if app.focusCursorSection != focusSectionActive {
+		// clampFocusCursor only runs from refreshAgentList; here we drive the
+		// state directly. Make the starting condition explicit.
+		app.focusCursorSection = focusSectionActive
+	}
+
+	// Start at active[0].
+	if app.focusActiveIdx != 0 || app.focusCursorSection != focusSectionActive {
+		t.Fatalf("expected start at active[0], got section=%v active=%d", app.focusCursorSection, app.focusActiveIdx)
+	}
+
+	// j: active[0] → active[1].
+	model, _ := app.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
+	app = model.(App)
+	if app.focusCursorSection != focusSectionActive || app.focusActiveIdx != 1 {
+		t.Fatalf("after 1st j: expected active[1], got section=%v active=%d", app.focusCursorSection, app.focusActiveIdx)
+	}
+
+	// j: active[1] (last) → review[0].
+	model, _ = app.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
+	app = model.(App)
+	if app.focusCursorSection != focusSectionReview || app.focusQueueIndex != 0 {
+		t.Fatalf("after 2nd j: expected review[0], got section=%v review=%d", app.focusCursorSection, app.focusQueueIndex)
+	}
+
+	// j: review[0] (last review, no attention) → no-op.
+	model, _ = app.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
+	app = model.(App)
+	if app.focusCursorSection != focusSectionReview || app.focusQueueIndex != 0 {
+		t.Fatalf("after 3rd j: expected review[0] (no-op), got section=%v review=%d", app.focusCursorSection, app.focusQueueIndex)
+	}
+
+	// k: review[0] → active[1].
+	model, _ = app.Update(tea.KeyPressMsg{Code: 'k', Text: "k"})
+	app = model.(App)
+	if app.focusCursorSection != focusSectionActive || app.focusActiveIdx != 1 {
+		t.Fatalf("after k from review: expected active[1], got section=%v active=%d", app.focusCursorSection, app.focusActiveIdx)
+	}
+
+	// Verify the dashboard model received the synced state immediately.
+	if app.dashboard.focusCursorSection != focusSectionActive || app.dashboard.focusActiveIdx != 1 {
+		t.Fatalf("dashboard not synced: section=%v active=%d", app.dashboard.focusCursorSection, app.dashboard.focusActiveIdx)
+	}
+}
+
+// TestFocusModeEnterOnActiveOpensFocusLaunch verifies that pressing enter
+// while the cursor is on an active session selects the first non-shell agent
+// in that session and switches to focusLaunch.
+func TestFocusModeEnterOnActiveOpensFocusLaunch(t *testing.T) {
+	requireClaude(t)
+	dir, err := os.MkdirTemp("", "baton-focus-active-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+
+	run := func(args ...string) {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("cmd %v: %v\n%s", args, err, out)
+		}
+	}
+	run("git", "init")
+	run("git", "config", "commit.gpgsign", "false")
+	run("git", "commit", "--allow-empty", "-m", "init")
+
+	mgr := agent.NewManager(dir, config.Resolve(nil, nil))
+	defer mgr.Shutdown()
+
+	sess, ag, err := mgr.CreateSessionWithCommand(agent.Config{
+		Name: "focus-active", Task: "test", RepoPath: dir, Rows: 24, Cols: 80,
+	}, func(_ string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 30")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.managers[dir] = mgr
+	app.activeRepo = dir
+	app.focusModeActive = true
+	app.dashboard.focusModeActive = true
+	app.dashboard.items = []listItem{
+		{kind: listItemRepo, repoPath: dir, repoName: "repo"},
+		{kind: listItemSession, repoPath: dir, session: sess},
+		{kind: listItemAgent, repoPath: dir, session: sess, agent: ag},
+	}
+	app.focusCursorSection = focusSectionActive
+	app.focusActiveIdx = 0
+
+	// Press enter on the active section: should jump into focusLaunch on ag.
+	model, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyEnter, Text: ""})
+	app = model.(App)
+	if app.dashboard.panelFocus != focusLaunch {
+		t.Fatalf("expected panelFocus=focusLaunch after enter on active, got %v", app.dashboard.panelFocus)
+	}
+	if app.focusLaunchAgent == nil || app.focusLaunchAgent.ID != ag.ID {
+		t.Fatalf("expected focusLaunchAgent=ag, got %v", app.focusLaunchAgent)
+	}
+}
+
+// TestFocusModeNavigationVisibleOnActiveOnly verifies that when only Active
+// rows exist (no review queue, no attention), j/k still move within the active
+// section and the dashboard sees the updated focusActiveIdx so the selection
+// marker can render. This is the bug the user reported: an invisible cursor.
+func TestFocusModeNavigationVisibleOnActiveOnly(t *testing.T) {
+	sessA := &agent.Session{Name: "active-a"}
+	sessA.SetLifecyclePhase(agent.LifecycleInProgress)
+	sessB := &agent.Session{Name: "active-b"}
+	sessB.SetLifecyclePhase(agent.LifecycleInProgress)
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.focusModeActive = true
+	app.dashboard.focusModeActive = true
+	app.dashboard.items = []listItem{
+		{kind: listItemRepo, repoPath: "/r", repoName: "repo"},
+		{kind: listItemSession, repoPath: "/r", session: sessA},
+		{kind: listItemSession, repoPath: "/r", session: sessB},
+	}
+	app.focusCursorSection = focusSectionActive
+
+	// j moves within active (active is the only non-empty section).
+	model, _ := app.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
+	app = model.(App)
+	if app.dashboard.focusActiveIdx != 1 {
+		t.Fatalf("expected dashboard.focusActiveIdx=1 after j, got %d", app.dashboard.focusActiveIdx)
+	}
+
+	// j again at the bottom: no-op (no other section to fall through to).
+	model, _ = app.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
+	app = model.(App)
+	if app.dashboard.focusActiveIdx != 1 {
+		t.Fatalf("expected dashboard.focusActiveIdx=1 (no-op at end), got %d", app.dashboard.focusActiveIdx)
+	}
+
+	// k moves back up.
+	model, _ = app.Update(tea.KeyPressMsg{Code: 'k', Text: "k"})
+	app = model.(App)
+	if app.dashboard.focusActiveIdx != 0 {
+		t.Fatalf("expected dashboard.focusActiveIdx=0 after k, got %d", app.dashboard.focusActiveIdx)
+	}
+}
+
+// TestClampFocusCursorHopsToNonEmptySection verifies that when the cursor's
+// section becomes empty (e.g. all in-progress sessions transition to ready),
+// clampFocusCursor moves the cursor to the next non-empty section so the
+// selection marker stays visible.
+func TestClampFocusCursorHopsToNonEmptySection(t *testing.T) {
+	sessR := &agent.Session{Name: "review-r"}
+	sessR.SetLifecyclePhase(agent.LifecycleReadyForReview)
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.focusModeActive = true
+	app.dashboard.focusModeActive = true
+	app.dashboard.items = []listItem{
+		{kind: listItemRepo, repoPath: "/r", repoName: "repo"},
+		{kind: listItemSession, repoPath: "/r", session: sessR},
+	}
+	app.focusCursorSection = focusSectionActive
+	app.focusActiveIdx = 0
+
+	app.clampFocusCursor()
+	if app.focusCursorSection != focusSectionReview {
+		t.Fatalf("expected hop to review section, got %v", app.focusCursorSection)
+	}
+	if app.focusQueueIndex != 0 {
+		t.Fatalf("expected review index 0, got %d", app.focusQueueIndex)
+	}
+}

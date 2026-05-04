@@ -118,8 +118,10 @@ type dashboardModel struct {
 	sessionElapsed      time.Duration
 	lastReviewAt        time.Time
 	focusSessionMinutes int
+	focusActiveIdx      int          // index of highlighted in-progress session row
 	focusQueueIndex     int          // index into ReadyForReview sessions in fullscreen focus mode
 	focusAttentionIdx   int          // index of highlighted waiting/error agent row
+	focusCursorSection  focusSection // which fullscreen-focus section the cursor is on
 	activeRepoName      string       // display name of the active repo
 	activeRepoPath      string       // canonical path of the active repo (for pipeline filtering)
 	focusLaunchAgent    *agent.Agent // agent open in focusLaunch terminal; nil otherwise
@@ -820,7 +822,7 @@ func (d dashboardModel) renderAttentionRows() []string {
 			style = lipgloss.NewStyle().Foreground(ColorError)
 		}
 		prefix := "  "
-		if idx == d.focusAttentionIdx {
+		if d.focusCursorSection == focusSectionAttention && idx == d.focusAttentionIdx {
 			prefix = "> "
 		}
 		line := style.Render(fmt.Sprintf("%s⏸ %s", prefix, label))
@@ -1054,7 +1056,7 @@ func (d dashboardModel) renderFullscreenFocus(width, height int) string {
 	activeSessions := d.inProgressSessions()
 	if len(activeSessions) > 0 {
 		lines = append(lines, StyleSubtle.Render("ACTIVE"))
-		for _, item := range activeSessions {
+		for i, item := range activeSessions {
 			sess := item.session
 			name := sess.GetDisplayName()
 			var activeCount, idleCount int
@@ -1070,7 +1072,14 @@ func (d dashboardModel) renderFullscreenFocus(width, height int) string {
 				}
 			}
 			summary := fmt.Sprintf("%d active, %d idle", activeCount, idleCount)
-			lines = append(lines, fmt.Sprintf("  %s  %s", name, StyleSubtle.Render(summary)))
+			selected := d.focusCursorSection == focusSectionActive && i == d.focusActiveIdx
+			prefix := "  "
+			nameStyled := name
+			if selected {
+				prefix = StyleActive.Render("> ")
+				nameStyled = lipgloss.NewStyle().Foreground(ColorText).Bold(true).Render(name)
+			}
+			lines = append(lines, fmt.Sprintf("%s%s  %s", prefix, nameStyled, StyleSubtle.Render(summary)))
 		}
 		lines = append(lines, "")
 	}
@@ -1081,7 +1090,7 @@ func (d dashboardModel) renderFullscreenFocus(width, height int) string {
 		lines = append(lines, StyleSubtle.Render("REVIEW QUEUE"))
 		for i, item := range reviewSessions {
 			sess := item.session
-			selected := i == d.focusQueueIndex
+			selected := d.focusCursorSection == focusSectionReview && i == d.focusQueueIndex
 			name := sess.GetDisplayName()
 			age := ""
 			if !sess.DoneAt().IsZero() {
