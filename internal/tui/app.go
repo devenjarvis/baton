@@ -2463,7 +2463,8 @@ func (a App) View() tea.View {
 			if pickerW < 30 {
 				pickerW = 30
 			}
-			overlayContent := lipgloss.JoinVertical(lipgloss.Left,
+			overlayContent := lipgloss.JoinVertical(
+				lipgloss.Left,
 				StyleTitle.Render("New session in..."),
 				"",
 				a.repoPickerForm.View(),

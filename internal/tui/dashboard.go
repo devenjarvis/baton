@@ -389,7 +389,8 @@ func (d dashboardModel) View() string {
 			BorderForeground(ColorSecondary)
 	}
 
-	out := lipgloss.JoinHorizontal(lipgloss.Top,
+	out := lipgloss.JoinHorizontal(
+		lipgloss.Top,
 		listStyle.Render(list),
 		previewStyle.Render(preview),
 	)
@@ -658,7 +659,8 @@ func (d dashboardModel) renderList(width int) string {
 				padName = 0
 			}
 
-			line := fmt.Sprintf("%s%s %s%s %s",
+			line := fmt.Sprintf(
+				"%s%s %s%s %s",
 				agentPrefix,
 				style.Render(symbol),
 				nameRendered,
@@ -860,7 +862,8 @@ func (d dashboardModel) renderPipelineWidget(width int) string {
 		return style.Render(inner)
 	}
 
-	return lipgloss.JoinHorizontal(lipgloss.Top,
+	return lipgloss.JoinHorizontal(
+		lipgloss.Top,
 		cell("IN PROGRESS", inProgress, lipgloss.Color("#7ec8e3"), false),
 		cell("READY TO REVIEW", readyForReview, ColorWarning, readyForReview > 0),
 		cell("IN REVIEW", inReview, lipgloss.Color("#9b7fdb"), false),
