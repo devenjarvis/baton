@@ -83,8 +83,11 @@ var (
 	}
 
 	focusLaunchHints = []keyHint{
-		{"f/esc", "back to focus"},
 		{"enter", "send"},
+		{"pgup/pgdn", "scroll"},
+		{"home", "live"},
+		{"esc", "back"},
+		{"⇧esc", "interrupt"},
 	}
 
 	repoPickerHints = []keyHint{
