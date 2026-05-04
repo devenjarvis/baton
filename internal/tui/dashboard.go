@@ -118,13 +118,14 @@ type dashboardModel struct {
 	sessionElapsed      time.Duration
 	lastReviewAt        time.Time
 	focusSessionMinutes int
-	focusActiveIdx      int          // index of highlighted in-progress session row
-	focusQueueIndex     int          // index into ReadyForReview sessions in fullscreen focus mode
-	focusAttentionIdx   int          // index of highlighted waiting/error agent row
-	focusCursorSection  focusSection // which fullscreen-focus section the cursor is on
-	activeRepoName      string       // display name of the active repo
-	activeRepoPath      string       // canonical path of the active repo (for pipeline filtering)
-	focusLaunchAgent    *agent.Agent // agent open in focusLaunch terminal; nil otherwise
+	focusActiveIdx      int            // index of highlighted in-progress session row
+	focusQueueIndex     int            // index into ReadyForReview sessions in fullscreen focus mode
+	focusAttentionIdx   int            // index of highlighted waiting/error agent row
+	focusCursorSection  focusSection   // which fullscreen-focus section the cursor is on
+	activeRepoName      string         // display name of the active repo
+	activeRepoPath      string         // canonical path of the active repo (for pipeline filtering)
+	focusLaunchAgent    *agent.Agent   // agent open in focusLaunch terminal; nil otherwise
+	focusLaunchSession  *agent.Session // session owning focusLaunchAgent; nil otherwise
 
 	// prSectionY is the content-relative row index (0-indexed, after the AGENTS
 	// title and separator) where the PR checks summary begins, or -1 when absent.
@@ -793,6 +794,19 @@ func (d dashboardModel) attentionAgents() []*agent.Agent {
 	return result
 }
 
+// sessionForAgent returns the session that owns ag, or nil if not found.
+func (d dashboardModel) sessionForAgent(ag *agent.Agent) *agent.Session {
+	if ag == nil {
+		return nil
+	}
+	for _, item := range d.items {
+		if item.kind == listItemAgent && item.agent != nil && item.agent.ID == ag.ID {
+			return item.session
+		}
+	}
+	return nil
+}
+
 // renderAttentionRows renders Waiting/Error agents with selection marker and waiting reason.
 func (d dashboardModel) renderAttentionRows() []string {
 	lines := make([]string, 0, len(d.items))
@@ -897,6 +911,54 @@ func (d dashboardModel) renderPipelineWidget(width int) string {
 	)
 }
 
+// focusLaunchTabDot returns the status indicator character for a tab.
+func focusLaunchTabDot(ag *agent.Agent) string {
+	switch ag.Status() {
+	case agent.StatusActive, agent.StatusWaiting:
+		return "●"
+	case agent.StatusError, agent.StatusDone:
+		return "×"
+	default:
+		return "○"
+	}
+}
+
+// focusLaunchTabText returns the plain (unstyled) text for a tab label,
+// used by both rendering and click-hit detection so they stay in sync.
+func focusLaunchTabText(ag *agent.Agent) string {
+	name := truncateVisible(ag.GetDisplayName(), 18)
+	return "[" + focusLaunchTabDot(ag) + " " + name + "]"
+}
+
+// renderFocusLaunchTabBar renders the tab strip row for focusLaunch. Returns
+// the styled tab bar string and, as side-data for click handling, the starting
+// column of each tab (returned to avoid duplicating layout math in App).
+func (d dashboardModel) renderFocusLaunchTabBar(width int) string {
+	if d.focusLaunchSession == nil || d.focusLaunchAgent == nil {
+		return ""
+	}
+	agents := d.focusLaunchSession.Agents()
+	if len(agents) == 0 {
+		return ""
+	}
+
+	var parts []string
+	for _, ag := range agents {
+		text := focusLaunchTabText(ag)
+		if ag.ID == d.focusLaunchAgent.ID {
+			parts = append(parts, StyleTitle.Render(text))
+		} else {
+			parts = append(parts, StyleSubtle.Render(text))
+		}
+	}
+	bar := strings.Join(parts, "  ")
+	// Truncate if it exceeds width (no wrapping).
+	if ansi.StringWidth(bar) > width {
+		bar = ansi.Truncate(bar, width, "")
+	}
+	return bar
+}
+
 // renderFocusLaunchView renders the "focus mode paused" view with a single agent terminal.
 func (d dashboardModel) renderFocusLaunchView(width, height int) string {
 	ag := d.focusLaunchAgent
@@ -905,21 +967,18 @@ func (d dashboardModel) renderFocusLaunchView(width, height int) string {
 	}
 
 	agentName := ag.GetDisplayName()
-	var sessionBranch string
-	for _, item := range d.items {
-		if item.kind == listItemAgent && item.agent == ag && item.session != nil {
-			sessionBranch = item.session.Branch()
-			break
-		}
-	}
 	headerParts := []string{fmt.Sprintf("agent: %s", agentName)}
-	if sessionBranch != "" {
-		headerParts = append(headerParts, fmt.Sprintf("branch: %s", sessionBranch))
+	if d.focusLaunchSession != nil {
+		if branch := d.focusLaunchSession.Branch(); branch != "" {
+			headerParts = append(headerParts, fmt.Sprintf("branch: %s", branch))
+		}
 	}
 	header := StyleSubtle.Render(strings.Join(headerParts, "  "))
 
+	tabBar := d.renderFocusLaunchTabBar(width)
+
 	vpWidth := width
-	vpHeight := height - 1
+	vpHeight := height - 2
 	var render string
 	if d.scrollOffset > 0 {
 		sbLines, viewport := ag.Snapshot(vpWidth, vpHeight)
@@ -952,7 +1011,10 @@ func (d dashboardModel) renderFocusLaunchView(width, height int) string {
 		render = ag.RenderPadded(vpWidth, vpHeight)
 	}
 
-	return header + "\n" + render
+	if tabBar == "" {
+		return header + "\n" + render
+	}
+	return header + "\n" + tabBar + "\n" + render
 }
 
 // renderFullscreenFocus renders the fullscreen pipeline view shown when focusModeActive is true.

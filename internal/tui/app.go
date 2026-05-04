@@ -16,6 +16,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	xvt "github.com/charmbracelet/x/vt"
 	"github.com/devenjarvis/baton/internal/agent"
 	"github.com/devenjarvis/baton/internal/audio"
@@ -124,6 +125,7 @@ type App struct {
 	focusAttentionIdx   int          // index into attentionAgents
 	focusCursorSection  focusSection // which section the focus-mode cursor is on
 	focusLaunchAgent    *agent.Agent
+	focusLaunchSession  *agent.Session
 	focusBacklogWarning bool // first n at backlog limit shows warning; second proceeds
 	repoPickerActive    bool
 	repoPickerForm      *configForm
@@ -229,7 +231,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.view == ViewDashboard {
 			a.resizeAllForDashboard()
 			if a.dashboard.panelFocus == focusLaunch && a.focusLaunchAgent != nil {
-				a.focusLaunchAgent.Resize(a.dashboard.height-1, a.dashboard.width)
+				a.focusLaunchAgent.Resize(a.focusLaunchTermHeight(), a.dashboard.width)
 			}
 		}
 
@@ -377,7 +379,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// to the fullscreen dimensions instead of shrinking it
 					// back to the preview size.
 					if a.focusLaunchAgent != nil && item.agent.ID == a.focusLaunchAgent.ID {
-						item.agent.Resize(a.dashboard.height-1, a.dashboard.width)
+						item.agent.Resize(a.focusLaunchTermHeight(), a.dashboard.width)
 					} else {
 						item.agent.Resize(fixedH, fixedW)
 					}
@@ -527,9 +529,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.dashboard.selected = i
 					if a.focusModeActive {
 						a.focusLaunchAgent = item.agent
+						a.focusLaunchSession = item.session
 						a.dashboard.panelFocus = focusLaunch
 						a.dashboard.scrollOffset = 0
-						item.agent.Resize(a.dashboard.height-1, a.dashboard.width)
+						item.agent.Resize(a.focusLaunchTermHeight(), a.dashboard.width)
 					} else {
 						a.dashboard.panelFocus = focusTerminal
 					}
@@ -557,6 +560,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Exit focusLaunch if the killed agent is the one being viewed.
 			if a.focusLaunchAgent != nil && a.focusLaunchAgent.ID == msg.agentID {
 				a.focusLaunchAgent = nil
+				a.focusLaunchSession = nil
 				a.dashboard.panelFocus = focusList
 				a.dashboard.scrollOffset = 0
 			}
@@ -567,6 +571,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				delete(a.lastKnownStatus, id)
 				if a.focusLaunchAgent != nil && a.focusLaunchAgent.ID == id {
 					a.focusLaunchAgent = nil
+					a.focusLaunchSession = nil
 					a.dashboard.panelFocus = focusList
 					a.dashboard.scrollOffset = 0
 				}
@@ -795,6 +800,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "esc", "ctrl+e":
 				a.resizeAgentForDashboard(a.focusLaunchAgent)
 				a.focusLaunchAgent = nil
+				a.focusLaunchSession = nil
 				a.dashboard.panelFocus = focusList
 				a.dashboard.scrollOffset = 0
 			case "shift+esc":
@@ -813,6 +819,64 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			case "home":
 				a.dashboard.scrollOffset = 0
+			case "super+]", "super+[":
+				if a.focusLaunchSession != nil {
+					agents := a.focusLaunchSession.Agents()
+					idx := 0
+					for i, ag := range agents {
+						if ag.ID == a.focusLaunchAgent.ID {
+							idx = i
+							break
+						}
+					}
+					if msg.String() == "super+]" {
+						idx = (idx + 1) % len(agents)
+					} else {
+						idx = (idx - 1 + len(agents)) % len(agents)
+					}
+					a.focusLaunchAgent = agents[idx]
+					a.dashboard.scrollOffset = 0
+					a.focusLaunchAgent.Resize(a.focusLaunchTermHeight(), a.dashboard.width)
+				}
+			case "super+j":
+				if a.focusLaunchSession != nil {
+					repoPath := a.repoPathForSession(a.focusLaunchSession.ID)
+					mgr := a.managers[repoPath]
+					if mgr != nil {
+						resolved := a.resolvedCache[repoPath]
+						cfg := agent.Config{
+							Rows:              a.focusLaunchTermHeight(),
+							Cols:              a.dashboard.width,
+							BypassPermissions: resolved.BypassPermissions,
+						}
+						if newAg, err := mgr.AddShell(a.focusLaunchSession.ID, cfg); err == nil {
+							a.focusLaunchAgent = newAg
+							a.dashboard.scrollOffset = 0
+						} else {
+							a.setError(err.Error())
+						}
+					}
+				}
+			case "super+a":
+				if a.focusLaunchSession != nil {
+					repoPath := a.repoPathForSession(a.focusLaunchSession.ID)
+					mgr := a.managers[repoPath]
+					if mgr != nil {
+						resolved := a.resolvedCache[repoPath]
+						cfg := agent.Config{
+							Rows:              a.focusLaunchTermHeight(),
+							Cols:              a.dashboard.width,
+							BypassPermissions: resolved.BypassPermissions,
+							AgentProgram:      resolved.AgentProgram,
+						}
+						if newAg, err := mgr.AddAgent(a.focusLaunchSession.ID, cfg); err == nil {
+							a.focusLaunchAgent = newAg
+							a.dashboard.scrollOffset = 0
+						} else {
+							a.setError(err.Error())
+						}
+					}
+				}
 			default:
 				if msg.Text != "" {
 					a.focusLaunchAgent.SendText(msg.Text)
@@ -1082,6 +1146,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if a.focusModeActive {
 				a.lastReviewAt = time.Now()
 				a.focusLaunchAgent = nil
+				a.focusLaunchSession = nil
 			}
 			a.focusModeActive = !a.focusModeActive
 			a.focusModeSwitches++
@@ -1439,6 +1504,20 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		a.confirmQuit = false
 		if msg.Button == tea.MouseLeft {
+			// focusLaunch tab bar click — handled before list/preview panel checks
+			// because focusLaunch is fullscreen and occupies all columns.
+			if a.dashboard.panelFocus == focusLaunch && a.focusLaunchSession != nil {
+				tabBarY := dashboardTopY + 1
+				if msg.Y == tabBarY {
+					if idx := a.focusLaunchTabIndexAt(msg.X); idx >= 0 {
+						agents := a.focusLaunchSession.Agents()
+						a.focusLaunchAgent = agents[idx]
+						a.dashboard.scrollOffset = 0
+						a.focusLaunchAgent.Resize(a.focusLaunchTermHeight(), a.dashboard.width)
+					}
+					return a, nil
+				}
+			}
 			if msg.X < 31 {
 				// List panel click — map Y to item index.
 				// Subtract 2 for the SESSIONS title row and separator row.
@@ -1577,7 +1656,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 						var text string
 						if a.dashboard.scrollOffset > 0 {
 							vpWidth := a.dashboard.width
-							vpHeight := a.dashboard.height - 1
+							vpHeight := a.focusLaunchTermHeight()
 							text = ag.ExtractTextFromSnapshot(vpWidth, vpHeight, a.dashboard.scrollOffset, rect)
 						} else {
 							text = ag.ExtractText(rect)
@@ -1610,8 +1689,8 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if termY < 0 {
 					termY = 0
 				}
-				if termY >= a.dashboard.height-1 {
-					termY = a.dashboard.height - 2
+				if termY >= a.focusLaunchTermHeight() {
+					termY = a.focusLaunchTermHeight() - 1
 				}
 				ag.SendMouse(xvt.MouseWheel{
 					X:      termX,
@@ -1986,6 +2065,32 @@ func (a *App) screenToTermCell(screenX, screenY int) (termX, termY int, inViewpo
 	return termX, termY, inViewport
 }
 
+// focusLaunchTermHeight returns the terminal height for the focusLaunch view,
+// accounting for the header row and the tab bar row.
+func (a *App) focusLaunchTermHeight() int {
+	return a.dashboard.height - 2
+}
+
+// focusLaunchTabIndexAt returns the agent index in focusLaunchSession for a
+// tab bar click at column x, or -1 if x doesn't land on any tab. Uses the same
+// label formula as renderFocusLaunchTabBar so click targets stay in sync.
+func (a *App) focusLaunchTabIndexAt(x int) int {
+	if a.focusLaunchSession == nil {
+		return -1
+	}
+	agents := a.focusLaunchSession.Agents()
+	col := 0
+	for i, ag := range agents {
+		label := focusLaunchTabText(ag)
+		w := ansi.StringWidth(label)
+		if x >= col && x < col+w {
+			return i
+		}
+		col += w + 2 // 2-space separator between tabs
+	}
+	return -1
+}
+
 // screenToTermCellFocusLaunch converts a screen-space mouse coordinate to a VT
 // cell coordinate for the fullscreen focusLaunch agent terminal.
 func (a *App) screenToTermCellFocusLaunch(screenX, screenY int) (termX, termY int, inViewport bool) {
@@ -1997,9 +2102,9 @@ func (a *App) screenToTermCellFocusLaunch(screenX, screenY int) (termX, termY in
 		dashboardTopY++
 	}
 	termX = screenX
-	termY = screenY - dashboardTopY - 1
+	termY = screenY - dashboardTopY - 2
 	w := a.dashboard.width
-	h := a.dashboard.height - 1
+	h := a.dashboard.height - 2
 	inViewport = termX >= 0 && termX < w && termY >= 0 && termY < h
 	return
 }
@@ -2045,6 +2150,7 @@ func (a *App) refreshAgentList() {
 	a.dashboard.activeRepoName = a.activeRepoDisplayName()
 	a.dashboard.activeRepoPath = a.activeRepo
 	a.dashboard.focusLaunchAgent = a.focusLaunchAgent
+	a.dashboard.focusLaunchSession = a.focusLaunchSession
 	if a.cfg == nil {
 		// Fallback used in tests that set up managers directly without cfg.
 		if mgr := a.managers[a.activeRepo]; mgr != nil {
@@ -2274,39 +2380,53 @@ func (a *App) activateFocusCursor() (tea.Cmd, bool) {
 			idx = len(attAgents) - 1
 		}
 		a.focusLaunchAgent = attAgents[idx]
+		a.focusLaunchSession = a.dashboard.sessionForAgent(a.focusLaunchAgent)
 		a.dashboard.panelFocus = focusLaunch
 		a.dashboard.scrollOffset = 0
-		a.focusLaunchAgent.Resize(a.dashboard.height-1, a.dashboard.width)
+		a.focusLaunchAgent.Resize(a.focusLaunchTermHeight(), a.dashboard.width)
 		return nil, true
 	}
 	return nil, false
 }
 
-// openSessionInFocusLaunch picks the first non-shell agent in sess and opens
-// it fullscreen in focusLaunch. Falls back to the first agent of any kind so
-// shell-only sessions remain reachable. Returns true if an agent was opened.
+// openSessionInFocusLaunch picks the most-active agent in sess and opens it
+// fullscreen in focusLaunch. Priority: Active > Waiting > Idle > Starting >
+// Done/Error. Falls back to agents[0] when all have equal priority.
 func (a *App) openSessionInFocusLaunch(sess *agent.Session) bool {
 	if sess == nil {
 		return false
 	}
 	agents := sess.Agents()
-	var target *agent.Agent
-	for _, ag := range agents {
-		if !ag.IsShell {
-			target = ag
-			break
-		}
-	}
-	if target == nil && len(agents) > 0 {
-		target = agents[0]
-	}
-	if target == nil {
+	if len(agents) == 0 {
 		return false
 	}
+	statusPriority := func(ag *agent.Agent) int {
+		switch ag.Status() {
+		case agent.StatusActive:
+			return 5
+		case agent.StatusWaiting:
+			return 4
+		case agent.StatusIdle:
+			return 3
+		case agent.StatusStarting:
+			return 2
+		default:
+			return 1
+		}
+	}
+	target := agents[0]
+	bestPri := statusPriority(agents[0])
+	for _, ag := range agents[1:] {
+		if pri := statusPriority(ag); pri > bestPri {
+			bestPri = pri
+			target = ag
+		}
+	}
 	a.focusLaunchAgent = target
+	a.focusLaunchSession = sess
 	a.dashboard.panelFocus = focusLaunch
 	a.dashboard.scrollOffset = 0
-	a.focusLaunchAgent.Resize(a.dashboard.height-1, a.dashboard.width)
+	a.focusLaunchAgent.Resize(a.focusLaunchTermHeight(), a.dashboard.width)
 	return true
 }
 
@@ -2466,7 +2586,7 @@ func (a App) View() tea.View {
 					dashboardTopY++
 				}
 				screenX := cursorX
-				screenY := cursorY + dashboardTopY + 1
+				screenY := cursorY + dashboardTopY + 2 // header row + tab bar row
 				v.Cursor = tea.NewCursor(screenX, screenY)
 			}
 		}
@@ -2539,6 +2659,9 @@ func (a *App) updateDashboardPRCache() {
 
 // repoPathForSession returns the repo path containing the given session, or "" if not found.
 func (a *App) repoPathForSession(sessionID string) string {
+	if a.cfg == nil {
+		return ""
+	}
 	for _, repo := range a.cfg.Repos {
 		mgr := a.managers[repo.Path]
 		if mgr == nil {
