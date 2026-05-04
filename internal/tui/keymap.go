@@ -21,3 +21,14 @@ const (
 	focusReview                     // preview: review panel (fullscreen focus mode)
 	focusLaunch                     // focus mode paused — viewing an agent terminal
 )
+
+// focusSection identifies which row group the fullscreen focus-mode cursor is
+// currently on. The cursor traverses Active → Review Queue → Attention in
+// render order, with j/k transitioning between sections at the boundaries.
+type focusSection int
+
+const (
+	focusSectionActive    focusSection = iota // in-progress sessions
+	focusSectionReview                        // ready-for-review sessions
+	focusSectionAttention                     // waiting/error agents
+)

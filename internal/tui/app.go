@@ -119,8 +119,10 @@ type App struct {
 	lastReviewAt        time.Time
 	newAgentPending     bool
 	focusSessionMinutes int // cached from resolved global settings
-	focusQueueIndex     int
-	focusAttentionIdx   int
+	focusActiveIdx      int          // index into inProgressSessions
+	focusQueueIndex     int          // index into reviewQueueSessions
+	focusAttentionIdx   int          // index into attentionAgents
+	focusCursorSection  focusSection // which section the focus-mode cursor is on
 	focusLaunchAgent    *agent.Agent
 	focusBacklogWarning bool // first n at backlog limit shows warning; second proceeds
 	repoPickerActive    bool
@@ -951,35 +953,18 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.focusModeActive && a.dashboard.panelFocus != focusReview {
 			switch msg.String() {
 			case "up", "k":
-				if a.focusQueueIndex > 0 {
-					a.focusQueueIndex--
-				}
-				if attAgents := a.dashboard.attentionAgents(); len(attAgents) > 0 && a.focusAttentionIdx > 0 {
-					a.focusAttentionIdx--
-				}
+				a.moveFocusCursorUp()
+				a.syncFocusCursorToDashboard()
 				return a, nil
 			case "down", "j":
-				if a.focusQueueIndex < len(a.dashboard.reviewQueueSessions())-1 {
-					a.focusQueueIndex++
-				}
-				if attAgents := a.dashboard.attentionAgents(); len(attAgents) > 0 && a.focusAttentionIdx < len(attAgents)-1 {
-					a.focusAttentionIdx++
-				}
+				a.moveFocusCursorDown()
+				a.syncFocusCursorToDashboard()
 				return a, nil
 			case "space", "enter":
-				attAgents := a.dashboard.attentionAgents()
-				if len(attAgents) > 0 {
-					idx := a.focusAttentionIdx
-					if idx >= len(attAgents) {
-						idx = len(attAgents) - 1
-					}
-					a.focusLaunchAgent = attAgents[idx]
-					a.dashboard.panelFocus = focusLaunch
-					a.dashboard.scrollOffset = 0
-					a.focusLaunchAgent.Resize(a.dashboard.height-1, a.dashboard.width)
-					return a, nil
+				if cmd, ok := a.activateFocusCursor(); ok {
+					return a, cmd
 				}
-				// No attention rows: fall through to normal enter handling.
+				// Cursor section had no actionable row: fall through to normal enter handling.
 			case "N":
 				if a.cfg != nil && len(a.cfg.Repos) > 0 {
 					currentIdx := -1
@@ -1102,6 +1087,12 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.focusModeSwitches++
 			if a.focusModeActive {
 				a.dashboard.clampToRepo()
+				// Park the cursor on the first non-empty section so the
+				// selection marker is visible the moment focus mode opens,
+				// rather than waiting for the next tick.
+				a.focusCursorSection = focusSectionActive
+				a.clampFocusCursor()
+				a.syncFocusCursorToDashboard()
 			}
 			return a, nil
 
@@ -2047,8 +2038,10 @@ func (a *App) refreshAgentList() {
 	a.dashboard.sessionElapsed = time.Since(a.sessionStart)
 	a.dashboard.lastReviewAt = a.lastReviewAt
 	a.dashboard.focusSessionMinutes = a.focusSessionMinutes
+	a.dashboard.focusActiveIdx = a.focusActiveIdx
 	a.dashboard.focusQueueIndex = a.focusQueueIndex
 	a.dashboard.focusAttentionIdx = a.focusAttentionIdx
+	a.dashboard.focusCursorSection = a.focusCursorSection
 	a.dashboard.activeRepoName = a.activeRepoDisplayName()
 	a.dashboard.activeRepoPath = a.activeRepo
 	a.dashboard.focusLaunchAgent = a.focusLaunchAgent
@@ -2142,14 +2135,215 @@ func (a *App) refreshAgentList() {
 			}
 		}
 	}
-	// Clamp focusAttentionIdx so the selection marker stays visible if agents
-	// leave the attention list (e.g. a permission prompt was just approved).
-	if n := len(a.dashboard.attentionAgents()); a.focusAttentionIdx >= n && n > 0 {
-		a.focusAttentionIdx = n - 1
-	} else if n == 0 {
-		a.focusAttentionIdx = 0
-	}
+	a.clampFocusCursor()
 	a.recomputePRSectionY()
+}
+
+// focusSectionCounts returns the number of rows in each fullscreen-focus section,
+// in the same order as the focusSection constants (active, review, attention).
+func (a *App) focusSectionCounts() (active, review, attention int) {
+	return len(a.dashboard.inProgressSessions()),
+		len(a.dashboard.reviewQueueSessions()),
+		len(a.dashboard.attentionAgents())
+}
+
+// clampFocusCursor keeps the per-section indices and the cursor section in
+// valid ranges as the underlying lists change (sessions transition phases,
+// agents leave the attention list, etc.). When the cursor's current section
+// becomes empty, it falls through to the next non-empty section in render
+// order so the cursor stays on a visible row.
+func (a *App) clampFocusCursor() {
+	actCount, revCount, attCount := a.focusSectionCounts()
+
+	clamp := func(idx, n int) int {
+		if n <= 0 {
+			return 0
+		}
+		if idx >= n {
+			return n - 1
+		}
+		if idx < 0 {
+			return 0
+		}
+		return idx
+	}
+	a.focusActiveIdx = clamp(a.focusActiveIdx, actCount)
+	a.focusQueueIndex = clamp(a.focusQueueIndex, revCount)
+	a.focusAttentionIdx = clamp(a.focusAttentionIdx, attCount)
+
+	counts := [3]int{actCount, revCount, attCount}
+	if counts[int(a.focusCursorSection)] > 0 {
+		return
+	}
+	for i, c := range counts {
+		if c > 0 {
+			a.focusCursorSection = focusSection(i)
+			return
+		}
+	}
+	a.focusCursorSection = focusSectionActive
+}
+
+// moveFocusCursorUp moves the fullscreen-focus cursor up one row. When at the
+// top of the current section, it transitions to the previous non-empty section.
+func (a *App) moveFocusCursorUp() {
+	actCount, revCount, _ := a.focusSectionCounts()
+
+	switch a.focusCursorSection {
+	case focusSectionActive:
+		if a.focusActiveIdx > 0 {
+			a.focusActiveIdx--
+		}
+	case focusSectionReview:
+		if a.focusQueueIndex > 0 {
+			a.focusQueueIndex--
+			return
+		}
+		if actCount > 0 {
+			a.focusCursorSection = focusSectionActive
+			a.focusActiveIdx = actCount - 1
+		}
+	case focusSectionAttention:
+		if a.focusAttentionIdx > 0 {
+			a.focusAttentionIdx--
+			return
+		}
+		if revCount > 0 {
+			a.focusCursorSection = focusSectionReview
+			a.focusQueueIndex = revCount - 1
+			return
+		}
+		if actCount > 0 {
+			a.focusCursorSection = focusSectionActive
+			a.focusActiveIdx = actCount - 1
+		}
+	}
+}
+
+// syncFocusCursorToDashboard mirrors the cursor-related App fields onto the
+// dashboard model so the next render reflects navigation immediately, without
+// waiting for the 100ms tick that drives refreshAgentList.
+func (a *App) syncFocusCursorToDashboard() {
+	a.dashboard.focusActiveIdx = a.focusActiveIdx
+	a.dashboard.focusQueueIndex = a.focusQueueIndex
+	a.dashboard.focusAttentionIdx = a.focusAttentionIdx
+	a.dashboard.focusCursorSection = a.focusCursorSection
+}
+
+// activateFocusCursor opens the row currently under the fullscreen-focus
+// cursor. Active sessions and attention agents jump into a focusLaunch
+// terminal; review-queue sessions open the review panel. Returns ok=false
+// when the cursor's section has no actionable row, so the caller can fall
+// through to other key handlers.
+func (a *App) activateFocusCursor() (tea.Cmd, bool) {
+	switch a.focusCursorSection {
+	case focusSectionActive:
+		sessions := a.dashboard.inProgressSessions()
+		if len(sessions) == 0 {
+			return nil, false
+		}
+		idx := a.focusActiveIdx
+		if idx >= len(sessions) {
+			idx = len(sessions) - 1
+		}
+		return nil, a.openSessionInFocusLaunch(sessions[idx].session)
+	case focusSectionReview:
+		reviewItems := a.dashboard.reviewQueueSessions()
+		if len(reviewItems) == 0 {
+			return nil, false
+		}
+		idx := a.focusQueueIndex
+		if idx >= len(reviewItems) {
+			idx = len(reviewItems) - 1
+		}
+		sess := reviewItems[idx].session
+		sess.SetLifecyclePhase(agent.LifecycleInReview)
+		a.reviewSession = sess
+		a.dashboard.panelFocus = focusReview
+		if _, ok := a.reviewDiffCache[sess.ID]; !ok {
+			return a.fetchReviewDiffCmd(sess), true
+		}
+		return nil, true
+	case focusSectionAttention:
+		attAgents := a.dashboard.attentionAgents()
+		if len(attAgents) == 0 {
+			return nil, false
+		}
+		idx := a.focusAttentionIdx
+		if idx >= len(attAgents) {
+			idx = len(attAgents) - 1
+		}
+		a.focusLaunchAgent = attAgents[idx]
+		a.dashboard.panelFocus = focusLaunch
+		a.dashboard.scrollOffset = 0
+		a.focusLaunchAgent.Resize(a.dashboard.height-1, a.dashboard.width)
+		return nil, true
+	}
+	return nil, false
+}
+
+// openSessionInFocusLaunch picks the first non-shell agent in sess and opens
+// it fullscreen in focusLaunch. Falls back to the first agent of any kind so
+// shell-only sessions remain reachable. Returns true if an agent was opened.
+func (a *App) openSessionInFocusLaunch(sess *agent.Session) bool {
+	if sess == nil {
+		return false
+	}
+	agents := sess.Agents()
+	var target *agent.Agent
+	for _, ag := range agents {
+		if !ag.IsShell {
+			target = ag
+			break
+		}
+	}
+	if target == nil && len(agents) > 0 {
+		target = agents[0]
+	}
+	if target == nil {
+		return false
+	}
+	a.focusLaunchAgent = target
+	a.dashboard.panelFocus = focusLaunch
+	a.dashboard.scrollOffset = 0
+	a.focusLaunchAgent.Resize(a.dashboard.height-1, a.dashboard.width)
+	return true
+}
+
+// moveFocusCursorDown moves the fullscreen-focus cursor down one row. When at
+// the bottom of the current section, it transitions to the next non-empty section.
+func (a *App) moveFocusCursorDown() {
+	actCount, revCount, attCount := a.focusSectionCounts()
+
+	switch a.focusCursorSection {
+	case focusSectionActive:
+		if a.focusActiveIdx < actCount-1 {
+			a.focusActiveIdx++
+			return
+		}
+		if revCount > 0 {
+			a.focusCursorSection = focusSectionReview
+			a.focusQueueIndex = 0
+			return
+		}
+		if attCount > 0 {
+			a.focusCursorSection = focusSectionAttention
+			a.focusAttentionIdx = 0
+		}
+	case focusSectionReview:
+		if a.focusQueueIndex < revCount-1 {
+			a.focusQueueIndex++
+			return
+		}
+		if attCount > 0 {
+			a.focusCursorSection = focusSectionAttention
+			a.focusAttentionIdx = 0
+		}
+	case focusSectionAttention:
+		if a.focusAttentionIdx < attCount-1 {
+			a.focusAttentionIdx++
+		}
+	}
 }
 
 func (a App) View() tea.View {

@@ -74,11 +74,12 @@ var (
 	}
 
 	focusModeHints = []keyHint{
+		{"j/k", "navigate"},
+		{"⏎", "open"},
 		{"m", "mark ready"},
 		{"r", "review"},
 		{"n", "new"},
 		{"N", "change repo"},
-		{"space", "interact"},
 		{"f", "exit focus"},
 	}
 
