@@ -890,8 +890,6 @@ func (d dashboardModel) renderFocusLaunchView(width, height int) string {
 		return d.renderFullscreenFocus(width, height)
 	}
 
-	banner := StyleWarning.Render("Focus mode paused — press f to return")
-
 	agentName := ag.GetDisplayName()
 	var sessionBranch string
 	for _, item := range d.items {
@@ -906,17 +904,41 @@ func (d dashboardModel) renderFocusLaunchView(width, height int) string {
 	}
 	header := StyleSubtle.Render(strings.Join(headerParts, "  "))
 
-	termWidth := d.fixedTermWidth()
-	if termWidth < 1 {
-		termWidth = width
-	}
-	termHeight := d.fixedTermHeight()
-	if termHeight < 1 {
-		termHeight = height - 2
-	}
-	render := ag.RenderPadded(termWidth, termHeight)
+	vpWidth := width
+	vpHeight := height - 1
+	var render string
+	if d.scrollOffset > 0 {
+		sbLines, viewport := ag.Snapshot(vpWidth, vpHeight)
+		vpLines := strings.Split(viewport, "\n")
+		allLines := append(sbLines, vpLines...)
 
-	return strings.Join([]string{banner, header, render}, "\n")
+		end := len(allLines) - d.scrollOffset
+		if end < 0 {
+			end = 0
+		}
+		start := end - vpHeight
+		if start < 0 {
+			start = 0
+		}
+		visibleLines := vt.PadLines(allLines[start:end], vpWidth)
+		if d.selection.active && d.selection.dragSeen && d.selection.agentID == ag.ID {
+			sx, sy, ex, ey, _ := d.selectionRect()
+			render = applySelectionHighlight(visibleLines, vt.SelectionRect{
+				StartX: sx, StartY: sy, EndX: ex, EndY: ey, Active: true,
+			})
+		} else {
+			render = strings.Join(visibleLines, "\n")
+		}
+	} else if d.selection.active && d.selection.dragSeen && d.selection.agentID == ag.ID {
+		sx, sy, ex, ey, _ := d.selectionRect()
+		render = ag.RenderPaddedWithSelection(vpWidth, vpHeight, vt.SelectionRect{
+			StartX: sx, StartY: sy, EndX: ex, EndY: ey, Active: true,
+		})
+	} else {
+		render = ag.RenderPadded(vpWidth, vpHeight)
+	}
+
+	return header + "\n" + render
 }
 
 // renderFullscreenFocus renders the fullscreen pipeline view shown when focusModeActive is true.

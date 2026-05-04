@@ -226,6 +226,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Resize agent terminals to match their current display container.
 		if a.view == ViewDashboard {
 			a.resizeAllForDashboard()
+			if a.dashboard.panelFocus == focusLaunch && a.focusLaunchAgent != nil {
+				a.focusLaunchAgent.Resize(a.dashboard.height-1, a.dashboard.width)
+			}
 		}
 
 	case initAppMsg:
@@ -516,6 +519,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if a.focusModeActive {
 						a.focusLaunchAgent = item.agent
 						a.dashboard.panelFocus = focusLaunch
+						a.dashboard.scrollOffset = 0
+						item.agent.Resize(a.dashboard.height-1, a.dashboard.width)
 					} else {
 						a.dashboard.panelFocus = focusTerminal
 					}
@@ -540,6 +545,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if a.focusLaunchAgent != nil && a.focusLaunchAgent.ID == msg.agentID {
 				a.focusLaunchAgent = nil
 				a.dashboard.panelFocus = focusList
+				a.dashboard.scrollOffset = 0
 			}
 		case killScopeSession:
 			delete(a.closingSessions, msg.sessionID)
@@ -549,6 +555,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if a.focusLaunchAgent != nil && a.focusLaunchAgent.ID == id {
 					a.focusLaunchAgent = nil
 					a.dashboard.panelFocus = focusList
+					a.dashboard.scrollOffset = 0
 				}
 			}
 			delete(a.diffStatsCache, msg.sessionID)
@@ -763,17 +770,36 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case tea.KeyPressMsg:
-		// focusLaunch: forward all keys to the launch agent; f/esc returns to focus pipeline.
+		// focusLaunch: forward all keys to the launch agent; esc/ctrl+e returns to focus pipeline.
 		if a.dashboard.panelFocus == focusLaunch {
 			a.confirmQuit = false
 			if a.focusLaunchAgent == nil {
 				a.dashboard.panelFocus = focusList
+				a.dashboard.scrollOffset = 0
 				return a, nil
 			}
 			switch msg.String() {
-			case "f", "esc":
+			case "esc", "ctrl+e":
+				a.resizeAgentForDashboard(a.focusLaunchAgent)
 				a.focusLaunchAgent = nil
 				a.dashboard.panelFocus = focusList
+				a.dashboard.scrollOffset = 0
+			case "shift+esc":
+				a.focusLaunchAgent.SendKey(xvt.KeyPressEvent{Code: tea.KeyEscape})
+			case "pgup":
+				sbLines := len(a.focusLaunchAgent.ScrollbackLines())
+				maxScroll := sbLines
+				a.dashboard.scrollOffset += a.dashboard.height / 2
+				if a.dashboard.scrollOffset > maxScroll {
+					a.dashboard.scrollOffset = maxScroll
+				}
+			case "pgdn":
+				a.dashboard.scrollOffset -= a.dashboard.height / 2
+				if a.dashboard.scrollOffset < 0 {
+					a.dashboard.scrollOffset = 0
+				}
+			case "home":
+				a.dashboard.scrollOffset = 0
 			default:
 				if msg.Text != "" {
 					a.focusLaunchAgent.SendText(msg.Text)
@@ -938,6 +964,8 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					a.focusLaunchAgent = attAgents[idx]
 					a.dashboard.panelFocus = focusLaunch
+					a.dashboard.scrollOffset = 0
+					a.focusLaunchAgent.Resize(a.dashboard.height-1, a.dashboard.width)
 					return a, nil
 				}
 				// No attention rows: fall through to normal enter handling.
@@ -1458,6 +1486,19 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 							a.dashboard.clearSelection()
 						}
 					}
+				} else if a.dashboard.panelFocus == focusLaunch && a.focusLaunchAgent != nil {
+					if termX, termY, inVP := a.screenToTermCellFocusLaunch(msg.X, msg.Y); inVP {
+						a.dashboard.selection = selection{
+							anchorX: termX,
+							anchorY: termY,
+							cursorX: termX,
+							cursorY: termY,
+							active:  true,
+							agentID: a.focusLaunchAgent.ID,
+						}
+					} else {
+						a.dashboard.clearSelection()
+					}
 				}
 			}
 		}
@@ -1470,25 +1511,34 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// that the user is dragging — bubbletea's MouseModeCellMotion gives
 		// us these while a button is down.
 		if a.dashboard.selection.active && msg.Button == tea.MouseLeft {
-			termX, termY, _ := a.screenToTermCell(msg.X, msg.Y)
-			if w := a.dashboard.fixedTermWidth(); w > 0 {
-				if termX < 0 {
-					termX = 0
-				} else if termX >= w {
-					termX = w - 1
+			if a.dashboard.panelFocus == focusLaunch && a.focusLaunchAgent != nil {
+				tx, ty, inVP := a.screenToTermCellFocusLaunch(msg.X, msg.Y)
+				if inVP {
+					a.dashboard.selection.cursorX = tx
+					a.dashboard.selection.cursorY = ty
+					a.dashboard.selection.dragSeen = true
 				}
-			}
-			if h := a.dashboard.fixedTermHeight(); h > 0 {
-				if termY < 0 {
-					termY = 0
-				} else if termY >= h {
-					termY = h - 1
+			} else {
+				termX, termY, _ := a.screenToTermCell(msg.X, msg.Y)
+				if w := a.dashboard.fixedTermWidth(); w > 0 {
+					if termX < 0 {
+						termX = 0
+					} else if termX >= w {
+						termX = w - 1
+					}
 				}
-			}
-			a.dashboard.selection.cursorX = termX
-			a.dashboard.selection.cursorY = termY
-			if termX != a.dashboard.selection.anchorX || termY != a.dashboard.selection.anchorY {
-				a.dashboard.selection.dragSeen = true
+				if h := a.dashboard.fixedTermHeight(); h > 0 {
+					if termY < 0 {
+						termY = 0
+					} else if termY >= h {
+						termY = h - 1
+					}
+				}
+				a.dashboard.selection.cursorX = termX
+				a.dashboard.selection.cursorY = termY
+				if termX != a.dashboard.selection.anchorX || termY != a.dashboard.selection.anchorY {
+					a.dashboard.selection.dragSeen = true
+				}
 			}
 		}
 		return a, nil
@@ -1516,6 +1566,24 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 							return a, tea.SetClipboard(text)
 						}
 					}
+				} else if a.dashboard.panelFocus == focusLaunch && a.focusLaunchAgent != nil && a.focusLaunchAgent.ID == a.dashboard.selection.agentID {
+					if sx, sy, ex, ey, ok := a.dashboard.selectionRect(); ok {
+						rect := vt.SelectionRect{
+							StartX: sx, StartY: sy, EndX: ex, EndY: ey, Active: true,
+						}
+						ag := a.focusLaunchAgent
+						var text string
+						if a.dashboard.scrollOffset > 0 {
+							vpWidth := a.dashboard.width
+							vpHeight := a.dashboard.height - 1
+							text = ag.ExtractTextFromSnapshot(vpWidth, vpHeight, a.dashboard.scrollOffset, rect)
+						} else {
+							text = ag.ExtractText(rect)
+						}
+						if text != "" {
+							return a, tea.SetClipboard(text)
+						}
+					}
 				}
 			} else {
 				// Plain click — drop the seeded selection. Focus already moved
@@ -1527,6 +1595,44 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	if msg, ok := msg.(tea.MouseWheelMsg); ok {
+		if a.dashboard.panelFocus == focusLaunch && a.focusLaunchAgent != nil {
+			ag := a.focusLaunchAgent
+			if ag.IsAltScreen() {
+				termX, termY, _ := a.screenToTermCellFocusLaunch(msg.X, msg.Y)
+				if termX < 0 {
+					termX = 0
+				}
+				if termX >= a.dashboard.width {
+					termX = a.dashboard.width - 1
+				}
+				if termY < 0 {
+					termY = 0
+				}
+				if termY >= a.dashboard.height-1 {
+					termY = a.dashboard.height - 2
+				}
+				ag.SendMouse(xvt.MouseWheel{
+					X:      termX,
+					Y:      termY,
+					Button: xvt.MouseButton(msg.Button),
+					Mod:    xvt.KeyMod(msg.Mod),
+				})
+				return a, nil
+			}
+			if msg.Button == tea.MouseWheelUp {
+				sbLines := len(ag.ScrollbackLines())
+				max := sbLines
+				a.dashboard.scrollOffset += 3
+				if a.dashboard.scrollOffset > max {
+					a.dashboard.scrollOffset = max
+				}
+			} else {
+				a.dashboard.scrollOffset -= 3
+				if a.dashboard.scrollOffset < 0 {
+					a.dashboard.scrollOffset = 0
+				}
+			}
+		}
 		if a.dashboard.panelFocus == focusTerminal {
 			ag := a.dashboard.selectedAgent()
 			if ag != nil {
@@ -1577,7 +1683,8 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// (sidebar nav, esc, click on the list, etc.) drops it.
 	if a.dashboard.selection.active {
 		ag := a.dashboard.selectedAgent()
-		if a.dashboard.panelFocus != focusTerminal || ag == nil || ag.ID != a.dashboard.selection.agentID {
+		if (a.dashboard.panelFocus != focusTerminal || ag == nil || ag.ID != a.dashboard.selection.agentID) &&
+			(a.dashboard.panelFocus != focusLaunch || a.focusLaunchAgent == nil || a.focusLaunchAgent.ID != a.dashboard.selection.agentID) {
 			a.dashboard.clearSelection()
 		}
 	}
@@ -1794,6 +1901,18 @@ func (a *App) resizeSelectedForDashboard() {
 	}
 }
 
+// resizeAgentForDashboard resizes a specific agent to the dashboard preview dimensions.
+func (a *App) resizeAgentForDashboard(ag *agent.Agent) {
+	if ag == nil {
+		return
+	}
+	w := a.dashboard.fixedTermWidth()
+	h := a.dashboard.fixedTermHeight()
+	if w > 0 && h > 0 {
+		ag.Resize(h, w)
+	}
+}
+
 // resizeAllForDashboard resizes every agent to the dashboard preview dimensions.
 // Called on WindowSizeMsg so all agents match the new terminal size.
 func (a *App) resizeAllForDashboard() {
@@ -1803,6 +1922,9 @@ func (a *App) resizeAllForDashboard() {
 		return
 	}
 	for _, ag := range a.dashboard.agentItems() {
+		if a.focusLaunchAgent != nil && ag.ID == a.focusLaunchAgent.ID {
+			continue
+		}
 		ag.Resize(h, w)
 	}
 }
@@ -1860,6 +1982,24 @@ func (a *App) screenToTermCell(screenX, screenY int) (termX, termY int, inViewpo
 	termY = screenY - dashboardTopY - previewTopBorder - a.dashboard.previewMetadataRows()
 	inViewport = w > 0 && h > 0 && termX >= 0 && termX < w && termY >= 0 && termY < h
 	return termX, termY, inViewport
+}
+
+// screenToTermCellFocusLaunch converts a screen-space mouse coordinate to a VT
+// cell coordinate for the fullscreen focusLaunch agent terminal.
+func (a *App) screenToTermCellFocusLaunch(screenX, screenY int) (termX, termY int, inViewport bool) {
+	dashboardTopY := 0
+	if a.err != "" {
+		dashboardTopY++
+	}
+	if a.confirmQuit {
+		dashboardTopY++
+	}
+	termX = screenX
+	termY = screenY - dashboardTopY - 1
+	w := a.dashboard.width
+	h := a.dashboard.height - 1
+	inViewport = termX >= 0 && termX < w && termY >= 0 && termY < h
+	return
 }
 
 // forwardWheelToAgent encodes a mouse wheel event and feeds it to the agent's
@@ -2107,6 +2247,21 @@ func (a App) View() tea.View {
 				const previewColOffset = 31
 				screenX := cursorX + previewColOffset + 1
 				screenY := cursorY + dashboardTopY + 1 + a.dashboard.previewMetadataRows()
+				v.Cursor = tea.NewCursor(screenX, screenY)
+			}
+		} else if a.dashboard.panelFocus == focusLaunch && a.dashboard.scrollOffset == 0 && a.focusLaunchAgent != nil {
+			ag := a.focusLaunchAgent
+			if !ag.IsAltScreen() && ag.CursorVisible() {
+				cursorX, cursorY := ag.CursorPosition()
+				dashboardTopY := 0
+				if a.err != "" {
+					dashboardTopY++
+				}
+				if a.confirmQuit {
+					dashboardTopY++
+				}
+				screenX := cursorX
+				screenY := cursorY + dashboardTopY + 1
 				v.Cursor = tea.NewCursor(screenX, screenY)
 			}
 		}
