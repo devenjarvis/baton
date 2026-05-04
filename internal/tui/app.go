@@ -371,7 +371,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					continue
 				}
 				if item.agent.AltScreenEntered() {
-					item.agent.Resize(fixedH, fixedW)
+					// The focusLaunch agent renders fullscreen, so resize it
+					// to the fullscreen dimensions instead of shrinking it
+					// back to the preview size.
+					if a.focusLaunchAgent != nil && item.agent.ID == a.focusLaunchAgent.ID {
+						item.agent.Resize(a.dashboard.height-1, a.dashboard.width)
+					} else {
+						item.agent.Resize(fixedH, fixedW)
+					}
 					// VT history is cleared on alt-screen entry; any prior
 					// scrollOffset now indexes into an empty buffer and would
 					// leave the preview visually frozen until the user hits
