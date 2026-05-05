@@ -71,7 +71,8 @@ type Manager struct {
 	hookSocketPath string
 	hookDispatcher sync.WaitGroup
 
-	branchNamer BranchNamer
+	branchNamer    BranchNamer
+	taskSummarizer TaskSummarizer
 }
 
 // haikuNamePerAttemptTimeout bounds how long a single Haiku summarization
@@ -107,13 +108,14 @@ var haikuNameBackoff = []time.Duration{1 * time.Second, 3 * time.Second}
 // out of Active.
 func NewManager(repoPath string, settings config.ResolvedSettings) *Manager {
 	m := &Manager{
-		repoPath:     repoPath,
-		settings:     settings,
-		sessions:     make(map[string]*Session),
-		pendingNames: make(map[string]struct{}),
-		events:       make(chan Event, 64),
-		done:         make(chan struct{}),
-		branchNamer:  DefaultBranchNamer(),
+		repoPath:       repoPath,
+		settings:       settings,
+		sessions:       make(map[string]*Session),
+		pendingNames:   make(map[string]struct{}),
+		events:         make(chan Event, 64),
+		done:           make(chan struct{}),
+		branchNamer:    DefaultBranchNamer(),
+		taskSummarizer: DefaultTaskSummarizer(),
 	}
 
 	batonDir := filepath.Join(repoPath, ".baton")
@@ -149,6 +151,22 @@ func (m *Manager) SetBranchNamer(n BranchNamer) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.branchNamer = n
+}
+
+// SetTaskSummarizer overrides the TaskSummarizer used for generating plain-English
+// task descriptions. Passing nil disables the feature gracefully. Safe to call
+// while the manager is running — the summarizer is swapped atomically.
+func (m *Manager) SetTaskSummarizer(ts TaskSummarizer) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.taskSummarizer = ts
+}
+
+// getTaskSummarizer returns the current TaskSummarizer under a read lock.
+func (m *Manager) getTaskSummarizer() TaskSummarizer {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.taskSummarizer
 }
 
 // hookSocketPath returns the unix socket path for a given repoPath.
@@ -198,6 +216,7 @@ func (m *Manager) dispatchHookEvents() {
 			if IsActionablePrompt(e.Prompt) {
 				sess.SetOriginalPrompt(e.Prompt)
 			}
+			m.maybeStartTaskSummary(sess)
 		}
 	}
 }
@@ -310,6 +329,55 @@ func (m *Manager) maybeRenameFromPrompt(sess *Session, a *Agent, prompt string) 
 		// fires so subscribers (PR scheduler, TUI) see a coherent snapshot.
 		sess.SetDisplayName(suffix)
 		m.emitBranchRenamed(sess, a, newBranch)
+	}()
+}
+
+// maybeStartTaskSummary generates a short plain-English task description from
+// the session's original prompt and stores it via Session.SetTaskSummary.
+// It reads sess.OriginalPrompt() (set idempotently by the dispatcher) so
+// slash-only and empty prompts that never stored an original prompt are
+// silently skipped. Session.TryStartTaskSummary gates double-dispatch so a
+// second prompt arriving while the summarizer is running is a no-op.
+func (m *Manager) maybeStartTaskSummary(sess *Session) {
+	if sess == nil {
+		return
+	}
+
+	prompt := sess.OriginalPrompt()
+	if prompt == "" {
+		return
+	}
+
+	ts := m.getTaskSummarizer()
+	if ts == nil {
+		return
+	}
+
+	if !sess.TryStartTaskSummary() {
+		return
+	}
+
+	m.watchers.Add(1)
+	go func() {
+		defer m.watchers.Done()
+		defer sess.finishTaskSummary()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+
+		// Cancel the summarizer subprocess if the manager shuts down mid-call.
+		doneCh := make(chan struct{})
+		defer close(doneCh)
+		go func() {
+			select {
+			case <-m.done:
+				cancel()
+			case <-doneCh:
+			}
+		}()
+
+		summary, _ := ts(ctx, prompt)
+		sess.SetTaskSummary(summary)
 	}()
 }
 
