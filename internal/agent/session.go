@@ -577,7 +577,7 @@ func (s *Session) finishTaskSummary() {
 func (s *Session) LastOutputTime() time.Time {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	var max time.Time
+	var latest time.Time
 	for _, a := range s.agents {
 		if a.IsShell {
 			continue
@@ -585,9 +585,9 @@ func (s *Session) LastOutputTime() time.Time {
 		a.mu.RLock()
 		t := a.lastOutput
 		a.mu.RUnlock()
-		if t.After(max) {
-			max = t
+		if t.After(latest) {
+			latest = t
 		}
 	}
-	return max
+	return latest
 }
