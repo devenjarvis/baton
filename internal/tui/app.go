@@ -115,21 +115,28 @@ type App struct {
 	audioPlayer     *audio.Player
 
 	// Wellness / focus mode state.
-	focusModeActive     bool
-	sessionStart        time.Time
-	lastReviewAt        time.Time
-	newAgentPending     bool
-	focusSessionMinutes int          // cached from resolved global settings
-	focusActiveIdx      int          // index into allInProgressSessions()
-	focusQueueIndex     int          // index into reviewQueueSessions
-	focusCursorSection  focusSection // which section the focus-mode cursor is on
-	focusLaunchAgent    *agent.Agent
-	focusLaunchSession  *agent.Session
-	focusBacklogWarning bool // first n at backlog limit shows warning; second proceeds
-	repoPickerActive    bool
-	repoPickerForm      *configForm
-	reviewDiffCache     map[string]*reviewDiffEntry // keyed by session ID
-	reviewSession       *agent.Session              // session currently open in review panel
+	focusModeActive        bool
+	appStart               time.Time // set once at init; never reset; used for total session duration in wellness log
+	sessionStart           time.Time // per-pomodoro work timer; reset on each break completion
+	lastReviewAt           time.Time
+	newAgentPending        bool
+	focusSessionMinutes    int          // cached from resolved global settings
+	focusBreakMinutes      int          // cached from resolved global settings
+	focusActiveIdx         int          // index into allInProgressSessions()
+	focusQueueIndex        int          // index into reviewQueueSessions
+	focusCursorSection     focusSection // which section the focus-mode cursor is on
+	focusLaunchAgent       *agent.Agent
+	focusLaunchSession     *agent.Session
+	focusBacklogWarning    bool // first n at backlog limit shows warning; second proceeds
+	focusBreakMode         bool
+	focusBreakStart        time.Time
+	focusPomodoroCount     int
+	focusBreakShortWarning bool
+	focusBreakAnimFrame    int
+	repoPickerActive       bool
+	repoPickerForm         *configForm
+	reviewDiffCache        map[string]*reviewDiffEntry // keyed by session ID
+	reviewSession          *agent.Session              // session currently open in review panel
 
 	// Wellness counters (written to log on quit).
 	agentsCreatedCount   int
@@ -240,7 +247,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		a.cfg = msg.cfg
-		a.sessionStart = time.Now()
+		now := time.Now()
+		a.appStart = now
+		a.sessionStart = now
 
 		// Load global settings and run one-time migration.
 		globalSettings, err := config.LoadGlobalSettings()
@@ -254,6 +263,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.dashboard.sidebarWidth = resolved.SidebarWidth
 		a.focusModeActive = resolved.FocusModeEnabled
 		a.focusSessionMinutes = resolved.FocusSessionMinutes
+		a.focusBreakMinutes = resolved.FocusBreakMinutes
 
 		// Load per-repo settings and build resolved cache.
 		for _, repo := range msg.cfg.Repos {
@@ -345,6 +355,17 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, tea.Batch(cmds...)
 
 	case tickMsg:
+		// Break mode: advance animation and check for auto-exit.
+		if a.focusBreakMode {
+			a.focusBreakAnimFrame++
+			if a.focusBreakMinutes > 0 && time.Since(a.focusBreakStart) >= time.Duration(a.focusBreakMinutes)*time.Minute {
+				a.sessionStart = time.Now()
+				a.focusPomodoroCount++
+				a.focusBreakMode = false
+				a.focusBreakShortWarning = false
+				a.focusBreakAnimFrame = 0
+			}
+		}
 		a.refreshAgentList()
 		// Detect Active->Idle transitions for diff-stats refresh. Chime
 		// notifications are fired in the EventStatusChanged handler below,
@@ -976,6 +997,11 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.focusBacklogWarning = false
 		}
 
+		// Clear the break short-warning on any key that isn't b.
+		if a.focusBreakShortWarning && msg.String() != "b" {
+			a.focusBreakShortWarning = false
+		}
+
 		// Review panel key handling.
 		if a.dashboard.panelFocus == focusReview && a.reviewSession != nil {
 			switch msg.String() {
@@ -1232,6 +1258,27 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.focusCursorSection = focusSectionActive
 				a.clampFocusCursor()
 				a.syncFocusCursorToDashboard()
+			}
+			return a, nil
+
+		case "b":
+			if !a.focusModeActive {
+				return a, nil
+			}
+			if !a.focusBreakMode {
+				a.focusBreakMode = true
+				a.focusBreakStart = time.Now()
+				a.focusBreakShortWarning = false
+				a.focusBreakAnimFrame = 0
+			} else if !a.focusBreakShortWarning {
+				a.focusBreakShortWarning = true
+			} else {
+				// Third b press: override — end break early.
+				a.sessionStart = time.Now()
+				a.focusPomodoroCount++
+				a.focusBreakMode = false
+				a.focusBreakShortWarning = false
+				a.focusBreakAnimFrame = 0
 			}
 			return a, nil
 
@@ -2029,6 +2076,7 @@ func (a App) updateGlobalConfig(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Refresh wellness settings from updated global config.
 		a.focusSessionMinutes = newResolved.FocusSessionMinutes
+		a.focusBreakMinutes = newResolved.FocusBreakMinutes
 		a.focusModeActive = newResolved.FocusModeEnabled
 		a.view = ViewDashboard
 		return a, nil
@@ -2217,6 +2265,16 @@ func (a *App) refreshAgentList() {
 	a.dashboard.sessionElapsed = time.Since(a.sessionStart)
 	a.dashboard.lastReviewAt = a.lastReviewAt
 	a.dashboard.focusSessionMinutes = a.focusSessionMinutes
+	a.dashboard.focusBreakMode = a.focusBreakMode
+	if a.focusBreakMode {
+		a.dashboard.focusBreakElapsed = time.Since(a.focusBreakStart)
+	} else {
+		a.dashboard.focusBreakElapsed = 0
+	}
+	a.dashboard.focusPomodoroCount = a.focusPomodoroCount
+	a.dashboard.focusBreakMinutes = a.focusBreakMinutes
+	a.dashboard.focusBreakAnimFrame = a.focusBreakAnimFrame
+	a.dashboard.focusBreakShortWarning = a.focusBreakShortWarning
 	a.dashboard.focusActiveIdx = a.focusActiveIdx
 	a.dashboard.focusQueueIndex = a.focusQueueIndex
 	a.dashboard.focusCursorSection = a.focusCursorSection
@@ -2513,16 +2571,22 @@ func (a App) View() tea.View {
 		case focusLaunch:
 			hints = focusLaunchHints
 		}
-		// Prepend a break hint when focus mode is active and the session
-		// duration has exceeded the configured threshold.
-		if a.focusModeActive && a.focusSessionMinutes > 0 {
-			elapsed := time.Since(a.sessionStart)
-			if elapsed >= time.Duration(a.focusSessionMinutes)*time.Minute {
-				breakHint := keyHint{
-					key:  "⌛",
-					desc: fmt.Sprintf("%dm — take a break before reviewing", a.focusSessionMinutes),
+		// Break mode hint or work-mode break suggestion.
+		// Skip when in focusLaunch: b routes to the agent terminal there, not to break control.
+		if a.focusModeActive && a.dashboard.panelFocus != focusLaunch {
+			if a.focusBreakMode {
+				hints = []keyHint{{key: "b", desc: "exit early"}}
+			} else if a.focusSessionMinutes > 0 {
+				elapsed := time.Since(a.sessionStart)
+				if elapsed >= time.Duration(a.focusSessionMinutes)*time.Minute {
+					breakHint := keyHint{
+						key:  "⌛",
+						desc: fmt.Sprintf("%dm — [b] take a break", a.focusSessionMinutes),
+					}
+					hints = append([]keyHint{breakHint}, hints...)
+				} else {
+					hints = append(hints, keyHint{key: "b", desc: "take a break"})
 				}
-				hints = append([]keyHint{breakHint}, hints...)
 			}
 		}
 		// Repo picker overlay: replace body with centered picker when active.
@@ -2982,11 +3046,12 @@ func (a *App) activeAgentCount() int {
 
 // wellnessLogEntry is the JSON structure written on session end.
 type wellnessLogEntry struct {
-	Date            string `json:"date"`
-	DurationMin     int    `json:"duration_min"`
-	AgentsCreated   int    `json:"agents_created"`
-	SessionsCreated int    `json:"sessions_created"`
-	FocusSwitches   int    `json:"focus_switches"`
+	Date               string `json:"date"`
+	DurationMin        int    `json:"duration_min"`
+	AgentsCreated      int    `json:"agents_created"`
+	SessionsCreated    int    `json:"sessions_created"`
+	FocusSwitches      int    `json:"focus_switches"`
+	PomodorosCompleted int    `json:"pomodoros_completed"`
 }
 
 // writeWellnessLog appends a single JSON line to <repoPath>/.baton/logs/wellness.log.
@@ -3005,13 +3070,14 @@ func (a *App) writeWellnessLog() {
 		return
 	}
 
-	elapsed := time.Since(a.sessionStart)
+	elapsed := time.Since(a.appStart)
 	entry := wellnessLogEntry{
-		Date:            time.Now().UTC().Format(time.RFC3339),
-		DurationMin:     int(elapsed.Minutes()),
-		AgentsCreated:   a.agentsCreatedCount,
-		SessionsCreated: a.sessionsCreatedCount,
-		FocusSwitches:   a.focusModeSwitches,
+		Date:               time.Now().UTC().Format(time.RFC3339),
+		DurationMin:        int(elapsed.Minutes()),
+		AgentsCreated:      a.agentsCreatedCount,
+		SessionsCreated:    a.sessionsCreatedCount,
+		FocusSwitches:      a.focusModeSwitches,
+		PomodorosCompleted: a.focusPomodoroCount,
 	}
 	data, err := json.Marshal(entry)
 	if err != nil {
