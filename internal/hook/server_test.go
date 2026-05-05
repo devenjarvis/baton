@@ -1,6 +1,8 @@
 package hook
 
 import (
+	"net"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -162,5 +164,127 @@ func TestSendEventNoServer(t *testing.T) {
 	// Dialing a nonexistent socket must fail (caller decides to ignore).
 	if err := SendEvent(filepath.Join(t.TempDir(), "nope.sock"), Event{Kind: KindStop, AgentID: "a"}); err == nil {
 		t.Error("expected error dialing nonexistent socket")
+	}
+}
+
+// TestServerRemovesPriorRegularFile verifies that NewServer cleans up a
+// stale leftover at the socket path even if the previous baton crashed.
+func TestServerRemovesPriorRegularFile(t *testing.T) {
+	dir := t.TempDir()
+	socketPath := filepath.Join(dir, "hook.sock")
+
+	if err := os.WriteFile(socketPath, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	srv, err := NewServer(socketPath)
+	if err != nil {
+		t.Fatalf("NewServer should remove stale file and bind, got: %v", err)
+	}
+	defer func() { _ = srv.Close() }()
+
+	// Round-trip a real event to confirm the listener is functional.
+	if err := SendEvent(socketPath, Event{Kind: KindStop, AgentID: "a"}); err != nil {
+		t.Fatalf("SendEvent after stale-file cleanup: %v", err)
+	}
+	select {
+	case <-srv.Events():
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for event")
+	}
+}
+
+// TestServerMalformedJSONSkipped verifies that a malformed line on a single
+// connection is ignored without killing the server, and a subsequent
+// well-formed message on the same connection is still delivered.
+func TestServerMalformedJSONSkipped(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "hook.sock")
+	srv, err := NewServer(socketPath)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	defer func() { _ = srv.Close() }()
+
+	conn, err := net.Dial("unix", socketPath)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	// First a malformed line, then a valid event.
+	if _, err := conn.Write([]byte("{not json\n{\"kind\":\"stop\",\"agentId\":\"a\"}\n")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	_ = conn.Close()
+
+	select {
+	case got := <-srv.Events():
+		if got.Kind != KindStop {
+			t.Errorf("expected Stop event after malformed line, got %q", got.Kind)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out — server may have died on malformed JSON")
+	}
+}
+
+// TestServerConnectionDropMidLine verifies the server handles a connection
+// closed before sending a newline-terminator without crashing or blocking
+// other handlers.
+func TestServerConnectionDropMidLine(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "hook.sock")
+	srv, err := NewServer(socketPath)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	defer func() { _ = srv.Close() }()
+
+	// Open a connection, send an incomplete JSON fragment, close.
+	conn, err := net.Dial("unix", socketPath)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	if _, err := conn.Write([]byte("{\"kind\":\"Sto")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	_ = conn.Close()
+
+	// Server should still accept and process subsequent valid events.
+	if err := SendEvent(socketPath, Event{Kind: KindStop, AgentID: "alive"}); err != nil {
+		t.Fatalf("SendEvent after dropped conn: %v", err)
+	}
+	select {
+	case got := <-srv.Events():
+		if got.AgentID != "alive" {
+			t.Errorf("AgentID = %q, want alive", got.AgentID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out — server may have wedged after partial-line drop")
+	}
+}
+
+// TestServerSlowConsumerDoesNotBlock verifies that a stuck consumer does
+// not block the hook senders. The events channel is buffered at 64 and
+// excess messages must be dropped, not block the writer (which would in
+// turn wedge `claude`).
+func TestServerSlowConsumerDoesNotBlock(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "hook.sock")
+	srv, err := NewServer(socketPath)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	defer func() { _ = srv.Close() }()
+
+	const burst = 200
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < burst; i++ {
+			_ = SendEvent(socketPath, Event{Kind: KindStop, AgentID: "a"})
+		}
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Senders unblocked even though the events channel was never drained.
+	case <-time.After(5 * time.Second):
+		t.Fatal("senders blocked — slow consumer wedged the hook path")
 	}
 }

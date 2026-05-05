@@ -90,7 +90,9 @@ func newAgent(id string, cfg Config, worktreePath, socketPath string) (*Agent, e
 	cmd := exec.Command(prog, args...)
 	cmd.Dir = worktreePath
 	cmd.Env = append(cmd.Environ(), "TERM=xterm-256color")
-	applyHookEnv(cmd, cfg, id, socketPath)
+	if err := applyHookEnv(cmd, cfg, id, socketPath); err != nil {
+		return nil, err
+	}
 
 	p := &bpty.PTY{}
 	if err := p.Start(cmd, uint16(cfg.Rows), uint16(cfg.Cols)); err != nil {
@@ -142,7 +144,9 @@ func newResumedAgent(
 	cmd := exec.Command(agentProgram(cfg), args...)
 	cmd.Dir = worktreePath
 	cmd.Env = append(cmd.Environ(), "TERM=xterm-256color")
-	applyHookEnv(cmd, cfg, id, socketPath)
+	if err := applyHookEnv(cmd, cfg, id, socketPath); err != nil {
+		return nil, err
+	}
 
 	p := &bpty.PTY{}
 	if err := p.Start(cmd, uint16(cfg.Rows), uint16(cfg.Cols)); err != nil {
@@ -226,16 +230,25 @@ func buildHookArgs(cfg Config, worktreePath, socketPath string) ([]string, error
 
 // applyHookEnv sets BATON_HOOK_SOCKET and BATON_AGENT_ID on cmd so the
 // baton-hook CLI (invoked by claude) knows where to forward events.
-// No-op when hooks are disabled for this program.
-func applyHookEnv(cmd *exec.Cmd, cfg Config, agentID, socketPath string) {
+// No-op when hooks are disabled for this program (socketPath empty or
+// program is not claude).
+//
+// Returns an error if agentID is empty while hooks are otherwise enabled —
+// without an agent ID, the hook server can't route events back to a
+// specific agent and we'd produce a zombie.
+func applyHookEnv(cmd *exec.Cmd, cfg Config, agentID, socketPath string) error {
 	if socketPath == "" || !supportsHooks(cfg) {
-		return
+		return nil
+	}
+	if agentID == "" {
+		return fmt.Errorf("applyHookEnv: agentID is empty for claude agent on %s", socketPath)
 	}
 	cmd.Env = append(
 		cmd.Env,
 		"BATON_HOOK_SOCKET="+socketPath,
 		"BATON_AGENT_ID="+agentID,
 	)
+	return nil
 }
 
 // newAgentWithCommand creates an agent using a custom command instead of claude.
