@@ -129,9 +129,10 @@ type App struct {
 	focusLaunchSession     *agent.Session
 	focusBacklogWarning    bool // first n at backlog limit shows warning; second proceeds
 	focusBreakMode         bool
-	focusBreakStart        time.Time
+	focusBreakStart        time.Time // wall-clock; monotonic stripped so suspend counts toward elapsed
 	focusPomodoroCount     int
 	focusBreakShortWarning bool
+	focusBreakTimerUp      bool // break duration elapsed; waiting on user to resume
 	focusBreakAnimFrame    int
 	repoPickerActive       bool
 	repoPickerForm         *configForm
@@ -355,15 +356,24 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, tea.Batch(cmds...)
 
 	case tickMsg:
-		// Break mode: advance animation and check for auto-exit.
+		// Break mode: advance animation and detect timer expiry. We DO NOT
+		// auto-exit — once the configured break elapses we flip into a
+		// "ready" state and wait for the user to explicitly resume. This
+		// avoids dropping the user back into focus mode while they're still
+		// away from the keyboard.
 		if a.focusBreakMode {
 			a.focusBreakAnimFrame++
-			if a.focusBreakMinutes > 0 && time.Since(a.focusBreakStart) >= time.Duration(a.focusBreakMinutes)*time.Minute {
-				a.sessionStart = time.Now()
-				a.focusPomodoroCount++
-				a.focusBreakMode = false
+			if a.focusBreakMinutes > 0 && !a.focusBreakTimerUp &&
+				time.Since(a.focusBreakStart) >= time.Duration(a.focusBreakMinutes)*time.Minute {
+				a.focusBreakTimerUp = true
 				a.focusBreakShortWarning = false
 				a.focusBreakAnimFrame = 0
+				// One unmistakable cue when the break ends. Played even in
+				// focus mode (the normal suppression path), since the whole
+				// point is to grab attention.
+				if a.audioPlayer != nil {
+					a.audioPlayer.Play()
+				}
 			}
 		}
 		a.refreshAgentList()
@@ -1273,19 +1283,35 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !a.focusModeActive {
 				return a, nil
 			}
-			if !a.focusBreakMode {
+			switch {
+			case !a.focusBreakMode:
+				// Enter break. Round(0) strips the monotonic reading so
+				// time.Since uses wall-clock arithmetic, which keeps the
+				// timer honest across suspend/resume.
 				a.focusBreakMode = true
-				a.focusBreakStart = time.Now()
+				a.focusBreakStart = time.Now().Round(0)
 				a.focusBreakShortWarning = false
+				a.focusBreakTimerUp = false
 				a.focusBreakAnimFrame = 0
-			} else if !a.focusBreakShortWarning {
-				a.focusBreakShortWarning = true
-			} else {
-				// Third b press: override — end break early.
+			case a.focusBreakTimerUp:
+				// Break is fully elapsed; user is opting back in. Exit
+				// without any "are you sure" friction.
 				a.sessionStart = time.Now()
 				a.focusPomodoroCount++
 				a.focusBreakMode = false
 				a.focusBreakShortWarning = false
+				a.focusBreakTimerUp = false
+				a.focusBreakAnimFrame = 0
+			case !a.focusBreakShortWarning:
+				a.focusBreakShortWarning = true
+			default:
+				// Third b press while still inside the break window:
+				// override the short-break guard and end early.
+				a.sessionStart = time.Now()
+				a.focusPomodoroCount++
+				a.focusBreakMode = false
+				a.focusBreakShortWarning = false
+				a.focusBreakTimerUp = false
 				a.focusBreakAnimFrame = 0
 			}
 			return a, nil
@@ -2283,6 +2309,7 @@ func (a *App) refreshAgentList() {
 	a.dashboard.focusBreakMinutes = a.focusBreakMinutes
 	a.dashboard.focusBreakAnimFrame = a.focusBreakAnimFrame
 	a.dashboard.focusBreakShortWarning = a.focusBreakShortWarning
+	a.dashboard.focusBreakTimerUp = a.focusBreakTimerUp
 	a.dashboard.focusActiveIdx = a.focusActiveIdx
 	a.dashboard.focusQueueIndex = a.focusQueueIndex
 	a.dashboard.focusCursorSection = a.focusCursorSection
@@ -2585,7 +2612,11 @@ func (a App) View() tea.View {
 		// Skip when in focusLaunch: b routes to the agent terminal there, not to break control.
 		if a.focusModeActive && a.dashboard.panelFocus != focusLaunch {
 			if a.focusBreakMode {
-				hints = []keyHint{{key: "b", desc: "exit early"}}
+				if a.focusBreakTimerUp {
+					hints = []keyHint{{key: "b", desc: "resume focus"}}
+				} else {
+					hints = []keyHint{{key: "b", desc: "exit early"}}
+				}
 			} else if a.focusSessionMinutes > 0 {
 				elapsed := time.Since(a.sessionStart)
 				if elapsed >= time.Duration(a.focusSessionMinutes)*time.Minute {
