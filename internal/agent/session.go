@@ -29,6 +29,9 @@ type Session struct {
 	doneAt         time.Time
 	ownsBranch     bool   // true if this session created the branch (cleanup should delete it)
 	hookSocketPath string // absolute path to the manager's hook socket ("" disables hooks)
+	taskSummary    string // short summary of the session's task, set once by the summarizer goroutine
+	hasTaskSummary bool   // true once SetTaskSummary has been called
+	summarizing    bool   // true while an async task-summary goroutine is in flight; gates double-dispatch
 }
 
 // newSession creates a session with the given worktree.
@@ -522,4 +525,69 @@ func (s *Session) RestoreDoneAt(t time.Time) {
 // NewSessionForTest creates a Session for use in tests outside the agent package.
 func NewSessionForTest(id, name string) *Session {
 	return newSession(id, name, &git.WorktreeInfo{})
+}
+
+// TaskSummary returns the session's task summary. Empty until SetTaskSummary is called.
+func (s *Session) TaskSummary() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.taskSummary
+}
+
+// HasTaskSummary reports whether a task summary has been set.
+func (s *Session) HasTaskSummary() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.hasTaskSummary
+}
+
+// SetTaskSummary stores the task summary and marks hasTaskSummary=true.
+// It is safe to call with an empty string (haiku failed but we don't retry).
+func (s *Session) SetTaskSummary(summary string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.taskSummary = summary
+	s.hasTaskSummary = true
+}
+
+// TryStartTaskSummary atomically returns true if a task-summary goroutine should
+// start now, or false if one is already in flight or the session already has a
+// summary. Callers that receive true must call finishTaskSummary when done.
+func (s *Session) TryStartTaskSummary() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.hasTaskSummary || s.summarizing {
+		return false
+	}
+	s.summarizing = true
+	return true
+}
+
+// finishTaskSummary clears the in-flight summarizing flag. Called from the
+// deferred cleanup of the goroutine spawned after TryStartTaskSummary returns true.
+func (s *Session) finishTaskSummary() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.summarizing = false
+}
+
+// LastOutputTime returns the most recent lastOutput time across all non-shell
+// agents in this session. Returns the zero time if there are no such agents or
+// none have produced any output yet.
+func (s *Session) LastOutputTime() time.Time {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var max time.Time
+	for _, a := range s.agents {
+		if a.IsShell {
+			continue
+		}
+		a.mu.RLock()
+		t := a.lastOutput
+		a.mu.RUnlock()
+		if t.After(max) {
+			max = t
+		}
+	}
+	return max
 }

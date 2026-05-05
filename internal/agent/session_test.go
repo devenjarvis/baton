@@ -692,3 +692,133 @@ func TestSession_RestoreDoneAt(t *testing.T) {
 		t.Errorf("second RestoreDoneAt: DoneAt = %v, want %v", got, ts2)
 	}
 }
+
+// --- Task summary tests ---
+
+func TestSession_TryStartTaskSummary_FirstCallReturnsTrue(t *testing.T) {
+	s := newSession("id", "name", &git.WorktreeInfo{})
+	if !s.TryStartTaskSummary() {
+		t.Error("TryStartTaskSummary() should return true on first call")
+	}
+}
+
+func TestSession_TryStartTaskSummary_ReturnsFalseIfSummarizing(t *testing.T) {
+	s := newSession("id", "name", &git.WorktreeInfo{})
+	if !s.TryStartTaskSummary() {
+		t.Fatal("expected true on first call")
+	}
+	// In-flight summarize: second call should return false.
+	if s.TryStartTaskSummary() {
+		t.Error("TryStartTaskSummary() should return false while summarizing is in flight")
+	}
+}
+
+func TestSession_TryStartTaskSummary_ReturnsFalseAfterHasSummary(t *testing.T) {
+	s := newSession("id", "name", &git.WorktreeInfo{})
+	s.SetTaskSummary("done")
+	// hasTaskSummary is now true; should never start again.
+	if s.TryStartTaskSummary() {
+		t.Error("TryStartTaskSummary() should return false once hasTaskSummary is true")
+	}
+}
+
+func TestSession_FinishTaskSummary_AllowsRetry(t *testing.T) {
+	s := newSession("id", "name", &git.WorktreeInfo{})
+	if !s.TryStartTaskSummary() {
+		t.Fatal("expected true on first call")
+	}
+	s.finishTaskSummary()
+	// After finish (no hasTaskSummary set), should be allowed to try again.
+	if !s.TryStartTaskSummary() {
+		t.Error("TryStartTaskSummary() should return true after finishTaskSummary clears the flag")
+	}
+}
+
+func TestSession_SetTaskSummary_SetsFieldsAndHasTaskSummary(t *testing.T) {
+	s := newSession("id", "name", &git.WorktreeInfo{})
+	if s.HasTaskSummary() {
+		t.Fatal("HasTaskSummary() should be false initially")
+	}
+	s.SetTaskSummary("implement auth")
+	if !s.HasTaskSummary() {
+		t.Error("HasTaskSummary() should be true after SetTaskSummary")
+	}
+	if got := s.TaskSummary(); got != "implement auth" {
+		t.Errorf("TaskSummary() = %q, want %q", got, "implement auth")
+	}
+}
+
+func TestSession_SetTaskSummary_EmptyStringStillSetsHasSummary(t *testing.T) {
+	s := newSession("id", "name", &git.WorktreeInfo{})
+	s.SetTaskSummary("")
+	if !s.HasTaskSummary() {
+		t.Error("HasTaskSummary() should be true even when summary is empty string")
+	}
+}
+
+// --- LastOutputTime tests ---
+
+func TestSession_LastOutputTime_ZeroWithNoAgents(t *testing.T) {
+	s := newSession("id", "name", &git.WorktreeInfo{})
+	if got := s.LastOutputTime(); !got.IsZero() {
+		t.Errorf("LastOutputTime() = %v, want zero", got)
+	}
+}
+
+func TestSession_LastOutputTime_ReturnsMaxAcrossAgents(t *testing.T) {
+	s := newSession("id", "name", &git.WorktreeInfo{})
+
+	earlier := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	later := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+
+	a1 := &Agent{ID: "a1", IsShell: false, CreatedAt: time.Now()}
+	a1.lastOutput = earlier
+	a2 := &Agent{ID: "a2", IsShell: false, CreatedAt: time.Now()}
+	a2.lastOutput = later
+
+	s.mu.Lock()
+	s.agents["a1"] = a1
+	s.agents["a2"] = a2
+	s.mu.Unlock()
+
+	if got := s.LastOutputTime(); !got.Equal(later) {
+		t.Errorf("LastOutputTime() = %v, want %v", got, later)
+	}
+}
+
+func TestSession_LastOutputTime_SkipsShellAgents(t *testing.T) {
+	s := newSession("id", "name", &git.WorktreeInfo{})
+
+	shellTime := time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)
+	claudeTime := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+
+	shell := &Agent{ID: "shell", IsShell: true, CreatedAt: time.Now()}
+	shell.lastOutput = shellTime
+	claude := &Agent{ID: "claude", IsShell: false, CreatedAt: time.Now()}
+	claude.lastOutput = claudeTime
+
+	s.mu.Lock()
+	s.agents["shell"] = shell
+	s.agents["claude"] = claude
+	s.mu.Unlock()
+
+	// Should return claudeTime, not shellTime (shell is excluded).
+	if got := s.LastOutputTime(); !got.Equal(claudeTime) {
+		t.Errorf("LastOutputTime() = %v, want %v (shell excluded)", got, claudeTime)
+	}
+}
+
+func TestSession_LastOutputTime_ZeroWhenOnlyShellAgents(t *testing.T) {
+	s := newSession("id", "name", &git.WorktreeInfo{})
+
+	shell := &Agent{ID: "shell", IsShell: true, CreatedAt: time.Now()}
+	shell.lastOutput = time.Now()
+
+	s.mu.Lock()
+	s.agents["shell"] = shell
+	s.mu.Unlock()
+
+	if got := s.LastOutputTime(); !got.IsZero() {
+		t.Errorf("LastOutputTime() = %v, want zero (only shell agents)", got)
+	}
+}
