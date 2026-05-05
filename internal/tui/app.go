@@ -3087,12 +3087,12 @@ func (a *App) activeAgentCount() int {
 
 // wellnessLogEntry is the JSON structure written on session end.
 type wellnessLogEntry struct {
-	Date               string `json:"date"`
-	DurationMin        int    `json:"duration_min"`
-	AgentsCreated      int    `json:"agents_created"`
-	SessionsCreated    int    `json:"sessions_created"`
-	FocusSwitches      int    `json:"focus_switches"`
-	BlocksCompleted    int    `json:"blocks_completed"`
+	Date            string `json:"date"`
+	DurationMin     int    `json:"duration_min"`
+	AgentsCreated   int    `json:"agents_created"`
+	SessionsCreated int    `json:"sessions_created"`
+	FocusSwitches   int    `json:"focus_switches"`
+	BlocksCompleted int    `json:"blocks_completed"`
 }
 
 // writeWellnessLog appends a single JSON line to <repoPath>/.baton/logs/wellness.log.
@@ -3113,11 +3113,11 @@ func (a *App) writeWellnessLog() {
 
 	elapsed := time.Since(a.appStart)
 	entry := wellnessLogEntry{
-		Date:               time.Now().UTC().Format(time.RFC3339),
-		DurationMin:        int(elapsed.Minutes()),
-		AgentsCreated:      a.agentsCreatedCount,
-		SessionsCreated:    a.sessionsCreatedCount,
-		FocusSwitches:      a.focusModeSwitches,
+		Date:            time.Now().UTC().Format(time.RFC3339),
+		DurationMin:     int(elapsed.Minutes()),
+		AgentsCreated:   a.agentsCreatedCount,
+		SessionsCreated: a.sessionsCreatedCount,
+		FocusSwitches:   a.focusModeSwitches,
 		BlocksCompleted: a.focusBlockCount,
 	}
 	data, err := json.Marshal(entry)
