@@ -2128,6 +2128,37 @@ func TestFocusLaunch_MKey_ExitsAndMarksReadyForReview(t *testing.T) {
 	}
 }
 
+// TestFocusLaunch_MKey_ResetsFocusQueueIndex verifies that pressing "m" from
+// focusLaunch resets focusQueueIndex to 0 so a subsequent "r" opens the
+// newly-queued session rather than a stale position.
+func TestFocusLaunch_MKey_ResetsFocusQueueIndex(t *testing.T) {
+	sess := &agent.Session{Name: "active"}
+	sess.SetLifecyclePhase(agent.LifecycleInProgress)
+	sess.MarkDone()
+
+	app := NewApp()
+	app.width = 120
+	app.dashboard.width = 120
+	app.dashboard.height = 0
+	app.focusModeActive = true
+	app.dashboard.focusModeActive = true
+	app.dashboard.items = []listItem{
+		{kind: listItemRepo, repoPath: "/r", repoName: "repo"},
+		{kind: listItemSession, repoPath: "/r", session: sess},
+	}
+	app.dashboard.panelFocus = focusLaunch
+	app.focusLaunchAgent = &agent.Agent{}
+	app.focusLaunchSession = sess
+	app.focusQueueIndex = 2 // stale nonzero index
+
+	model, _ := app.Update(tea.KeyPressMsg{Code: 'm', Text: "m"})
+	app = model.(App)
+
+	if app.focusQueueIndex != 0 {
+		t.Errorf("expected focusQueueIndex=0 after m, got %d", app.focusQueueIndex)
+	}
+}
+
 // TestFocusLaunch_MKey_NoopWhenDoneAtZero verifies that pressing "m" while in
 // focusLaunch exits fullscreen but does not change the lifecycle phase when
 // the session's DoneAt is zero (agents still running).

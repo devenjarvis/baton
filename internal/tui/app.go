@@ -996,6 +996,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.dashboard.scrollOffset = 0
 				if sess != nil && sess.LifecyclePhase() == agent.LifecycleInProgress && !sess.DoneAt().IsZero() {
 					sess.SetLifecyclePhase(agent.LifecycleReadyForReview)
+					a.focusQueueIndex = 0
 					return a, a.fetchReviewDiffCmd(sess)
 				}
 				return a, nil
