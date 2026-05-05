@@ -807,6 +807,14 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.dashboard.repoConfigForm = nil
 		return a, nil
 
+	case tea.PasteMsg:
+		// focusLaunch: forward paste to the launch agent. Other panels fall through
+		// to dashboard.Update, which handles paste for focusTerminal.
+		if a.dashboard.panelFocus == focusLaunch && a.focusLaunchAgent != nil {
+			a.focusLaunchAgent.Paste(msg.Content)
+			return a, nil
+		}
+
 	case tea.KeyPressMsg:
 		// focusLaunch: forward all keys to the launch agent; esc/ctrl+e returns to focus pipeline.
 		if a.dashboard.panelFocus == focusLaunch {
