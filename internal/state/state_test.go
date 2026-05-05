@@ -1,8 +1,11 @@
 package state
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -241,6 +244,90 @@ func TestSessionState_LifecyclePersistence(t *testing.T) {
 	}
 	if s.DoneAt == nil || !s.DoneAt.Equal(time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)) {
 		t.Errorf("DoneAt = %v, want 2026-05-03T12:00:00Z", s.DoneAt)
+	}
+}
+
+func TestSaveConcurrent(t *testing.T) {
+	dir := t.TempDir()
+
+	const writers = 32
+	var wg sync.WaitGroup
+	wg.Add(writers)
+	for i := range writers {
+		go func() {
+			defer wg.Done()
+			s := &BatonState{
+				Version: 1,
+				SavedAt: time.Now(),
+				Sessions: []SessionState{
+					{ID: fmt.Sprintf("sess-%d", i), Name: fmt.Sprintf("name-%d", i), WorktreePath: "/tmp", Branch: "main"},
+				},
+			}
+			if err := Save(dir, s); err != nil {
+				t.Errorf("Save: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	loaded, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load after concurrent Save: %v", err)
+	}
+	if loaded == nil || len(loaded.Sessions) != 1 {
+		t.Fatalf("expected exactly one session in the final snapshot, got %+v", loaded)
+	}
+
+	// No leftover .json.tmp files should remain.
+	batonDir := filepath.Join(dir, ".baton")
+	entries, err := os.ReadDir(batonDir)
+	if err != nil {
+		t.Fatalf("read .baton: %v", err)
+	}
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".tmp") {
+			t.Errorf("leftover temp file: %s", e.Name())
+		}
+	}
+}
+
+func TestLoadCorruptFile(t *testing.T) {
+	dir := t.TempDir()
+	batonDir := filepath.Join(dir, ".baton")
+	if err := os.MkdirAll(batonDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(batonDir, "state.json"), []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := Load(dir)
+	if err == nil {
+		t.Fatal("expected error loading corrupt file, got nil")
+	}
+	if loaded != nil {
+		t.Errorf("expected nil state on corrupt load, got %+v", loaded)
+	}
+	if !strings.Contains(err.Error(), "unmarshalling state") {
+		t.Errorf("expected unmarshal error, got: %v", err)
+	}
+}
+
+func TestSaveDirCreateFailure(t *testing.T) {
+	dir := t.TempDir()
+	// Make repoPath/.baton a regular file so MkdirAll fails.
+	blocker := filepath.Join(dir, ".baton")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &BatonState{Version: 1, SavedAt: time.Now()}
+	err := Save(dir, s)
+	if err == nil {
+		t.Fatal("expected error when .baton is a regular file, got nil")
+	}
+	if !strings.Contains(err.Error(), "creating dir") {
+		t.Errorf("expected dir-creation error, got: %v", err)
 	}
 }
 

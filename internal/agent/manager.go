@@ -55,7 +55,13 @@ type Manager struct {
 
 	mu       sync.RWMutex
 	sessions map[string]*Session
-	nextID   int
+	// pendingNames holds session names reserved by an in-flight
+	// createSessionWorktree / createSessionOnBranchWorktree call. The git
+	// worktree creation runs without holding mu so reads of m.sessions don't
+	// block on git I/O; this set lets concurrent callers see the reservation
+	// and pick a different name.
+	pendingNames map[string]struct{}
+	nextID       int
 
 	events   chan Event
 	done     chan struct{}
@@ -101,12 +107,13 @@ var haikuNameBackoff = []time.Duration{1 * time.Second, 3 * time.Second}
 // out of Active.
 func NewManager(repoPath string, settings config.ResolvedSettings) *Manager {
 	m := &Manager{
-		repoPath:    repoPath,
-		settings:    settings,
-		sessions:    make(map[string]*Session),
-		events:      make(chan Event, 64),
-		done:        make(chan struct{}),
-		branchNamer: DefaultBranchNamer(),
+		repoPath:     repoPath,
+		settings:     settings,
+		sessions:     make(map[string]*Session),
+		pendingNames: make(map[string]struct{}),
+		events:       make(chan Event, 64),
+		done:         make(chan struct{}),
+		branchNamer:  DefaultBranchNamer(),
 	}
 
 	batonDir := filepath.Join(repoPath, ".baton")
@@ -534,15 +541,21 @@ func (m *Manager) CreateSessionOnBranchWithCommand(branch, baseBranch string, cf
 // If baseBranch is non-empty, it overrides the default base on the returned WorktreeInfo.
 func (m *Manager) createSessionOnBranchWorktree(branch, baseBranch string, cfg Config) (*Session, error) {
 	m.mu.Lock()
-	existing := make([]string, 0, len(m.sessions))
-	for _, s := range m.sessions {
-		existing = append(existing, s.CurrentName())
-	}
+	existing := m.allReservedNamesLocked()
 	name := slugifyBranchName(branch, existing)
+	m.pendingNames[name] = struct{}{}
 	m.nextID++
 	id := fmt.Sprintf("session-%d", m.nextID)
 	settings := m.settings
 	m.mu.Unlock()
+
+	// Always release the reservation; on success we replace it with the real
+	// session entry below, on failure we just clear it.
+	defer func() {
+		m.mu.Lock()
+		delete(m.pendingNames, name)
+		m.mu.Unlock()
+	}()
 
 	cfg.RepoPath = m.repoPath
 	if cfg.AgentProgram == "" {
@@ -573,6 +586,19 @@ func (m *Manager) createSessionOnBranchWorktree(branch, baseBranch string, cfg C
 	return sess, nil
 }
 
+// allReservedNamesLocked returns every session name currently in use or
+// reserved by an in-flight create. m.mu must be held.
+func (m *Manager) allReservedNamesLocked() []string {
+	out := make([]string, 0, len(m.sessions)+len(m.pendingNames))
+	for _, s := range m.sessions {
+		out = append(out, s.CurrentName())
+	}
+	for n := range m.pendingNames {
+		out = append(out, n)
+	}
+	return out
+}
+
 // slugifyBranchName derives a session name from a branch name.
 // Takes the last path segment (e.g. "feature/add-auth" → "add-auth"), slugifies it,
 // and falls back to RandomName if the result is empty or collides.
@@ -597,18 +623,23 @@ func slugifyBranchName(branch string, existing []string) string {
 
 // createSessionWorktree creates a session with its worktree, adds it to the map.
 func (m *Manager) createSessionWorktree(cfg Config) (*Session, error) {
-	// Generate session name.
+	// Generate session name. Reserve the name in pendingNames so a concurrent
+	// CreateSession can't pick the same slug while we're doing git I/O.
 	m.mu.Lock()
-	existing := make([]string, 0, len(m.sessions))
-	for _, s := range m.sessions {
-		existing = append(existing, s.CurrentName())
-	}
+	existing := m.allReservedNamesLocked()
 	track := songs.Pick(existing)
 	name := track.Slug()
+	m.pendingNames[name] = struct{}{}
 	m.nextID++
 	id := fmt.Sprintf("session-%d", m.nextID)
 	settings := m.settings
 	m.mu.Unlock()
+
+	defer func() {
+		m.mu.Lock()
+		delete(m.pendingNames, name)
+		m.mu.Unlock()
+	}()
 
 	cfg.RepoPath = m.repoPath
 	if cfg.AgentProgram == "" {
@@ -1071,6 +1102,10 @@ func (m *Manager) ResumeSession(ss state.SessionState, cfg Config) error {
 			m.mu.Lock()
 			delete(m.sessions, ss.ID)
 			m.mu.Unlock()
+			// Surface the failure so the TUI can show it; the caller in
+			// app.go currently discards the error. Don't Cleanup() the
+			// worktree — it may contain uncommitted user work.
+			m.emit(Event{Type: EventError, SessionID: ss.ID, Status: StatusError})
 			return fmt.Errorf("resuming agent %s: %w", as.Name, err)
 		}
 

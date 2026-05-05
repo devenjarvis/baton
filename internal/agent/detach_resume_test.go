@@ -4,9 +4,11 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/devenjarvis/baton/internal/config"
 	"github.com/devenjarvis/baton/internal/state"
 )
 
@@ -502,6 +504,126 @@ func TestDetachResumePreservesHasClaudeName(t *testing.T) {
 			resumed.Worktree.Branch, prevBranch)
 	}
 	_ = ag
+}
+
+// TestResumeSessionPreservesWorktreeOnAgentFailure verifies that when
+// AddAgentResumed fails, ResumeSession:
+//   - removes the session from the manager,
+//   - emits an EventError so the TUI can surface the failure, and
+//   - does NOT delete the on-disk worktree (which may contain user work).
+func TestResumeSessionPreservesWorktreeOnAgentFailure(t *testing.T) {
+	repo := setupTestRepo(t)
+
+	// First manager: create a real worktree to resume against.
+	mgr1 := NewManager(repo, defaultTestSettings())
+	cfg := Config{Task: "test", Rows: 24, Cols: 80}
+	sess, _, err := mgr1.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 60")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wtPath := sess.Worktree.Path
+	bs := mgr1.Detach()
+	if bs == nil {
+		t.Fatal("expected non-nil BatonState")
+	}
+
+	// Second manager: settings point AgentProgram at a missing binary so
+	// PTY.Start in newResumedAgent fails deterministically.
+	settings := config.Resolve(nil, nil)
+	settings.AgentProgram = "/definitely/not/a/real/binary/baton-test-missing"
+	mgr2 := NewManager(repo, settings)
+	defer mgr2.Shutdown()
+
+	// Drain events in the background so emit() doesn't block on the buffered
+	// channel, and capture EventError.
+	var errEvents []Event
+	var evMu sync.Mutex
+	doneCh := make(chan struct{})
+	go func() {
+		for ev := range mgr2.Events() {
+			if ev.Type == EventError {
+				evMu.Lock()
+				errEvents = append(errEvents, ev)
+				evMu.Unlock()
+			}
+		}
+		close(doneCh)
+	}()
+
+	err = mgr2.ResumeSession(bs.Sessions[0], Config{Rows: 24, Cols: 80})
+	if err == nil {
+		t.Fatal("expected ResumeSession to fail when AgentProgram is missing")
+	}
+
+	// Session must be gone from the manager.
+	if got := mgr2.GetSession(bs.Sessions[0].ID); got != nil {
+		t.Errorf("expected session to be removed after resume failure, found %+v", got)
+	}
+
+	// Worktree on disk must be preserved (user data may be there).
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Errorf("worktree should still exist after resume failure: %v", err)
+	}
+
+	// EventError should have been emitted. Give the drain goroutine a tick.
+	time.Sleep(50 * time.Millisecond)
+	evMu.Lock()
+	gotErr := len(errEvents) > 0
+	evMu.Unlock()
+	if !gotErr {
+		t.Errorf("expected EventError emit on resume failure, got none")
+	}
+}
+
+// TestCreateSessionConcurrentNameUniqueness verifies that concurrent
+// CreateSession calls never produce two sessions with the same slug. Without
+// the pendingNames reservation, two goroutines that both pass the existing-
+// name check before either has inserted into m.sessions can collide on the
+// same slug. Some attempts may fail with git contention errors (the on-disk
+// index is a single locked resource); we assert only that *successful*
+// creations have unique names.
+func TestCreateSessionConcurrentNameUniqueness(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	const N = 4
+	var wg sync.WaitGroup
+	wg.Add(N)
+	results := make(chan string, N)
+
+	cfg := Config{Task: "test", Rows: 24, Cols: 80}
+	for range N {
+		go func() {
+			defer wg.Done()
+			sess, _, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+				return exec.Command("bash", "-c", "sleep 30")
+			})
+			if err != nil {
+				// Git contention is environmental — log but don't fail.
+				t.Logf("CreateSession returned error (likely git contention): %v", err)
+				return
+			}
+			results <- sess.Name
+		}()
+	}
+	wg.Wait()
+	close(results)
+
+	seen := make(map[string]int)
+	for name := range results {
+		seen[name]++
+	}
+	if len(seen) < 2 {
+		t.Skipf("got fewer than 2 successful creates; cannot exercise uniqueness invariant (counts: %+v)", seen)
+	}
+	for name, count := range seen {
+		if count > 1 {
+			t.Errorf("name %q reused %d times — pendingNames reservation is broken", name, count)
+		}
+	}
 }
 
 func TestParseSessionNum(t *testing.T) {

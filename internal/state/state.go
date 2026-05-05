@@ -5,8 +5,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
+
+// saveMu serializes Save/Load/Remove so concurrent callers can't race on the
+// final os.Rename — the rename itself is atomic, but two interleaved calls
+// could still let an older snapshot win over a newer one.
+var saveMu sync.Mutex
 
 // BatonState is the top-level persisted state for session recovery.
 type BatonState struct {
@@ -45,8 +51,13 @@ func statePath(repoPath string) string {
 	return filepath.Join(repoPath, ".baton", "state.json")
 }
 
-// Save persists the BatonState to disk using atomic temp+rename.
+// Save persists the BatonState to disk using atomic temp+rename. Calls are
+// serialized by a package-level mutex so concurrent writes can't race on the
+// final rename.
 func Save(repoPath string, s *BatonState) error {
+	saveMu.Lock()
+	defer saveMu.Unlock()
+
 	path := statePath(repoPath)
 	dir := filepath.Dir(path)
 
@@ -92,6 +103,9 @@ func Save(repoPath string, s *BatonState) error {
 
 // Load reads the BatonState from disk. Returns (nil, nil) if the file does not exist.
 func Load(repoPath string) (*BatonState, error) {
+	saveMu.Lock()
+	defer saveMu.Unlock()
+
 	path := statePath(repoPath)
 
 	data, err := os.ReadFile(path)
@@ -112,6 +126,9 @@ func Load(repoPath string) (*BatonState, error) {
 
 // Remove deletes the state file. It is idempotent: returns nil if the file does not exist.
 func Remove(repoPath string) error {
+	saveMu.Lock()
+	defer saveMu.Unlock()
+
 	path := statePath(repoPath)
 
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {

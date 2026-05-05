@@ -156,7 +156,7 @@ func (f *configForm) Update(msg tea.Msg) tea.Cmd {
 				field.selected = (field.selected - 1 + len(field.options)) % len(field.options)
 			}
 			return nil
-		case "enter", " ":
+		case "enter", " ", "space":
 			switch field.kind {
 			case fieldToggle:
 				field.toggleValue = !field.toggleValue
