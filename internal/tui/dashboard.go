@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"image/color"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -126,6 +127,7 @@ type dashboardModel struct {
 	focusBreakMinutes      int
 	focusBreakAnimFrame    int
 	focusBreakShortWarning bool
+	focusBreakTimerUp      bool
 	focusActiveIdx         int            // index of highlighted in-progress session row
 	focusQueueIndex        int            // index into ReadyForReview sessions in fullscreen focus mode
 	focusCursorSection     focusSection   // which fullscreen-focus section the cursor is on
@@ -985,9 +987,22 @@ func (d dashboardModel) renderFocusLaunchView(width, height int) string {
 	return header + "\n" + tabBar + "\n" + render
 }
 
-// breatheFrames is the 12-frame expand/contract animation for the break overlay.
-// Each frame is 3 rows of equal width, rendered at the center of the screen.
-var breatheFrames = [12][3]string{
+// Breath animation tuning. 36 frames at the existing 100ms tick = a 3.6s
+// breath cycle (~17 BPM), which lands close to a guided-breathwork pace
+// rather than the old hyperventilating 1.2s loop.
+const (
+	breathFrameCount = 36
+	breathWidth      = 27
+	breathHeight     = 9
+)
+
+// breatheFrames is built at package init via generateBreatheFrames so the
+// animation stays smooth across many frames without hand-tuning each one.
+var breatheFrames = generateBreatheFrames()
+
+// breatheFramesCompact is a smaller fallback for terminals that can't fit
+// the full-size breath. Mirrors the original three-row design.
+var breatheFramesCompact = [12][3]string{
 	{"         ", "    ·    ", "         "},
 	{"   · · · ", "  · · ·  ", " · · ·   "},
 	{"  ○○○○○  ", "  ○   ○  ", "  ○○○○○  "},
@@ -1002,23 +1017,131 @@ var breatheFrames = [12][3]string{
 	{"   · · · ", "  · · ·  ", " · · ·   "},
 }
 
-// breatheColors cycles through calm hues over the 12-frame animation.
-var breatheColors = [3]lipgloss.Color{
+// breatheColors cycles through calm hues. The longer cycle gives the user
+// something to gently track without becoming repetitive.
+var breatheColors = [4]lipgloss.Color{
 	"#38BDF8", // sky blue
 	"#818CF8", // indigo
 	"#34D399", // emerald
+	"#F472B6", // rose — adds variety on every other breath
 }
 
-// renderBreakOverlay returns a fullscreen centered break screen.
-func (d dashboardModel) renderBreakOverlay(width, height int) string {
-	frame := d.focusBreakAnimFrame % 12
-	animColor := breatheColors[frame%3]
+// completeColors pulse warm tones once the timer is up so the screen reads
+// unmistakably as "done" without auto-advancing the user back to work.
+var completeColors = [3]lipgloss.Color{
+	"#F59E0B", // amber
+	"#FBBF24", // gold
+	"#FACC15", // yellow
+}
+
+// generateBreatheFrames builds a smooth concentric breath cycle. The first
+// half of the cycle inhales (radius grows), the second half exhales. A
+// cosine easing keeps motion organic; an aspect-ratio correction keeps the
+// shape feeling round despite character cells being roughly twice as tall
+// as they are wide.
+func generateBreatheFrames() [breathFrameCount][breathHeight]string {
+	var out [breathFrameCount][breathHeight]string
+	cx := float64(breathWidth-1) / 2.0
+	cy := float64(breathHeight-1) / 2.0
+	const aspect = 2.3
+	maxR := cy + 0.6
+
+	for f := 0; f < breathFrameCount; f++ {
+		half := breathFrameCount / 2
+		var phase float64
+		if f < half {
+			phase = float64(f) / float64(half-1)
+		} else {
+			phase = float64(breathFrameCount-1-f) / float64(half-1)
+		}
+		eased := 0.5 - 0.5*math.Cos(phase*math.Pi)
+		radius := eased * maxR
+
+		for r := 0; r < breathHeight; r++ {
+			row := make([]rune, breathWidth)
+			for c := 0; c < breathWidth; c++ {
+				dx := (float64(c) - cx) / aspect
+				dy := float64(r) - cy
+				dist := math.Sqrt(dx*dx + dy*dy)
+				ch := ' '
+				switch {
+				case radius < 0.35:
+					if dist < 0.6 {
+						ch = '·'
+					}
+				case dist < radius-1.0:
+					ch = '●'
+				case dist < radius-0.45:
+					ch = '◉'
+				case dist < radius+0.15:
+					ch = '○'
+				case dist < radius+0.55 && phase > 0.85:
+					// Sparkle ring at the top of the inhale gives the
+					// peak a held, alive feeling.
+					ch = '·'
+				}
+				row[c] = ch
+			}
+			out[f][r] = string(row)
+		}
+	}
+	return out
+}
+
+// renderBreatheBlock returns the current breath frame as a colored block.
+// Falls back to the compact frames when the terminal can't fit the bigger
+// canvas.
+func (d dashboardModel) renderBreatheBlock(width, height int) string {
+	if width < breathWidth+4 || height < breathHeight+8 {
+		frame := d.focusBreakAnimFrame % 12
+		animColor := breatheColors[frame%len(breatheColors)]
+		animStyle := lipgloss.NewStyle().Foreground(animColor)
+		rows := breatheFramesCompact[frame]
+		return animStyle.Render(rows[0]) + "\n" +
+			animStyle.Render(rows[1]) + "\n" +
+			animStyle.Render(rows[2])
+	}
+	frame := d.focusBreakAnimFrame % breathFrameCount
+	// Color rotates per breath cycle, not per frame, so the eye gets a
+	// stable hue to settle on for the duration of one breath.
+	cycle := d.focusBreakAnimFrame / breathFrameCount
+	animColor := breatheColors[cycle%len(breatheColors)]
 	animStyle := lipgloss.NewStyle().Foreground(animColor)
 
-	frameRows := breatheFrames[frame]
-	animBlock := animStyle.Render(frameRows[0]) + "\n" +
-		animStyle.Render(frameRows[1]) + "\n" +
-		animStyle.Render(frameRows[2])
+	rows := breatheFrames[frame]
+	out := make([]string, breathHeight)
+	for i, row := range rows {
+		out[i] = animStyle.Render(row)
+	}
+	return strings.Join(out, "\n")
+}
+
+// breathPhaseLabel returns a one-word cue ("inhale" / "hold" / "exhale")
+// matching the current breath phase so the user has a focal point.
+func (d dashboardModel) breathPhaseLabel() string {
+	frame := d.focusBreakAnimFrame % breathFrameCount
+	half := breathFrameCount / 2
+	switch {
+	case frame >= half-2 && frame <= half+1:
+		return "hold"
+	case frame < half:
+		return "inhale"
+	default:
+		return "exhale"
+	}
+}
+
+// renderBreakOverlay returns a fullscreen centered break screen. Behaviour
+// depends on whether the configured break duration has elapsed:
+//   - Active break: large breath animation, countdown, exit-early hint.
+//   - Timer up: warm "BREAK COMPLETE" panel that waits for the user to
+//     explicitly opt back in (no auto-resume).
+func (d dashboardModel) renderBreakOverlay(width, height int) string {
+	if d.focusBreakTimerUp {
+		return d.renderBreakCompleteOverlay(width, height)
+	}
+
+	animBlock := d.renderBreatheBlock(width, height)
 
 	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#38BDF8")).Bold(true)
 	title := titleStyle.Render("BREAK")
@@ -1027,6 +1150,8 @@ func (d dashboardModel) renderBreakOverlay(width, height int) string {
 	if d.focusPomodoroCount > 0 {
 		pomodoroLine = StyleSubtle.Render(fmt.Sprintf("🍅 Pomodoro %d", d.focusPomodoroCount))
 	}
+
+	phaseLine := StyleSubtle.Render(d.breathPhaseLabel())
 
 	var countdownLine string
 	if d.focusBreakMinutes > 0 {
@@ -1037,13 +1162,7 @@ func (d dashboardModel) renderBreakOverlay(width, height int) string {
 		}
 		mins := remainSecs / 60
 		secs := remainSecs % 60
-		if remainSecs > 0 {
-			countdownLine = StyleSubtle.Render(fmt.Sprintf("%dm %02ds remaining", mins, secs))
-		} else {
-			elapsedMins := int(d.focusBreakElapsed.Minutes())
-			elapsedSecs := int(d.focusBreakElapsed.Seconds()) % 60
-			countdownLine = StyleSubtle.Render(fmt.Sprintf("%dm %02ds — great work", elapsedMins, elapsedSecs))
-		}
+		countdownLine = StyleSubtle.Render(fmt.Sprintf("%dm %02ds remaining", mins, secs))
 	}
 
 	var actionLine string
@@ -1061,12 +1180,71 @@ func (d dashboardModel) renderBreakOverlay(width, height int) string {
 	parts = append(parts, "")
 	parts = append(parts, animBlock)
 	parts = append(parts, "")
+	parts = append(parts, phaseLine)
 	if countdownLine != "" {
 		parts = append(parts, countdownLine)
 	}
+	parts = append(parts, "")
 	parts = append(parts, actionLine)
 
 	inner := strings.Join(parts, "\n")
+	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, inner)
+}
+
+// renderBreakCompleteOverlay is shown once the break timer has elapsed.
+// The visual is intentionally loud: warm bordered banner, pulsing colour,
+// over-time counter. The user must press b to leave — we never advance on
+// their behalf.
+func (d dashboardModel) renderBreakCompleteOverlay(width, height int) string {
+	pulse := completeColors[(d.focusBreakAnimFrame/3)%len(completeColors)]
+	bannerStyle := lipgloss.NewStyle().
+		Foreground(pulse).
+		Bold(true).
+		Border(lipgloss.DoubleBorder()).
+		BorderForeground(pulse).
+		Padding(1, 4)
+	banner := bannerStyle.Render("⏰  B R E A K   C O M P L E T E  ⏰")
+
+	subStyle := lipgloss.NewStyle().Foreground(pulse).Bold(true)
+	subhead := subStyle.Render("ready when you are")
+
+	var stats string
+	if d.focusBreakMinutes > 0 {
+		breakSecs := int(d.focusBreakElapsed.Seconds())
+		bm, bs := breakSecs/60, breakSecs%60
+		over := breakSecs - d.focusBreakMinutes*60
+		if over < 0 {
+			over = 0
+		}
+		om, os := over/60, over%60
+		if over > 0 {
+			stats = StyleSubtle.Render(fmt.Sprintf("on break %dm %02ds · %dm %02ds past timer", bm, bs, om, os))
+		} else {
+			stats = StyleSubtle.Render(fmt.Sprintf("on break %dm %02ds", bm, bs))
+		}
+	}
+
+	var pomodoroLine string
+	if d.focusPomodoroCount > 0 {
+		pomodoroLine = StyleSubtle.Render(fmt.Sprintf("🍅 Pomodoro %d so far", d.focusPomodoroCount))
+	}
+
+	prompt := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#34D399")).
+		Bold(true).
+		Render("[b] resume focus session")
+	hint := StyleSubtle.Render("(no rush — the timer won't drag you back in)")
+
+	parts := []string{banner, "", subhead}
+	if stats != "" {
+		parts = append(parts, "", stats)
+	}
+	if pomodoroLine != "" {
+		parts = append(parts, pomodoroLine)
+	}
+	parts = append(parts, "", prompt, hint)
+
+	inner := lipgloss.JoinVertical(lipgloss.Center, parts...)
 	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, inner)
 }
 
