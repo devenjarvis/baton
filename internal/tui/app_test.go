@@ -1706,6 +1706,98 @@ func TestSoftAgentLimitGuard(t *testing.T) {
 	}
 }
 
+// TestSoftAgentLimitGuardMultiRepo verifies the two-press 'n' guard in focus
+// mode applies to the multi-repo path (picker) just like the single-repo path.
+func TestSoftAgentLimitGuardMultiRepo(t *testing.T) {
+	requireClaude(t)
+	dir, err := os.MkdirTemp("", "baton-softlimit-multi-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+
+	run := func(args ...string) {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("cmd %v: %v\n%s", args, err, out)
+		}
+	}
+	run("git", "init")
+	run("git", "config", "commit.gpgsign", "false")
+	run("git", "commit", "--allow-empty", "-m", "init")
+
+	mgr := agent.NewManager(dir, config.ResolvedSettings{
+		BypassPermissions:   true,
+		AgentProgram:        "claude",
+		MaxConcurrentAgents: 1,
+	})
+	defer mgr.Shutdown()
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.managers[dir] = mgr
+	app.activeRepo = dir
+	app.resolvedCache[dir] = config.ResolvedSettings{
+		BypassPermissions:   true,
+		AgentProgram:        "claude",
+		MaxConcurrentAgents: 1,
+	}
+	// Two repos triggers the multi-repo branch.
+	app.cfg = &config.Config{Repos: []config.Repo{{Path: dir}, {Path: "/fake/other"}}}
+
+	// Create the first agent to reach the limit.
+	app = createAgent(t, app)
+	if app.err != "" {
+		t.Fatalf("Error creating first agent: %s", app.err)
+	}
+	if mgr.AgentCount() != 1 {
+		t.Fatalf("Expected 1 agent, got %d", mgr.AgentCount())
+	}
+
+	// Return to list focus so 'n' reaches the app-level handler.
+	model, _ := app.Update(tea.KeyPressMsg{Code: 'e', Mod: tea.ModCtrl})
+	app = model.(App)
+	if app.dashboard.panelFocus != focusList {
+		t.Fatalf("Expected focusList after ctrl+e, got %v", app.dashboard.panelFocus)
+	}
+
+	// Enable focus mode.
+	app.focusModeActive = true
+
+	// First 'n' press: should warn and set newAgentPending; picker must NOT open.
+	model, cmd := app.Update(tea.KeyPressMsg{Code: 'n', Text: "n"})
+	app = model.(App)
+	if cmd != nil {
+		msg := cmd()
+		if _, ok := msg.(createResultMsg); ok {
+			t.Fatal("Expected no agent creation on first 'n' press at limit")
+		}
+	}
+	if !app.newAgentPending {
+		t.Fatal("Expected newAgentPending=true after first 'n' at limit")
+	}
+	if app.err == "" {
+		t.Fatal("Expected warning message after first 'n' at limit")
+	}
+	if app.repoPickerActive {
+		t.Fatal("Expected repoPickerActive=false on first 'n' at limit")
+	}
+
+	// Second 'n' press: should clear pending and open the picker.
+	model, _ = app.Update(tea.KeyPressMsg{Code: 'n', Text: "n"})
+	app = model.(App)
+	if app.newAgentPending {
+		t.Fatal("Expected newAgentPending=false after second 'n'")
+	}
+	if !app.repoPickerActive {
+		t.Fatal("Expected repoPickerActive=true after second 'n' override")
+	}
+}
+
 // TestClampToRepo verifies that clampToRepo always lands on a listItemRepo row.
 func TestClampToRepo(t *testing.T) {
 	sess := &agent.Session{Name: "s"}

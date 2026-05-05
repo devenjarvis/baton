@@ -1192,6 +1192,17 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, nil
 			case "n":
 				if a.cfg != nil && len(a.cfg.Repos) > 1 {
+					// Apply the same soft agent-count guard as the single-repo
+					// path before opening the picker.
+					resolved := a.resolvedCache[a.activeRepo]
+					if resolved.MaxConcurrentAgents > 0 && a.activeAgentCount() >= resolved.MaxConcurrentAgents {
+						if !a.newAgentPending {
+							a.newAgentPending = true
+							a.setError(fmt.Sprintf("n again to override — %d+ agents shown to reduce productivity", resolved.MaxConcurrentAgents))
+							return a, nil
+						}
+						a.newAgentPending = false
+					}
 					var options []string
 					activeIdx := 0
 					for i, repo := range a.cfg.Repos {
@@ -1207,11 +1218,8 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return a, nil
 				}
 				// Single repo: exits this case without returning, so control
-				// continues past this switch to the general "n" handler below
-				// (which includes the agent-count / backlog soft-limit checks).
-				// Multi-repo path skips those checks intentionally: picker
-				// navigation clears the pending flags anyway, and the user's
-				// explicit repo selection signals clear intent.
+				// falls through to the general "n" handler below, which contains
+				// the agent-count and backlog soft-limit checks.
 			}
 		}
 
