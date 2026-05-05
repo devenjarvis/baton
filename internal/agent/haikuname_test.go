@@ -447,3 +447,116 @@ func TestCallNamerWithRetry_LogsEachAttempt(t *testing.T) {
 		t.Errorf("second log entry: %+v, want attempt=2 suffix=ok-slug err=nil", seen[1])
 	}
 }
+
+// TestDefaultTaskSummarizer_NotNil verifies that DefaultTaskSummarizer returns
+// a non-nil callable.
+func TestDefaultTaskSummarizer_NotNil(t *testing.T) {
+	s := DefaultTaskSummarizer()
+	if s == nil {
+		t.Fatal("DefaultTaskSummarizer() returned nil")
+	}
+}
+
+// TestDefaultTaskSummarizer_EmptyPrompt verifies that an empty (or whitespace)
+// prompt returns "" without panic and without error.
+func TestDefaultTaskSummarizer_EmptyPrompt(t *testing.T) {
+	s := DefaultTaskSummarizer()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	for _, prompt := range []string{"", "   ", "\t\n"} {
+		got, err := s(ctx, prompt)
+		if err != nil {
+			t.Errorf("prompt=%q: unexpected error: %v", prompt, err)
+		}
+		if got != "" {
+			t.Errorf("prompt=%q: got %q, want \"\"", prompt, got)
+		}
+	}
+}
+
+// TestDefaultTaskSummarizer_ClaudeMissing verifies that when claude is not on
+// PATH the summarizer returns ("", nil) — no panic, no error.
+func TestDefaultTaskSummarizer_ClaudeMissing(t *testing.T) {
+	empty := t.TempDir()
+	t.Setenv("PATH", empty)
+
+	s := DefaultTaskSummarizer()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	got, err := s(ctx, "implement dark mode for the settings panel")
+	if err != nil {
+		t.Errorf("expected nil error when claude is absent, got: %v", err)
+	}
+	if got != "" {
+		t.Errorf("expected empty string when claude is absent, got: %q", got)
+	}
+}
+
+// TestDefaultTaskSummarizer_Success verifies that when a fake claude echoes a
+// plain-English phrase the summarizer returns that phrase verbatim (no slugify).
+func TestDefaultTaskSummarizer_Success(t *testing.T) {
+	dir := t.TempDir()
+	const response = "add dark mode to the settings panel"
+	writeFakeClaude(t, dir, response, 0)
+	withPATH(t, dir)
+
+	s := DefaultTaskSummarizer()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	got, err := s(ctx, "implement dark mode for the settings panel")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != response {
+		t.Errorf("got %q, want %q", got, response)
+	}
+}
+
+// TestDefaultTaskSummarizer_NonZeroExitReturnsEmpty verifies that a non-zero
+// claude exit results in ("", nil) — the summarizer swallows the error.
+func TestDefaultTaskSummarizer_NonZeroExitReturnsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	writeFakeClaude(t, dir, "some text", 1)
+	withPATH(t, dir)
+
+	s := DefaultTaskSummarizer()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	got, err := s(ctx, "implement dark mode")
+	if err != nil {
+		t.Errorf("expected nil error on subprocess failure, got: %v", err)
+	}
+	if got != "" {
+		t.Errorf("expected empty string on subprocess failure, got: %q", got)
+	}
+}
+
+// TestDefaultTaskSummarizer_OutputNotSlugified verifies that the summarizer
+// returns plain text with spaces — NOT a hyphen-separated slug.
+func TestDefaultTaskSummarizer_OutputNotSlugified(t *testing.T) {
+	dir := t.TempDir()
+	// Response with spaces — would become "implement dark mode" if not slugified,
+	// or "implement-dark-mode" if slugified.
+	const response = "implement dark mode for settings"
+	writeFakeClaude(t, dir, response, 0)
+	withPATH(t, dir)
+
+	s := DefaultTaskSummarizer()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	got, err := s(ctx, "add dark mode")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(got, "-") {
+		t.Errorf("output appears slugified (contains hyphen): %q", got)
+	}
+	if got != response {
+		t.Errorf("got %q, want %q", got, response)
+	}
+}
