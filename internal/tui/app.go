@@ -2564,7 +2564,9 @@ func (a App) View() tea.View {
 	case ViewDashboard:
 		if a.dashboard.panelFocus == focusReview && a.reviewSession != nil {
 			entry := a.reviewDiffCache[a.reviewSession.ID]
-			return tea.NewView(renderReviewPanel(a.reviewSession, entry, a.width, a.height))
+			v := tea.NewView(renderReviewPanel(a.reviewSession, entry, a.width, a.height))
+			v.AltScreen = true
+			return v
 		}
 		body := a.dashboard.View()
 		hints := dashboardHints

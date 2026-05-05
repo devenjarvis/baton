@@ -1580,6 +1580,34 @@ func TestFocusMode_RKey_NoopWithEmptyQueue(t *testing.T) {
 	}
 }
 
+// TestFocusMode_RKey_OpensReviewWithItems verifies that pressing "r" in focus
+// mode with a non-empty review queue switches to the review panel and that
+// the review-panel view stays inside alt-screen. Without AltScreen=true on the
+// review-panel branch of View(), the framework drops out of alt-screen each
+// frame and the user sees nothing change — which is the "r doesn't do anything"
+// bug this guards against.
+func TestFocusMode_RKey_OpensReviewWithItems(t *testing.T) {
+	app, _, _, sessR := makeFocusModeApp(t)
+
+	model, _ := app.Update(tea.KeyPressMsg{Code: 'r', Text: "r"})
+	app = model.(App)
+
+	if app.dashboard.panelFocus != focusReview {
+		t.Fatalf("expected panelFocus=focusReview after r, got %v", app.dashboard.panelFocus)
+	}
+	if app.reviewSession != sessR {
+		t.Fatalf("expected reviewSession=sessR, got %v", app.reviewSession)
+	}
+	if sessR.LifecyclePhase() != agent.LifecycleInReview {
+		t.Errorf("expected sessR phase=InReview, got %v", sessR.LifecyclePhase())
+	}
+
+	view := app.View()
+	if !view.AltScreen {
+		t.Error("review panel View must keep AltScreen=true; otherwise focus mode flickers out of alt-screen and r looks like a no-op")
+	}
+}
+
 // TestSoftAgentLimitGuard verifies the two-press 'n' guard in focus mode:
 // first press shows a warning and sets newAgentPending; second press proceeds.
 func TestSoftAgentLimitGuard(t *testing.T) {
