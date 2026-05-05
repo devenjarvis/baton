@@ -987,11 +987,12 @@ func (d dashboardModel) renderFocusLaunchView(width, height int) string {
 	return header + "\n" + tabBar + "\n" + render
 }
 
-// Breath animation tuning. 36 frames at the existing 100ms tick = a 3.6s
-// breath cycle (~17 BPM), which lands close to a guided-breathwork pace
-// rather than the old hyperventilating 1.2s loop.
+// Breath animation tuning. 100 frames at the 100ms tick = a 10s cycle
+// (5.5 BPM), matching coherent/resonance breathing — the rate that
+// maximally increases HRV and activates the parasympathetic nervous system
+// (PMID 24380741, PMC5575449). Equal 5s inhale / 5s exhale.
 const (
-	breathFrameCount = 36
+	breathFrameCount = 100
 	breathWidth      = 27
 	breathHeight     = 9
 )
@@ -1093,8 +1094,9 @@ func generateBreatheFrames() [breathFrameCount][breathHeight]string {
 // canvas.
 func (d dashboardModel) renderBreatheBlock(width, height int) string {
 	if width < breathWidth+4 || height < breathHeight+8 {
-		frame := d.focusBreakAnimFrame % 12
-		animColor := breatheColors[frame%len(breatheColors)]
+		cycle := d.focusBreakAnimFrame % breathFrameCount
+		frame := cycle * len(breatheFramesCompact) / breathFrameCount
+		animColor := breatheColors[(d.focusBreakAnimFrame/breathFrameCount)%len(breatheColors)]
 		animStyle := lipgloss.NewStyle().Foreground(animColor)
 		rows := breatheFramesCompact[frame]
 		return animStyle.Render(rows[0]) + "\n" +
@@ -1116,19 +1118,16 @@ func (d dashboardModel) renderBreatheBlock(width, height int) string {
 	return strings.Join(out, "\n")
 }
 
-// breathPhaseLabel returns a one-word cue ("inhale" / "hold" / "exhale")
-// matching the current breath phase so the user has a focal point.
+// breathPhaseLabel returns a one-word cue ("inhale" / "exhale") matching
+// the current breath phase. No hold phase — the sparkle ring in
+// generateBreatheFrames provides the held feeling visually at the peak.
 func (d dashboardModel) breathPhaseLabel() string {
 	frame := d.focusBreakAnimFrame % breathFrameCount
 	half := breathFrameCount / 2
-	switch {
-	case frame >= half-2 && frame <= half+1:
-		return "hold"
-	case frame < half:
+	if frame < half {
 		return "inhale"
-	default:
-		return "exhale"
 	}
+	return "exhale"
 }
 
 // renderBreakOverlay returns a fullscreen centered break screen. Behaviour
