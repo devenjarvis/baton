@@ -22,8 +22,8 @@ type BranchNamer func(ctx context.Context, instruction string) (string, error)
 // TaskSummarizer asynchronously summarizes a user prompt into a short
 // plain-English description (10-15 words) suitable for display in the TUI.
 // Unlike BranchNamer the result is NOT slugified — it is display text.
-// Returns ("", nil) on empty prompt; returns ("", err) on failure so callers
-// can fall back gracefully without panicking.
+// Returns ("", nil) on empty prompt and on any subprocess failure — callers
+// should treat "" as "no summary available" and fall back gracefully.
 type TaskSummarizer func(ctx context.Context, prompt string) (string, error)
 
 // taskSummaryPrompt is prepended to the user prompt when asking Haiku for a
