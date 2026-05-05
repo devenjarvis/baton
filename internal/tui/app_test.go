@@ -2087,3 +2087,181 @@ func TestFocusModeBlocksDKey(t *testing.T) {
 		t.Errorf("expected view=ViewDashboard after d in focus mode, got %v", app.view)
 	}
 }
+
+// TestFocusLaunch_MKey_ExitsAndMarksReadyForReview verifies that pressing "m"
+// while viewing an agent in fullscreen exits focusLaunch and marks the session
+// ReadyForReview when the session is InProgress and DoneAt is set.
+func TestFocusLaunch_MKey_ExitsAndMarksReadyForReview(t *testing.T) {
+	sess := &agent.Session{Name: "active"}
+	sess.SetLifecyclePhase(agent.LifecycleInProgress)
+	sess.MarkDone()
+
+	app := NewApp()
+	app.width = 120
+	app.dashboard.width = 120
+	// height=0 makes fixedTermHeight()<=0, skipping resize on the placeholder agent.
+	app.dashboard.height = 0
+	app.focusModeActive = true
+	app.dashboard.focusModeActive = true
+	app.dashboard.items = []listItem{
+		{kind: listItemRepo, repoPath: "/r", repoName: "repo"},
+		{kind: listItemSession, repoPath: "/r", session: sess},
+	}
+	app.dashboard.panelFocus = focusLaunch
+	app.focusLaunchAgent = &agent.Agent{}
+	app.focusLaunchSession = sess
+
+	model, _ := app.Update(tea.KeyPressMsg{Code: 'm', Text: "m"})
+	app = model.(App)
+
+	if app.dashboard.panelFocus != focusList {
+		t.Errorf("expected panelFocus=focusList after m, got %v", app.dashboard.panelFocus)
+	}
+	if app.focusLaunchAgent != nil {
+		t.Error("expected focusLaunchAgent=nil after m")
+	}
+	if app.focusLaunchSession != nil {
+		t.Error("expected focusLaunchSession=nil after m")
+	}
+	if sess.LifecyclePhase() != agent.LifecycleReadyForReview {
+		t.Errorf("expected session phase=ReadyForReview, got %v", sess.LifecyclePhase())
+	}
+}
+
+// TestFocusLaunch_MKey_ResetsFocusQueueIndex verifies that pressing "m" from
+// focusLaunch resets focusQueueIndex to 0 so a subsequent "r" opens the
+// newly-queued session rather than a stale position.
+func TestFocusLaunch_MKey_ResetsFocusQueueIndex(t *testing.T) {
+	sess := &agent.Session{Name: "active"}
+	sess.SetLifecyclePhase(agent.LifecycleInProgress)
+	sess.MarkDone()
+
+	app := NewApp()
+	app.width = 120
+	app.dashboard.width = 120
+	app.dashboard.height = 0
+	app.focusModeActive = true
+	app.dashboard.focusModeActive = true
+	app.dashboard.items = []listItem{
+		{kind: listItemRepo, repoPath: "/r", repoName: "repo"},
+		{kind: listItemSession, repoPath: "/r", session: sess},
+	}
+	app.dashboard.panelFocus = focusLaunch
+	app.focusLaunchAgent = &agent.Agent{}
+	app.focusLaunchSession = sess
+	app.focusQueueIndex = 2 // stale nonzero index
+
+	model, _ := app.Update(tea.KeyPressMsg{Code: 'm', Text: "m"})
+	app = model.(App)
+
+	if app.focusQueueIndex != 0 {
+		t.Errorf("expected focusQueueIndex=0 after m, got %d", app.focusQueueIndex)
+	}
+}
+
+// TestFocusLaunch_MKey_NoopWhenDoneAtZero verifies that pressing "m" while in
+// focusLaunch exits fullscreen but does not change the lifecycle phase when
+// the session's DoneAt is zero (agents still running).
+func TestFocusLaunch_MKey_NoopWhenDoneAtZero(t *testing.T) {
+	sess := &agent.Session{Name: "active"}
+	sess.SetLifecyclePhase(agent.LifecycleInProgress)
+	// DoneAt is zero: agents are still running.
+
+	app := NewApp()
+	app.width = 120
+	app.dashboard.width = 120
+	app.dashboard.height = 0
+	app.focusModeActive = true
+	app.dashboard.focusModeActive = true
+	app.dashboard.items = []listItem{
+		{kind: listItemRepo, repoPath: "/r", repoName: "repo"},
+		{kind: listItemSession, repoPath: "/r", session: sess},
+	}
+	app.dashboard.panelFocus = focusLaunch
+	app.focusLaunchAgent = &agent.Agent{}
+	app.focusLaunchSession = sess
+
+	model, _ := app.Update(tea.KeyPressMsg{Code: 'm', Text: "m"})
+	app = model.(App)
+
+	if app.dashboard.panelFocus != focusList {
+		t.Errorf("expected panelFocus=focusList after m, got %v", app.dashboard.panelFocus)
+	}
+	if sess.LifecyclePhase() != agent.LifecycleInProgress {
+		t.Errorf("expected session phase unchanged=InProgress, got %v", sess.LifecyclePhase())
+	}
+}
+
+// TestFocusLaunch_RKey_ExitsAndOpensReview verifies that pressing "r" while in
+// focusLaunch exits fullscreen and opens the review panel for the queued session.
+func TestFocusLaunch_RKey_ExitsAndOpensReview(t *testing.T) {
+	sessA := &agent.Session{Name: "active"}
+	sessA.SetLifecyclePhase(agent.LifecycleInProgress)
+	sessR := &agent.Session{Name: "ready"}
+	sessR.SetLifecyclePhase(agent.LifecycleReadyForReview)
+
+	app := NewApp()
+	app.width = 120
+	app.dashboard.width = 120
+	app.dashboard.height = 0
+	app.focusModeActive = true
+	app.dashboard.focusModeActive = true
+	app.dashboard.items = []listItem{
+		{kind: listItemRepo, repoPath: "/r", repoName: "repo"},
+		{kind: listItemSession, repoPath: "/r", session: sessA},
+		{kind: listItemSession, repoPath: "/r", session: sessR},
+	}
+	app.dashboard.panelFocus = focusLaunch
+	app.focusLaunchAgent = &agent.Agent{}
+	app.focusLaunchSession = sessA
+
+	model, _ := app.Update(tea.KeyPressMsg{Code: 'r', Text: "r"})
+	app = model.(App)
+
+	if app.dashboard.panelFocus != focusReview {
+		t.Fatalf("expected panelFocus=focusReview after r, got %v", app.dashboard.panelFocus)
+	}
+	if app.focusLaunchAgent != nil {
+		t.Error("expected focusLaunchAgent=nil after r")
+	}
+	if sessR.LifecyclePhase() != agent.LifecycleInReview {
+		t.Errorf("expected sessR phase=InReview, got %v", sessR.LifecyclePhase())
+	}
+}
+
+// TestFocusMode_MKey_IsCursorAware verifies that pressing "m" in focus pipeline
+// view marks the session under the cursor (focusActiveIdx), not the first matching
+// session in the list.
+func TestFocusMode_MKey_IsCursorAware(t *testing.T) {
+	sessA := &agent.Session{Name: "active-a"}
+	sessA.SetLifecyclePhase(agent.LifecycleInProgress)
+	sessA.MarkDone()
+	sessB := &agent.Session{Name: "active-b"}
+	sessB.SetLifecyclePhase(agent.LifecycleInProgress)
+	sessB.MarkDone()
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.focusModeActive = true
+	app.dashboard.focusModeActive = true
+	app.dashboard.items = []listItem{
+		{kind: listItemRepo, repoPath: "/r", repoName: "repo"},
+		{kind: listItemSession, repoPath: "/r", session: sessA},
+		{kind: listItemSession, repoPath: "/r", session: sessB},
+	}
+	app.focusCursorSection = focusSectionActive
+	app.focusActiveIdx = 1 // cursor on sessB, not sessA
+
+	model, _ := app.Update(tea.KeyPressMsg{Code: 'm', Text: "m"})
+	app = model.(App)
+
+	if sessB.LifecyclePhase() != agent.LifecycleReadyForReview {
+		t.Errorf("expected sessB (cursor session) phase=ReadyForReview, got %v", sessB.LifecyclePhase())
+	}
+	if sessA.LifecyclePhase() != agent.LifecycleInProgress {
+		t.Errorf("expected sessA (non-cursor session) phase unchanged=InProgress, got %v", sessA.LifecyclePhase())
+	}
+}
