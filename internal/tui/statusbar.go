@@ -87,9 +87,10 @@ var (
 		{"enter", "send"},
 		{"pgup/pgdn", "scroll"},
 		{"home", "live"},
-		{"⌘[/]", "switch tab"},
-		{"⌘j", "shell"},
-		{"⌘a", "new agent"},
+		{"alt+[/]", "switch tab"},
+		{"ctrl+t", "shell"},
+		{"ctrl+n", "new agent"},
+		{"ctrl+w", "close tab"},
 		{"esc", "back"},
 		{"⇧esc", "interrupt"},
 	}
