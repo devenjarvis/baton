@@ -123,7 +123,7 @@ type dashboardModel struct {
 	focusSessionMinutes    int
 	focusBreakMode         bool
 	focusBreakElapsed      time.Duration
-	focusPomodoroCount     int
+	focusBlockCount        int
 	focusBreakMinutes      int
 	focusBreakAnimFrame    int
 	focusBreakShortWarning bool
@@ -1145,9 +1145,9 @@ func (d dashboardModel) renderBreakOverlay(width, height int) string {
 	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#38BDF8")).Bold(true)
 	title := titleStyle.Render("BREAK")
 
-	var pomodoroLine string
-	if d.focusPomodoroCount > 0 {
-		pomodoroLine = StyleSubtle.Render(fmt.Sprintf("🍅 Pomodoro %d", d.focusPomodoroCount))
+	var blockLine string
+	if d.focusBlockCount > 0 {
+		blockLine = StyleSubtle.Render(fmt.Sprintf("Block %d", d.focusBlockCount))
 	}
 
 	phaseLine := StyleSubtle.Render(d.breathPhaseLabel())
@@ -1173,8 +1173,8 @@ func (d dashboardModel) renderBreakOverlay(width, height int) string {
 
 	var parts []string
 	parts = append(parts, title)
-	if pomodoroLine != "" {
-		parts = append(parts, pomodoroLine)
+	if blockLine != "" {
+		parts = append(parts, blockLine)
 	}
 	parts = append(parts, "")
 	parts = append(parts, animBlock)
@@ -1223,9 +1223,9 @@ func (d dashboardModel) renderBreakCompleteOverlay(width, height int) string {
 		}
 	}
 
-	var pomodoroLine string
-	if d.focusPomodoroCount > 0 {
-		pomodoroLine = StyleSubtle.Render(fmt.Sprintf("🍅 Pomodoro %d so far", d.focusPomodoroCount))
+	var blockLine string
+	if d.focusBlockCount > 0 {
+		blockLine = StyleSubtle.Render(fmt.Sprintf("Block %d so far", d.focusBlockCount))
 	}
 
 	prompt := lipgloss.NewStyle().
@@ -1238,8 +1238,8 @@ func (d dashboardModel) renderBreakCompleteOverlay(width, height int) string {
 	if stats != "" {
 		parts = append(parts, "", stats)
 	}
-	if pomodoroLine != "" {
-		parts = append(parts, pomodoroLine)
+	if blockLine != "" {
+		parts = append(parts, blockLine)
 	}
 	parts = append(parts, "", prompt, hint)
 
@@ -1257,8 +1257,8 @@ func (d dashboardModel) renderFullscreenFocus(width, height int) string {
 
 	// Header: title + timer
 	title := StyleTitle.Render("FOCUS")
-	if d.focusPomodoroCount > 0 {
-		title += "  " + StyleSubtle.Render(fmt.Sprintf("🍅 Pomodoro %d", d.focusPomodoroCount))
+	if d.focusBlockCount > 0 {
+		title += "  " + StyleSubtle.Render(fmt.Sprintf("Block %d", d.focusBlockCount))
 	}
 	timerStr := ""
 	if d.focusSessionMinutes > 0 {

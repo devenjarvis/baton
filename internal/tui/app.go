@@ -117,7 +117,7 @@ type App struct {
 	// Wellness / focus mode state.
 	focusModeActive        bool
 	appStart               time.Time // set once at init; never reset; used for total session duration in wellness log
-	sessionStart           time.Time // per-pomodoro work timer; reset on each break completion
+	sessionStart           time.Time // per-block work timer; reset on each break completion
 	lastReviewAt           time.Time
 	newAgentPending        bool
 	focusSessionMinutes    int          // cached from resolved global settings
@@ -130,7 +130,7 @@ type App struct {
 	focusBacklogWarning    bool // first n at backlog limit shows warning; second proceeds
 	focusBreakMode         bool
 	focusBreakStart        time.Time // wall-clock; monotonic stripped so suspend counts toward elapsed
-	focusPomodoroCount     int
+	focusBlockCount        int
 	focusBreakShortWarning bool
 	focusBreakTimerUp      bool // break duration elapsed; waiting on user to resume
 	focusBreakAnimFrame    int
@@ -1297,7 +1297,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Break is fully elapsed; user is opting back in. Exit
 				// without any "are you sure" friction.
 				a.sessionStart = time.Now()
-				a.focusPomodoroCount++
+				a.focusBlockCount++
 				a.focusBreakMode = false
 				a.focusBreakShortWarning = false
 				a.focusBreakTimerUp = false
@@ -1308,7 +1308,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Third b press while still inside the break window:
 				// override the short-break guard and end early.
 				a.sessionStart = time.Now()
-				a.focusPomodoroCount++
+				a.focusBlockCount++
 				a.focusBreakMode = false
 				a.focusBreakShortWarning = false
 				a.focusBreakTimerUp = false
@@ -2305,7 +2305,7 @@ func (a *App) refreshAgentList() {
 	} else {
 		a.dashboard.focusBreakElapsed = 0
 	}
-	a.dashboard.focusPomodoroCount = a.focusPomodoroCount
+	a.dashboard.focusBlockCount = a.focusBlockCount
 	a.dashboard.focusBreakMinutes = a.focusBreakMinutes
 	a.dashboard.focusBreakAnimFrame = a.focusBreakAnimFrame
 	a.dashboard.focusBreakShortWarning = a.focusBreakShortWarning
@@ -3087,12 +3087,12 @@ func (a *App) activeAgentCount() int {
 
 // wellnessLogEntry is the JSON structure written on session end.
 type wellnessLogEntry struct {
-	Date               string `json:"date"`
-	DurationMin        int    `json:"duration_min"`
-	AgentsCreated      int    `json:"agents_created"`
-	SessionsCreated    int    `json:"sessions_created"`
-	FocusSwitches      int    `json:"focus_switches"`
-	PomodorosCompleted int    `json:"pomodoros_completed"`
+	Date            string `json:"date"`
+	DurationMin     int    `json:"duration_min"`
+	AgentsCreated   int    `json:"agents_created"`
+	SessionsCreated int    `json:"sessions_created"`
+	FocusSwitches   int    `json:"focus_switches"`
+	BlocksCompleted int    `json:"blocks_completed"`
 }
 
 // writeWellnessLog appends a single JSON line to <repoPath>/.baton/logs/wellness.log.
@@ -3113,12 +3113,12 @@ func (a *App) writeWellnessLog() {
 
 	elapsed := time.Since(a.appStart)
 	entry := wellnessLogEntry{
-		Date:               time.Now().UTC().Format(time.RFC3339),
-		DurationMin:        int(elapsed.Minutes()),
-		AgentsCreated:      a.agentsCreatedCount,
-		SessionsCreated:    a.sessionsCreatedCount,
-		FocusSwitches:      a.focusModeSwitches,
-		PomodorosCompleted: a.focusPomodoroCount,
+		Date:            time.Now().UTC().Format(time.RFC3339),
+		DurationMin:     int(elapsed.Minutes()),
+		AgentsCreated:   a.agentsCreatedCount,
+		SessionsCreated: a.sessionsCreatedCount,
+		FocusSwitches:   a.focusModeSwitches,
+		BlocksCompleted: a.focusBlockCount,
 	}
 	data, err := json.Marshal(entry)
 	if err != nil {
