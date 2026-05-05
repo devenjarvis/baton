@@ -52,7 +52,8 @@ func keyPress(s string) tea.KeyPressMsg {
 }
 
 func TestTree_InitialState(t *testing.T) {
-	tr := buildTree(t,
+	tr := buildTree(
+		t,
 		"cmd/root.go",
 		"cmd/hook.go",
 		"internal/tui/app.go",
@@ -68,7 +69,8 @@ func TestTree_InitialState(t *testing.T) {
 }
 
 func TestTree_CollapseFolder(t *testing.T) {
-	tr := buildTree(t,
+	tr := buildTree(
+		t,
 		"cmd/a.go",
 		"cmd/b.go",
 		"internal/x.go",

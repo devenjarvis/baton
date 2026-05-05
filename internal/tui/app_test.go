@@ -1774,8 +1774,8 @@ func TestFocusModeNavigationOnlyLandsOnRepos(t *testing.T) {
 }
 
 // makeFocusModeApp wires up an App in focus mode with two in-progress sessions
-// and one ready-for-review session, plus a single waiting agent. Used by the
-// tests below to exercise unified cursor navigation across the three sections.
+// and one ready-for-review session. Used by the tests below to exercise unified
+// cursor navigation across the Active and Review sections.
 func makeFocusModeApp(t *testing.T) (App, *agent.Session, *agent.Session, *agent.Session) {
 	t.Helper()
 	sessA := &agent.Session{Name: "active-a"}
@@ -1802,8 +1802,8 @@ func makeFocusModeApp(t *testing.T) (App, *agent.Session, *agent.Session, *agent
 }
 
 // TestFocusModeNavigationCrossesSections verifies that j/k in focus mode
-// traverses Active → Review → Attention in render order, transitioning between
-// sections at the boundaries instead of bouncing two indices in lockstep.
+// traverses Active → Review in render order, transitioning between sections at
+// the boundaries instead of bouncing two indices in lockstep.
 func TestFocusModeNavigationCrossesSections(t *testing.T) {
 	app, _, _, _ := makeFocusModeApp(t)
 	if app.focusCursorSection != focusSectionActive {
@@ -1831,7 +1831,7 @@ func TestFocusModeNavigationCrossesSections(t *testing.T) {
 		t.Fatalf("after 2nd j: expected review[0], got section=%v review=%d", app.focusCursorSection, app.focusQueueIndex)
 	}
 
-	// j: review[0] (last review, no attention) → no-op.
+	// j: review[0] (last review, no further section) → no-op.
 	model, _ = app.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
 	app = model.(App)
 	if app.focusCursorSection != focusSectionReview || app.focusQueueIndex != 0 {
@@ -1914,9 +1914,9 @@ func TestFocusModeEnterOnActiveOpensFocusLaunch(t *testing.T) {
 }
 
 // TestFocusModeNavigationVisibleOnActiveOnly verifies that when only Active
-// rows exist (no review queue, no attention), j/k still move within the active
-// section and the dashboard sees the updated focusActiveIdx so the selection
-// marker can render. This is the bug the user reported: an invisible cursor.
+// rows exist (no review queue), j/k still move within the active section and
+// the dashboard sees the updated focusActiveIdx so the selection marker can
+// render. This is the bug the user reported: an invisible cursor.
 func TestFocusModeNavigationVisibleOnActiveOnly(t *testing.T) {
 	sessA := &agent.Session{Name: "active-a"}
 	sessA.SetLifecyclePhase(agent.LifecycleInProgress)

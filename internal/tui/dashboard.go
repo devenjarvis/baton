@@ -120,7 +120,6 @@ type dashboardModel struct {
 	focusSessionMinutes int
 	focusActiveIdx      int            // index of highlighted in-progress session row
 	focusQueueIndex     int            // index into ReadyForReview sessions in fullscreen focus mode
-	focusAttentionIdx   int            // index of highlighted waiting/error agent row
 	focusCursorSection  focusSection   // which fullscreen-focus section the cursor is on
 	activeRepoName      string         // display name of the active repo
 	activeRepoPath      string         // canonical path of the active repo (for pipeline filtering)
@@ -390,7 +389,8 @@ func (d dashboardModel) View() string {
 			BorderForeground(ColorSecondary)
 	}
 
-	out := lipgloss.JoinHorizontal(lipgloss.Top,
+	out := lipgloss.JoinHorizontal(
+		lipgloss.Top,
 		listStyle.Render(list),
 		previewStyle.Render(preview),
 	)
@@ -659,7 +659,8 @@ func (d dashboardModel) renderList(width int) string {
 				padName = 0
 			}
 
-			line := fmt.Sprintf("%s%s %s%s %s",
+			line := fmt.Sprintf(
+				"%s%s %s%s %s",
 				agentPrefix,
 				style.Render(symbol),
 				nameRendered,
@@ -767,102 +768,60 @@ func (d dashboardModel) reviewQueueSessions() []listItem {
 	return result
 }
 
-// inProgressSessions returns listItems for sessions in InProgress phase with agents still running.
-func (d dashboardModel) inProgressSessions() []listItem {
+// allInProgressSessions returns listItems for all sessions in InProgress phase,
+// including those whose process has finished (DoneAt set) but have not yet been
+// moved to ReadyForReview. This merges what was previously the active list and
+// the nudge-row source into a single unified list.
+func (d dashboardModel) allInProgressSessions() []listItem {
 	var result []listItem
 	for _, item := range d.items {
 		if item.kind == listItemSession && item.session != nil &&
-			item.session.LifecyclePhase() == agent.LifecycleInProgress && item.session.DoneAt().IsZero() {
+			item.session.LifecyclePhase() == agent.LifecycleInProgress {
 			result = append(result, item)
 		}
 	}
 	return result
 }
 
-// attentionAgents returns agents in StatusWaiting or StatusError (non-shell only).
-func (d dashboardModel) attentionAgents() []*agent.Agent {
-	var result []*agent.Agent
+// sessionFocusStatus returns a styled inline status badge for a session row in
+// the unified SESSIONS list. Priority: Error > Waiting > finished (DoneAt set)
+// > normal (N active, M idle).
+func (d dashboardModel) sessionFocusStatus(sess *agent.Session) string {
+	var waitingCount, activeCount, idleCount int
+	var firstWaitingReason string
+	var hasError bool
 	for _, item := range d.items {
-		if item.kind != listItemAgent || item.agent == nil || item.agent.IsShell {
+		if item.kind != listItemAgent || item.agent == nil || item.agent.IsShell || item.session != sess {
 			continue
 		}
-		status := item.agent.Status()
-		if status == agent.StatusWaiting || status == agent.StatusError {
-			result = append(result, item.agent)
-		}
-	}
-	return result
-}
-
-// sessionForAgent returns the session that owns ag, or nil if not found.
-func (d dashboardModel) sessionForAgent(ag *agent.Agent) *agent.Session {
-	if ag == nil {
-		return nil
-	}
-	for _, item := range d.items {
-		if item.kind == listItemAgent && item.agent != nil && item.agent.ID == ag.ID {
-			return item.session
-		}
-	}
-	return nil
-}
-
-// renderAttentionRows renders Waiting/Error agents with selection marker and waiting reason.
-func (d dashboardModel) renderAttentionRows() []string {
-	lines := make([]string, 0, len(d.items))
-	idx := 0
-	for _, item := range d.items {
-		if item.kind != listItemAgent || item.agent == nil || item.agent.IsShell {
-			continue
-		}
-		status := item.agent.Status()
-		if status != agent.StatusWaiting && status != agent.StatusError {
-			continue
-		}
-		agentName := item.agent.GetDisplayName()
-		label := agentName
-		if item.session != nil {
-			sessName := item.session.GetDisplayName()
-			if sessName != agentName {
-				label = sessName + " › " + agentName
-			} else {
-				label = sessName
+		switch item.agent.Status() {
+		case agent.StatusError:
+			hasError = true
+		case agent.StatusWaiting:
+			waitingCount++
+			if firstWaitingReason == "" {
+				firstWaitingReason = item.agent.WaitingReason()
 			}
+		case agent.StatusActive:
+			activeCount++
+		case agent.StatusIdle:
+			idleCount++
 		}
-		var style lipgloss.Style
-		if status == agent.StatusWaiting {
-			style = lipgloss.NewStyle().Foreground(ColorWaiting)
-		} else {
-			style = lipgloss.NewStyle().Foreground(ColorError)
-		}
-		prefix := "  "
-		if d.focusCursorSection == focusSectionAttention && idx == d.focusAttentionIdx {
-			prefix = "> "
-		}
-		line := style.Render(fmt.Sprintf("%s⏸ %s", prefix, label))
-		if reason := item.agent.WaitingReason(); reason != "" {
-			line += StyleSubtle.Render(" — " + truncateVisible(reason, 50))
-		}
-		lines = append(lines, line)
-		idx++
 	}
-	return lines
-}
-
-// renderNudgeRows renders one dim line per session that is Done (process) but still InProgress (lifecycle).
-func (d dashboardModel) renderNudgeRows() []string {
-	lines := make([]string, 0, len(d.items))
-	for _, item := range d.items {
-		if item.kind != listItemSession || item.session == nil {
-			continue
-		}
-		sess := item.session
-		if sess.LifecyclePhase() != agent.LifecycleInProgress || sess.DoneAt().IsZero() {
-			continue
-		}
-		lines = append(lines, StyleSubtle.Render(fmt.Sprintf("· %s finished — press m to mark ready", sess.GetDisplayName())))
+	if hasError {
+		return lipgloss.NewStyle().Foreground(ColorError).Render("✗ error")
 	}
-	return lines
+	if waitingCount > 0 {
+		badge := fmt.Sprintf("⏸ %d waiting", waitingCount)
+		if firstWaitingReason != "" {
+			badge += " — " + truncateVisible(firstWaitingReason, 40)
+		}
+		return lipgloss.NewStyle().Foreground(ColorWaiting).Render(badge)
+	}
+	if !sess.DoneAt().IsZero() {
+		return lipgloss.NewStyle().Foreground(ColorSuccess).Render("✓ finished — awaiting prompt")
+	}
+	return StyleSubtle.Render(fmt.Sprintf("%d active, %d idle", activeCount, idleCount))
 }
 
 // renderPipelineWidget renders the 4-cell pipeline row.
@@ -903,7 +862,8 @@ func (d dashboardModel) renderPipelineWidget(width int) string {
 		return style.Render(inner)
 	}
 
-	return lipgloss.JoinHorizontal(lipgloss.Top,
+	return lipgloss.JoinHorizontal(
+		lipgloss.Top,
 		cell("IN PROGRESS", inProgress, lipgloss.Color("#7ec8e3"), false),
 		cell("READY TO REVIEW", readyForReview, ColorWarning, readyForReview > 0),
 		cell("IN REVIEW", inReview, lipgloss.Color("#9b7fdb"), false),
@@ -1114,25 +1074,13 @@ func (d dashboardModel) renderFullscreenFocus(width, height int) string {
 	lines = append(lines, d.renderPipelineWidget(width))
 	lines = append(lines, "")
 
-	// Active sessions
-	activeSessions := d.inProgressSessions()
-	if len(activeSessions) > 0 {
-		lines = append(lines, StyleSubtle.Render("ACTIVE"))
-		for i, item := range activeSessions {
+	// Unified sessions list
+	allSessions := d.allInProgressSessions()
+	if len(allSessions) > 0 {
+		lines = append(lines, StyleSubtle.Render("SESSIONS"))
+		for i, item := range allSessions {
 			sess := item.session
 			name := sess.GetDisplayName()
-			var activeCount, idleCount int
-			for _, ag := range d.items {
-				if ag.kind != listItemAgent || ag.agent == nil || ag.agent.IsShell || ag.session != sess {
-					continue
-				}
-				switch ag.agent.Status() {
-				case agent.StatusActive:
-					activeCount++
-				case agent.StatusIdle:
-					idleCount++
-				}
-			}
 			selected := d.focusCursorSection == focusSectionActive && i == d.focusActiveIdx
 			prefix := "  "
 			nameStyled := name
@@ -1140,13 +1088,8 @@ func (d dashboardModel) renderFullscreenFocus(width, height int) string {
 				prefix = StyleActive.Render("> ")
 				nameStyled = lipgloss.NewStyle().Foreground(ColorText).Bold(true).Render(name)
 			}
-			var summaryStyled string
-			if activeCount == 0 && idleCount > 0 {
-				summaryStyled = lipgloss.NewStyle().Foreground(ColorSuccess).Render("finished — awaiting prompt")
-			} else {
-				summaryStyled = StyleSubtle.Render(fmt.Sprintf("%d active, %d idle", activeCount, idleCount))
-			}
-			lines = append(lines, fmt.Sprintf("%s%s  %s", prefix, nameStyled, summaryStyled))
+			badge := d.sessionFocusStatus(sess)
+			lines = append(lines, fmt.Sprintf("%s%s  %s", prefix, nameStyled, badge))
 		}
 		lines = append(lines, "")
 	}
@@ -1187,11 +1130,6 @@ func (d dashboardModel) renderFullscreenFocus(width, height int) string {
 		}
 		lines = append(lines, "")
 	}
-
-	// Attention + nudge
-	lines = append(lines, StyleSubtle.Render(strings.Repeat("─", width-2)))
-	lines = append(lines, d.renderAttentionRows()...)
-	lines = append(lines, d.renderNudgeRows()...)
 
 	return strings.Join(lines, "\n")
 }

@@ -193,7 +193,8 @@ func checkHookPipeline(batonExe string) error {
 		}
 		baseEnv = append(baseEnv, kv)
 	}
-	cmd.Env = append(baseEnv,
+	cmd.Env = append(
+		baseEnv,
 		"BATON_HOOK_SOCKET="+socket,
 		"BATON_AGENT_ID=doctor",
 	)

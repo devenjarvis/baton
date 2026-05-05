@@ -120,9 +120,8 @@ type App struct {
 	lastReviewAt        time.Time
 	newAgentPending     bool
 	focusSessionMinutes int          // cached from resolved global settings
-	focusActiveIdx      int          // index into inProgressSessions
+	focusActiveIdx      int          // index into allInProgressSessions()
 	focusQueueIndex     int          // index into reviewQueueSessions
-	focusAttentionIdx   int          // index into attentionAgents
 	focusCursorSection  focusSection // which section the focus-mode cursor is on
 	focusLaunchAgent    *agent.Agent
 	focusLaunchSession  *agent.Session
@@ -2148,7 +2147,6 @@ func (a *App) refreshAgentList() {
 	a.dashboard.focusSessionMinutes = a.focusSessionMinutes
 	a.dashboard.focusActiveIdx = a.focusActiveIdx
 	a.dashboard.focusQueueIndex = a.focusQueueIndex
-	a.dashboard.focusAttentionIdx = a.focusAttentionIdx
 	a.dashboard.focusCursorSection = a.focusCursorSection
 	a.dashboard.activeRepoName = a.activeRepoDisplayName()
 	a.dashboard.activeRepoPath = a.activeRepo
@@ -2248,21 +2246,18 @@ func (a *App) refreshAgentList() {
 	a.recomputePRSectionY()
 }
 
-// focusSectionCounts returns the number of rows in each fullscreen-focus section,
-// in the same order as the focusSection constants (active, review, attention).
-func (a *App) focusSectionCounts() (active, review, attention int) {
-	return len(a.dashboard.inProgressSessions()),
-		len(a.dashboard.reviewQueueSessions()),
-		len(a.dashboard.attentionAgents())
+// focusSectionCounts returns the number of rows in each fullscreen-focus section.
+func (a *App) focusSectionCounts() (active, review int) {
+	return len(a.dashboard.allInProgressSessions()),
+		len(a.dashboard.reviewQueueSessions())
 }
 
 // clampFocusCursor keeps the per-section indices and the cursor section in
-// valid ranges as the underlying lists change (sessions transition phases,
-// agents leave the attention list, etc.). When the cursor's current section
-// becomes empty, it falls through to the next non-empty section in render
-// order so the cursor stays on a visible row.
+// valid ranges as the underlying lists change (sessions transition phases, etc.).
+// When the cursor's current section becomes empty, it falls through to the next
+// non-empty section in render order so the cursor stays on a visible row.
 func (a *App) clampFocusCursor() {
-	actCount, revCount, attCount := a.focusSectionCounts()
+	actCount, revCount := a.focusSectionCounts()
 
 	clamp := func(idx, n int) int {
 		if n <= 0 {
@@ -2278,9 +2273,8 @@ func (a *App) clampFocusCursor() {
 	}
 	a.focusActiveIdx = clamp(a.focusActiveIdx, actCount)
 	a.focusQueueIndex = clamp(a.focusQueueIndex, revCount)
-	a.focusAttentionIdx = clamp(a.focusAttentionIdx, attCount)
 
-	counts := [3]int{actCount, revCount, attCount}
+	counts := [2]int{actCount, revCount}
 	if counts[int(a.focusCursorSection)] > 0 {
 		return
 	}
@@ -2296,7 +2290,7 @@ func (a *App) clampFocusCursor() {
 // moveFocusCursorUp moves the fullscreen-focus cursor up one row. When at the
 // top of the current section, it transitions to the previous non-empty section.
 func (a *App) moveFocusCursorUp() {
-	actCount, revCount, _ := a.focusSectionCounts()
+	actCount, _ := a.focusSectionCounts()
 
 	switch a.focusCursorSection {
 	case focusSectionActive:
@@ -2312,20 +2306,6 @@ func (a *App) moveFocusCursorUp() {
 			a.focusCursorSection = focusSectionActive
 			a.focusActiveIdx = actCount - 1
 		}
-	case focusSectionAttention:
-		if a.focusAttentionIdx > 0 {
-			a.focusAttentionIdx--
-			return
-		}
-		if revCount > 0 {
-			a.focusCursorSection = focusSectionReview
-			a.focusQueueIndex = revCount - 1
-			return
-		}
-		if actCount > 0 {
-			a.focusCursorSection = focusSectionActive
-			a.focusActiveIdx = actCount - 1
-		}
 	}
 }
 
@@ -2335,19 +2315,18 @@ func (a *App) moveFocusCursorUp() {
 func (a *App) syncFocusCursorToDashboard() {
 	a.dashboard.focusActiveIdx = a.focusActiveIdx
 	a.dashboard.focusQueueIndex = a.focusQueueIndex
-	a.dashboard.focusAttentionIdx = a.focusAttentionIdx
 	a.dashboard.focusCursorSection = a.focusCursorSection
 }
 
 // activateFocusCursor opens the row currently under the fullscreen-focus
-// cursor. Active sessions and attention agents jump into a focusLaunch
-// terminal; review-queue sessions open the review panel. Returns ok=false
-// when the cursor's section has no actionable row, so the caller can fall
-// through to other key handlers.
+// cursor. Active sessions jump into a focusLaunch terminal (openSessionInFocusLaunch
+// picks the highest-priority agent, so waiting agents are correctly targeted);
+// review-queue sessions open the review panel. Returns ok=false when the
+// cursor's section has no actionable row.
 func (a *App) activateFocusCursor() (tea.Cmd, bool) {
 	switch a.focusCursorSection {
 	case focusSectionActive:
-		sessions := a.dashboard.inProgressSessions()
+		sessions := a.dashboard.allInProgressSessions()
 		if len(sessions) == 0 {
 			return nil, false
 		}
@@ -2372,21 +2351,6 @@ func (a *App) activateFocusCursor() (tea.Cmd, bool) {
 		if _, ok := a.reviewDiffCache[sess.ID]; !ok {
 			return a.fetchReviewDiffCmd(sess), true
 		}
-		return nil, true
-	case focusSectionAttention:
-		attAgents := a.dashboard.attentionAgents()
-		if len(attAgents) == 0 {
-			return nil, false
-		}
-		idx := a.focusAttentionIdx
-		if idx >= len(attAgents) {
-			idx = len(attAgents) - 1
-		}
-		a.focusLaunchAgent = attAgents[idx]
-		a.focusLaunchSession = a.dashboard.sessionForAgent(a.focusLaunchAgent)
-		a.dashboard.panelFocus = focusLaunch
-		a.dashboard.scrollOffset = 0
-		a.focusLaunchAgent.Resize(a.focusLaunchTermHeight(), a.dashboard.width)
 		return nil, true
 	}
 	return nil, false
@@ -2436,7 +2400,7 @@ func (a *App) openSessionInFocusLaunch(sess *agent.Session) bool {
 // moveFocusCursorDown moves the fullscreen-focus cursor down one row. When at
 // the bottom of the current section, it transitions to the next non-empty section.
 func (a *App) moveFocusCursorDown() {
-	actCount, revCount, attCount := a.focusSectionCounts()
+	actCount, revCount := a.focusSectionCounts()
 
 	switch a.focusCursorSection {
 	case focusSectionActive:
@@ -2447,24 +2411,10 @@ func (a *App) moveFocusCursorDown() {
 		if revCount > 0 {
 			a.focusCursorSection = focusSectionReview
 			a.focusQueueIndex = 0
-			return
-		}
-		if attCount > 0 {
-			a.focusCursorSection = focusSectionAttention
-			a.focusAttentionIdx = 0
 		}
 	case focusSectionReview:
 		if a.focusQueueIndex < revCount-1 {
 			a.focusQueueIndex++
-			return
-		}
-		if attCount > 0 {
-			a.focusCursorSection = focusSectionAttention
-			a.focusAttentionIdx = 0
-		}
-	case focusSectionAttention:
-		if a.focusAttentionIdx < attCount-1 {
-			a.focusAttentionIdx++
 		}
 	}
 }
@@ -2513,7 +2463,8 @@ func (a App) View() tea.View {
 			if pickerW < 30 {
 				pickerW = 30
 			}
-			overlayContent := lipgloss.JoinVertical(lipgloss.Left,
+			overlayContent := lipgloss.JoinVertical(
+				lipgloss.Left,
 				StyleTitle.Render("New session in..."),
 				"",
 				a.repoPickerForm.View(),
