@@ -819,7 +819,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			case "home":
 				a.dashboard.scrollOffset = 0
-			case "super+]", "super+[":
+			case "alt+]", "alt+[":
 				if a.focusLaunchSession != nil {
 					agents := a.focusLaunchSession.Agents()
 					idx := 0
@@ -829,7 +829,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 							break
 						}
 					}
-					if msg.String() == "super+]" {
+					if msg.String() == "alt+]" {
 						idx = (idx + 1) % len(agents)
 					} else {
 						idx = (idx - 1 + len(agents)) % len(agents)
@@ -838,7 +838,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.dashboard.scrollOffset = 0
 					a.focusLaunchAgent.Resize(a.focusLaunchTermHeight(), a.dashboard.width)
 				}
-			case "super+j":
+			case "ctrl+t":
 				if a.focusLaunchSession != nil {
 					repoPath := a.repoPathForSession(a.focusLaunchSession.ID)
 					mgr := a.managers[repoPath]
@@ -857,7 +857,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 				}
-			case "super+a":
+			case "ctrl+n":
 				if a.focusLaunchSession != nil {
 					repoPath := a.repoPathForSession(a.focusLaunchSession.ID)
 					mgr := a.managers[repoPath]
@@ -875,6 +875,78 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 						} else {
 							a.setError(err.Error())
 						}
+					}
+				}
+			case "ctrl+w":
+				if a.focusLaunchSession == nil || a.focusLaunchAgent == nil {
+					return a, nil
+				}
+				agents := a.focusLaunchSession.Agents()
+				if len(agents) == 0 {
+					a.focusLaunchAgent = nil
+					a.focusLaunchSession = nil
+					a.dashboard.panelFocus = focusList
+					a.dashboard.scrollOffset = 0
+					return a, nil
+				}
+				oldID := a.focusLaunchAgent.ID
+				sessionID := a.focusLaunchSession.ID
+				currentIdx := 0
+				for i, ag := range agents {
+					if ag.ID == oldID {
+						currentIdx = i
+						break
+					}
+				}
+				if len(agents) == 1 {
+					a.focusLaunchAgent = nil
+					a.focusLaunchSession = nil
+					a.dashboard.panelFocus = focusList
+					a.dashboard.scrollOffset = 0
+					if a.closingAgents[oldID] {
+						return a, nil
+					}
+					repoPath := a.repoPathForSession(sessionID)
+					mgr := a.managers[repoPath]
+					if mgr == nil {
+						return a, nil
+					}
+					a.closingAgents[oldID] = true
+					return a, func() tea.Msg {
+						err := mgr.KillAgent(sessionID, oldID)
+						return killResultMsg{
+							scope:     killScopeAgent,
+							sessionID: sessionID,
+							agentID:   oldID,
+							err:       err,
+						}
+					}
+				}
+				var nextIdx int
+				if currentIdx == len(agents)-1 {
+					nextIdx = currentIdx - 1
+				} else {
+					nextIdx = currentIdx + 1
+				}
+				a.focusLaunchAgent = agents[nextIdx]
+				a.focusLaunchAgent.Resize(a.focusLaunchTermHeight(), a.dashboard.width)
+				a.dashboard.scrollOffset = 0
+				if a.closingAgents[oldID] {
+					return a, nil
+				}
+				repoPath := a.repoPathForSession(sessionID)
+				mgr := a.managers[repoPath]
+				if mgr == nil {
+					return a, nil
+				}
+				a.closingAgents[oldID] = true
+				return a, func() tea.Msg {
+					err := mgr.KillAgent(sessionID, oldID)
+					return killResultMsg{
+						scope:     killScopeAgent,
+						sessionID: sessionID,
+						agentID:   oldID,
+						err:       err,
 					}
 				}
 			default:
