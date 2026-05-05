@@ -11,6 +11,7 @@ import (
 const (
 	fieldFocusMode    = "Focus Mode"
 	fieldFocusSession = "Focus Session (min)"
+	fieldFocusBreak   = "Break (min)"
 	fieldMaxAgents    = "Max Concurrent Agents"
 	fieldMaxReview    = "Max Review Backlog"
 )
@@ -73,6 +74,10 @@ func newGlobalConfigModel(gs *config.GlobalSettings, width, height int) globalCo
 	if gs.FocusSessionMinutes != nil {
 		focusSessionMinutes = strconv.Itoa(*gs.FocusSessionMinutes)
 	}
+	focusBreakMinutes := ""
+	if gs.FocusBreakMinutes != nil {
+		focusBreakMinutes = strconv.Itoa(*gs.FocusBreakMinutes)
+	}
 	maxConcurrentAgents := ""
 	if gs.MaxConcurrentAgents != nil {
 		maxConcurrentAgents = strconv.Itoa(*gs.MaxConcurrentAgents)
@@ -94,6 +99,7 @@ func newGlobalConfigModel(gs *config.GlobalSettings, width, height int) globalCo
 	fields = addTextInput(fields, "Sidebar Width", sidebarWidth, strconv.Itoa(config.DefaultSidebarWidth), inputWidth)
 	fields = addToggle(fields, fieldFocusMode, focusModeEnabled)
 	fields = addTextInput(fields, fieldFocusSession, focusSessionMinutes, strconv.Itoa(config.DefaultFocusSessionMinutes), inputWidth)
+	fields = addTextInput(fields, fieldFocusBreak, focusBreakMinutes, strconv.Itoa(config.DefaultFocusBreakMinutes), inputWidth)
 	fields = addTextInput(fields, fieldMaxAgents, maxConcurrentAgents, strconv.Itoa(config.DefaultMaxConcurrentAgents), inputWidth)
 	fields = addTextInput(fields, fieldMaxReview, maxReviewBacklog, strconv.Itoa(config.DefaultMaxReviewBacklog), inputWidth)
 
@@ -176,6 +182,11 @@ func (m globalConfigModel) extractSettings() *config.GlobalSettings {
 	if v := m.form.textValue(fieldFocusSession); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			s.FocusSessionMinutes = &n
+		}
+	}
+	if v := m.form.textValue(fieldFocusBreak); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			s.FocusBreakMinutes = &n
 		}
 	}
 	if v := m.form.textValue(fieldMaxAgents); v != "" {

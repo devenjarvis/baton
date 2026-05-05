@@ -22,6 +22,7 @@ const (
 	// Wellness defaults.
 	DefaultFocusModeEnabled    = false
 	DefaultFocusSessionMinutes = 90
+	DefaultFocusBreakMinutes   = 15
 	DefaultMaxConcurrentAgents = 3
 	DefaultMaxReviewBacklog    = 5
 
@@ -58,6 +59,7 @@ type GlobalSettings struct {
 	// Wellness settings — global preferences, not per-repo.
 	FocusModeEnabled    *bool `json:"focus_mode_enabled,omitempty"`
 	FocusSessionMinutes *int  `json:"focus_session_minutes,omitempty"`
+	FocusBreakMinutes   *int  `json:"focus_break_minutes,omitempty"`
 	MaxConcurrentAgents *int  `json:"max_concurrent_agents,omitempty"`
 	MaxReviewBacklog    *int  `json:"max_review_backlog,omitempty"`
 }
@@ -90,6 +92,7 @@ type ResolvedSettings struct {
 	// Wellness settings.
 	FocusModeEnabled    bool
 	FocusSessionMinutes int
+	FocusBreakMinutes   int
 	MaxConcurrentAgents int
 	MaxReviewBacklog    int
 }
@@ -107,6 +110,7 @@ func Resolve(global *GlobalSettings, repo *RepoSettings) ResolvedSettings {
 		SidebarWidth:        DefaultSidebarWidth,
 		FocusModeEnabled:    DefaultFocusModeEnabled,
 		FocusSessionMinutes: DefaultFocusSessionMinutes,
+		FocusBreakMinutes:   DefaultFocusBreakMinutes,
 		MaxConcurrentAgents: DefaultMaxConcurrentAgents,
 		MaxReviewBacklog:    DefaultMaxReviewBacklog,
 	}
@@ -141,6 +145,9 @@ func Resolve(global *GlobalSettings, repo *RepoSettings) ResolvedSettings {
 		}
 		if global.FocusSessionMinutes != nil {
 			r.FocusSessionMinutes = *global.FocusSessionMinutes
+		}
+		if global.FocusBreakMinutes != nil {
+			r.FocusBreakMinutes = *global.FocusBreakMinutes
 		}
 		if global.MaxConcurrentAgents != nil {
 			r.MaxConcurrentAgents = *global.MaxConcurrentAgents

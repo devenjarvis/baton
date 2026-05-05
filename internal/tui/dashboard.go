@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"image/color"
 	"os"
 	"path/filepath"
 	"sort"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/bubbles/v2/progress"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	xvt "github.com/charmbracelet/x/vt"
@@ -114,17 +116,23 @@ type dashboardModel struct {
 	closingSessions map[string]bool            // keyed by session ID, passed from App
 
 	// Focus mode state, synced from App on every refresh.
-	focusModeActive     bool
-	sessionElapsed      time.Duration
-	lastReviewAt        time.Time
-	focusSessionMinutes int
-	focusActiveIdx      int            // index of highlighted in-progress session row
-	focusQueueIndex     int            // index into ReadyForReview sessions in fullscreen focus mode
-	focusCursorSection  focusSection   // which fullscreen-focus section the cursor is on
-	activeRepoName      string         // display name of the active repo
-	activeRepoPath      string         // canonical path of the active repo (for pipeline filtering)
-	focusLaunchAgent    *agent.Agent   // agent open in focusLaunch terminal; nil otherwise
-	focusLaunchSession  *agent.Session // session owning focusLaunchAgent; nil otherwise
+	focusModeActive        bool
+	sessionElapsed         time.Duration
+	lastReviewAt           time.Time
+	focusSessionMinutes    int
+	focusBreakMode         bool
+	focusBreakElapsed      time.Duration
+	focusPomodoroCount     int
+	focusBreakMinutes      int
+	focusBreakAnimFrame    int
+	focusBreakShortWarning bool
+	focusActiveIdx         int            // index of highlighted in-progress session row
+	focusQueueIndex        int            // index into ReadyForReview sessions in fullscreen focus mode
+	focusCursorSection     focusSection   // which fullscreen-focus section the cursor is on
+	activeRepoName         string         // display name of the active repo
+	activeRepoPath         string         // canonical path of the active repo (for pipeline filtering)
+	focusLaunchAgent       *agent.Agent   // agent open in focusLaunch terminal; nil otherwise
+	focusLaunchSession     *agent.Session // session owning focusLaunchAgent; nil otherwise
 
 	// prSectionY is the content-relative row index (0-indexed, after the AGENTS
 	// title and separator) where the PR checks summary begins, or -1 when absent.
@@ -977,12 +985,104 @@ func (d dashboardModel) renderFocusLaunchView(width, height int) string {
 	return header + "\n" + tabBar + "\n" + render
 }
 
+// breatheFrames is the 12-frame expand/contract animation for the break overlay.
+// Each frame is 3 rows of equal width, rendered at the center of the screen.
+var breatheFrames = [12][3]string{
+	{"         ", "    ·    ", "         "},
+	{"   · · · ", "  · · ·  ", " · · ·   "},
+	{"  ○○○○○  ", "  ○   ○  ", "  ○○○○○  "},
+	{" ○○○○○○○ ", " ○     ○ ", " ○○○○○○○ "},
+	{"○○○○○○○○○", "○○  ◎  ○○", "○○○○○○○○○"},
+	{"○○○○○○○○○", "○○  ◉  ○○", "○○○○○○○○○"},
+	{"○○○○○○○○○", "○○  ●  ○○", "○○○○○○○○○"},
+	{"○○○○○○○○○", "○○  ◉  ○○", "○○○○○○○○○"},
+	{"○○○○○○○○○", "○○  ◎  ○○", "○○○○○○○○○"},
+	{" ○○○○○○○ ", " ○     ○ ", " ○○○○○○○ "},
+	{"  ○○○○○  ", "  ○   ○  ", "  ○○○○○  "},
+	{"   · · · ", "  · · ·  ", " · · ·   "},
+}
+
+// breatheColors cycles through calm hues over the 12-frame animation.
+var breatheColors = [3]lipgloss.Color{
+	"#38BDF8", // sky blue
+	"#818CF8", // indigo
+	"#34D399", // emerald
+}
+
+// renderBreakOverlay returns a fullscreen centered break screen.
+func (d dashboardModel) renderBreakOverlay(width, height int) string {
+	frame := d.focusBreakAnimFrame % 12
+	animColor := breatheColors[frame%3]
+	animStyle := lipgloss.NewStyle().Foreground(animColor)
+
+	frameRows := breatheFrames[frame]
+	animBlock := animStyle.Render(frameRows[0]) + "\n" +
+		animStyle.Render(frameRows[1]) + "\n" +
+		animStyle.Render(frameRows[2])
+
+	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#38BDF8")).Bold(true)
+	title := titleStyle.Render("BREAK")
+
+	var pomodoroLine string
+	if d.focusPomodoroCount > 0 {
+		pomodoroLine = StyleSubtle.Render(fmt.Sprintf("🍅 Pomodoro %d", d.focusPomodoroCount))
+	}
+
+	var countdownLine string
+	if d.focusBreakMinutes > 0 {
+		totalSecs := d.focusBreakMinutes * 60
+		remainSecs := totalSecs - int(d.focusBreakElapsed.Seconds())
+		if remainSecs < 0 {
+			remainSecs = 0
+		}
+		mins := remainSecs / 60
+		secs := remainSecs % 60
+		if remainSecs > 0 {
+			countdownLine = StyleSubtle.Render(fmt.Sprintf("%dm %02ds remaining", mins, secs))
+		} else {
+			elapsedMins := int(d.focusBreakElapsed.Minutes())
+			elapsedSecs := int(d.focusBreakElapsed.Seconds()) % 60
+			countdownLine = StyleSubtle.Render(fmt.Sprintf("%dm %02ds — great work", elapsedMins, elapsedSecs))
+		}
+	}
+
+	var actionLine string
+	if d.focusBreakShortWarning {
+		actionLine = StyleWarning.Render("break too short — press b again to override")
+	} else {
+		actionLine = StyleSubtle.Render("[b] return early")
+	}
+
+	var parts []string
+	parts = append(parts, title)
+	if pomodoroLine != "" {
+		parts = append(parts, pomodoroLine)
+	}
+	parts = append(parts, "")
+	parts = append(parts, animBlock)
+	parts = append(parts, "")
+	if countdownLine != "" {
+		parts = append(parts, countdownLine)
+	}
+	parts = append(parts, actionLine)
+
+	inner := strings.Join(parts, "\n")
+	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, inner)
+}
+
 // renderFullscreenFocus renders the fullscreen pipeline view shown when focusModeActive is true.
 func (d dashboardModel) renderFullscreenFocus(width, height int) string {
+	if d.focusBreakMode {
+		return d.renderBreakOverlay(width, height)
+	}
+
 	var lines []string
 
 	// Header: title + timer
 	title := StyleTitle.Render("FOCUS")
+	if d.focusPomodoroCount > 0 {
+		title += "  " + StyleSubtle.Render(fmt.Sprintf("🍅 Pomodoro %d", d.focusPomodoroCount))
+	}
 	timerStr := ""
 	if d.focusSessionMinutes > 0 {
 		threshold := time.Duration(d.focusSessionMinutes) * time.Minute
@@ -994,27 +1094,27 @@ func (d dashboardModel) renderFullscreenFocus(width, height int) string {
 		barWidth := width - 30
 		if barWidth < 5 {
 			barWidth = 5
+		} else if barWidth > 20 {
+			barWidth = 20
 		}
-		filled := int(pct * float64(barWidth))
-		if filled > barWidth {
-			filled = barWidth
-		}
-		bar := strings.Repeat("=", filled)
-		if filled < barWidth {
-			bar += ">"
-			bar += strings.Repeat(" ", barWidth-filled-1)
-		}
-		elapsedMin := int(d.sessionElapsed.Minutes())
-		var barStyle lipgloss.Style
+
+		var barColor lipgloss.Color
 		switch {
 		case pct >= 1.0:
-			barStyle = lipgloss.NewStyle().Foreground(ColorError)
+			barColor = ColorError
 		case pct >= 0.75:
-			barStyle = lipgloss.NewStyle().Foreground(ColorWarning)
+			barColor = ColorWarning
 		default:
-			barStyle = lipgloss.NewStyle().Foreground(ColorMuted)
+			barColor = ColorMuted
 		}
-		timerStr = barStyle.Render(fmt.Sprintf("[%s] %dm/%dm", bar, elapsedMin, d.focusSessionMinutes))
+		barModel := progress.New(
+			progress.WithoutPercentage(),
+			progress.WithColorFunc(func(_, _ float64) color.Color { return barColor }),
+		)
+		barModel.SetWidth(barWidth)
+
+		elapsedMin := int(d.sessionElapsed.Minutes())
+		timerStr = barModel.ViewAs(pct) + " " + fmt.Sprintf("%dm/%dm", elapsedMin, d.focusSessionMinutes)
 	}
 	headerLine := title + "  " + timerStr
 	if d.activeRepoName != "" {
