@@ -882,108 +882,207 @@ func (d dashboardModel) sessionFocusPriority(sess *agent.Session) int {
 	return 3
 }
 
-// renderFocusSessionCard returns exactly 3 lines for a session card in focus mode.
-// Line 1: [prefix][name]  right-aligned [status badge]
-// Line 2: [task display]  right-aligned [branch]
-// Line 3: [waiting reason or idle indicator]  right-aligned [elapsed]
-func (d dashboardModel) renderFocusSessionCard(sess *agent.Session, selected bool, width int) []string {
-	lineStyle := StyleSubtle
-	if selected {
-		lineStyle = lipgloss.NewStyle().Foreground(ColorText)
-	}
-
-	// --- Line 1 ---
-	prefix := "  "
-	name := sess.GetDisplayName()
-	var nameStyled string
-	if selected {
-		prefix = StyleActive.Render("> ")
-		nameStyled = lipgloss.NewStyle().Foreground(ColorText).Bold(true).Render(name)
-	} else {
-		nameStyled = lineStyle.Render(name)
-	}
-	badge := d.sessionFocusStatus(sess)
-	left1 := prefix + nameStyled
-	line1 := rightAlign(left1, badge, width)
-
-	// --- Line 2 ---
-	var taskDisplay string
-	origPrompt := sess.OriginalPrompt()
-	switch {
-	case sess.HasTaskSummary() && sess.TaskSummary() != "":
-		taskDisplay = lineStyle.Render(truncateVisible(sess.TaskSummary(), width-30))
-	case sess.HasTaskSummary() && sess.TaskSummary() == "":
-		// Haiku failed — show raw prompt with same style
-		taskDisplay = lineStyle.Render(truncateVisible(origPrompt, width-30))
-	case !sess.HasTaskSummary() && origPrompt != "":
-		// Still generating — italic/muted to communicate pending state
-		taskDisplay = lipgloss.NewStyle().Foreground(ColorMuted).Italic(true).Render(truncateVisible(origPrompt, width-30))
-	default:
-		// No prompt yet
-		taskDisplay = lineStyle.Render("…")
-	}
-	left2 := "  " + taskDisplay
-	branch := ""
-	if sess.Worktree != nil {
-		branch = sess.Branch()
-	}
-	branchStr := lineStyle.Render(truncateVisible(branch, 24))
-	line2 := rightAlign(left2, branchStr, width)
-
-	// --- Line 3 ---
-	var waitingReason string
+// sessionFocusStripeColor returns the accent color for a session's left stripe
+// in the focus mode SESSIONS list. Mirrors the priority order in
+// sessionFocusStatus so the stripe and the badge agree on the dominant
+// condition. Selection highlight is applied by the caller.
+func (d dashboardModel) sessionFocusStripeColor(sess *agent.Session) lipgloss.Color {
+	var hasError, hasWaiting, hasIdleAsking bool
 	for _, item := range d.items {
 		if item.kind != listItemAgent || item.agent == nil || item.agent.IsShell || item.session != sess {
 			continue
 		}
-		if item.agent.Status() == agent.StatusWaiting {
-			if waitingReason == "" {
-				waitingReason = item.agent.WaitingReason()
+		switch item.agent.Status() {
+		case agent.StatusError:
+			hasError = true
+		case agent.StatusWaiting:
+			hasWaiting = true
+		case agent.StatusIdle:
+			if item.agent.AskingQuestion() {
+				hasIdleAsking = true
 			}
 		}
 	}
+	switch {
+	case hasError:
+		return ColorError
+	case hasWaiting:
+		return ColorWaiting
+	case hasIdleAsking:
+		return ColorWarning
+	case !sess.DoneAt().IsZero():
+		return ColorSuccess
+	default:
+		return ColorMuted
+	}
+}
 
-	var statusLeft string
+// renderFocusSessionCard returns exactly 4 lines for a session card in focus
+// mode. Each line begins with a colored vertical stripe (▎) whose color encodes
+// the dominant session state via sessionFocusStripeColor; the selected card
+// brightens the stripe to ColorSecondary. The card has fixed height so the
+// list layout is predictable regardless of summary length.
+//
+// Line 1: <stripe> <name (bold, ColorText)>     ... right-aligned <status badge>
+// Line 2: <stripe>   <description line 1 (muted; italic if pending)>
+// Line 3: <stripe>   <description line 2 or empty>  (always reserved)
+// Line 4: <stripe>   <branch [· detail]>        ... right-aligned <elapsed>
+func (d dashboardModel) renderFocusSessionCard(sess *agent.Session, selected bool, width int) []string {
+	stripeColor := d.sessionFocusStripeColor(sess)
+	if selected {
+		stripeColor = ColorSecondary
+	}
+	stripe := lipgloss.NewStyle().Foreground(stripeColor).Render("▎")
+	const indent = "   "
+	const stripeIndentWidth = 4 // stripe (1) + 3 spaces
+
+	// --- Line 1: stripe + name, right-aligned status badge ---
+	name := sess.GetDisplayName()
+	nameStyled := lipgloss.NewStyle().Foreground(ColorText).Bold(true).Render(name)
+	badge := d.sessionFocusStatus(sess)
+	line1 := rightAlign(stripe+" "+nameStyled, badge, width)
+
+	// --- Lines 2 and 3: description (always two lines) ---
+	descBudget := width - stripeIndentWidth
+	if descBudget < 1 {
+		descBudget = 1
+	}
+	descText, descPending := focusTaskDescription(sess)
+	descLine1, descLine2 := wrapTwoLines(descText, descBudget)
+	descStyle := StyleSubtle
+	if descPending {
+		descStyle = lipgloss.NewStyle().Foreground(ColorMuted).Italic(true)
+	}
+	line2 := stripe + indent + descStyle.Render(descLine1)
+	line3 := stripe + indent
+	if descLine2 != "" {
+		line3 = stripe + indent + descStyle.Render(descLine2)
+	}
+
+	// --- Line 4: branch [· detail], right-aligned elapsed ---
+	branch := ""
+	if sess.Worktree != nil {
+		branch = sess.Branch()
+	}
+	var waitingReason string
+	allIdle := true
+	anyAgent := false
+	for _, item := range d.items {
+		if item.kind != listItemAgent || item.agent == nil || item.agent.IsShell || item.session != sess {
+			continue
+		}
+		anyAgent = true
+		st := item.agent.Status()
+		if st == agent.StatusActive || st == agent.StatusWaiting {
+			allIdle = false
+		}
+		if st == agent.StatusWaiting && waitingReason == "" {
+			waitingReason = item.agent.WaitingReason()
+		}
+	}
+	bottomLeftText := branch
 	switch {
 	case waitingReason != "":
-		statusLeft = lineStyle.Render("  " + truncateVisible(waitingReason, width/2))
-	case sess.LastOutputTime().IsZero():
-		statusLeft = ""
-	default:
-		// Check if all agents are idle
-		anyActive := false
-		for _, item := range d.items {
-			if item.kind != listItemAgent || item.agent == nil || item.agent.IsShell || item.session != sess {
-				continue
-			}
-			st := item.agent.Status()
-			if st == agent.StatusActive || st == agent.StatusWaiting {
-				anyActive = true
-				break
-			}
-		}
-		if !anyActive {
-			idleMins := int(time.Since(sess.LastOutputTime()).Minutes())
-			statusLeft = lineStyle.Render(fmt.Sprintf("  idle %dm", idleMins))
+		if branch != "" {
+			bottomLeftText = branch + " · " + waitingReason
 		} else {
-			statusLeft = ""
+			bottomLeftText = waitingReason
+		}
+	case anyAgent && allIdle && !sess.LastOutputTime().IsZero():
+		idleStr := fmt.Sprintf("idle %dm", int(time.Since(sess.LastOutputTime()).Minutes()))
+		if branch != "" {
+			bottomLeftText = branch + " · " + idleStr
+		} else {
+			bottomLeftText = idleStr
 		}
 	}
+	bottomBudget := width - 12
+	if bottomBudget < 1 {
+		bottomBudget = 1
+	}
+	bottomLeftText = truncateVisible(bottomLeftText, bottomBudget)
+	bottomLeft := stripe + indent + StyleSubtle.Render(bottomLeftText)
 
-	elapsed := sess.Elapsed()
+	totalMins := int(sess.Elapsed().Minutes())
 	var elapsedStr string
-	totalMins := int(elapsed.Minutes())
 	if totalMins >= 60 {
-		h := totalMins / 60
-		m := totalMins % 60
-		elapsedStr = fmt.Sprintf("%dh %dm", h, m)
+		elapsedStr = fmt.Sprintf("%dh %dm", totalMins/60, totalMins%60)
 	} else {
 		elapsedStr = fmt.Sprintf("%dm", totalMins)
 	}
-	elapsedStyled := lineStyle.Render(elapsedStr)
-	line3 := rightAlign(statusLeft, elapsedStyled, width)
+	line4 := rightAlign(bottomLeft, StyleSubtle.Render(elapsedStr), width)
 
-	return []string{line1, line2, line3}
+	return []string{line1, line2, line3, line4}
+}
+
+// focusTaskDescription chooses the description string for a session card in
+// focus mode and reports whether it should render in pending (italic) style.
+// Mirrors the legacy renderFocusSessionCard switch so callers stay consistent
+// with sessionFocusStatus regarding which signal wins.
+func focusTaskDescription(sess *agent.Session) (text string, pending bool) {
+	origPrompt := sess.OriginalPrompt()
+	switch {
+	case sess.HasTaskSummary() && sess.TaskSummary() != "":
+		return sess.TaskSummary(), false
+	case sess.HasTaskSummary() && sess.TaskSummary() == "":
+		return origPrompt, false
+	case !sess.HasTaskSummary() && origPrompt != "":
+		return origPrompt, true
+	default:
+		return "…", false
+	}
+}
+
+// wrapTwoLines greedily word-wraps s into at most two lines of `budget`
+// display cells. If only one line is needed, line2 is empty. If a third line
+// would have been required, the second line is truncated with an ellipsis.
+func wrapTwoLines(s string, budget int) (string, string) {
+	if budget <= 0 {
+		return "", ""
+	}
+	if s == "" {
+		return "", ""
+	}
+	if ansi.StringWidth(s) <= budget {
+		return s, ""
+	}
+	words := strings.Fields(s)
+	if len(words) == 0 {
+		return truncateVisible(s, budget), ""
+	}
+	var line1Words []string
+	used := 0
+	i := 0
+	for i < len(words) {
+		w := words[i]
+		ww := ansi.StringWidth(w)
+		extra := ww
+		if used > 0 {
+			extra++ // separator space
+		}
+		if used > 0 && used+extra > budget {
+			break
+		}
+		line1Words = append(line1Words, w)
+		used += extra
+		i++
+		if used >= budget {
+			// First word filled or overflowed the line; stop here.
+			break
+		}
+	}
+	line1 := strings.Join(line1Words, " ")
+	if ansi.StringWidth(line1) > budget {
+		line1 = truncateVisible(line1, budget)
+	}
+	if i >= len(words) {
+		return line1, ""
+	}
+	rest := strings.Join(words[i:], " ")
+	if ansi.StringWidth(rest) <= budget {
+		return line1, rest
+	}
+	return line1, truncateVisible(rest, budget)
 }
 
 // rightAlign places left and right on the same line with padding so the total
