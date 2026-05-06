@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	fieldFocusMode    = "Focus Mode"
+	fieldFocusMode    = "Focus Mode on Startup"
 	fieldFocusSession = "Focus Session (min)"
 	fieldFocusBreak   = "Break (min)"
 	fieldMaxAgents    = "Max Concurrent Agents"
