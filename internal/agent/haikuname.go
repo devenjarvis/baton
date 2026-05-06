@@ -81,11 +81,11 @@ func DefaultTaskSummarizer() TaskSummarizer {
 		}
 		claudePath, err := exec.LookPath("claude")
 		if err != nil {
-			return "", nil
+			return "", nil //nolint:nilerr // advisory display feature; absence of claude is not an error for callers
 		}
 		text, err := runClaudeHaikuText(ctx, claudePath, taskSummaryPrompt+prompt)
 		if err != nil {
-			return "", nil
+			return "", nil //nolint:nilerr // swallow subprocess errors; callers treat "" as "no summary available"
 		}
 		return text, nil
 	}
