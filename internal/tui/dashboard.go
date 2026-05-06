@@ -875,6 +875,121 @@ func (d dashboardModel) sessionFocusPriority(sess *agent.Session) int {
 	return 3
 }
 
+// renderFocusSessionCard returns exactly 3 lines for a session card in focus mode.
+// Line 1: [prefix][name]  right-aligned [status badge]
+// Line 2: [task display]  right-aligned [branch]
+// Line 3: [waiting reason or idle indicator]  right-aligned [elapsed]
+func (d dashboardModel) renderFocusSessionCard(sess *agent.Session, selected bool, width int) []string {
+	lineStyle := StyleSubtle
+	if selected {
+		lineStyle = lipgloss.NewStyle().Foreground(ColorText)
+	}
+
+	// --- Line 1 ---
+	prefix := "  "
+	name := sess.GetDisplayName()
+	var nameStyled string
+	if selected {
+		prefix = StyleActive.Render("> ")
+		nameStyled = lipgloss.NewStyle().Foreground(ColorText).Bold(true).Render(name)
+	} else {
+		nameStyled = name
+	}
+	badge := d.sessionFocusStatus(sess)
+	left1 := prefix + nameStyled
+	line1 := rightAlign(left1, badge, width)
+
+	// --- Line 2 ---
+	var taskDisplay string
+	origPrompt := sess.OriginalPrompt()
+	switch {
+	case sess.HasTaskSummary() && sess.TaskSummary() != "":
+		taskDisplay = lineStyle.Render(truncateVisible(sess.TaskSummary(), width-30))
+	case sess.HasTaskSummary() && sess.TaskSummary() == "":
+		// Haiku failed — show raw prompt with same style
+		taskDisplay = lineStyle.Render(truncateVisible(origPrompt, width-30))
+	case !sess.HasTaskSummary() && origPrompt != "":
+		// Still generating — italic/muted to communicate pending state
+		taskDisplay = lipgloss.NewStyle().Foreground(ColorMuted).Italic(true).Render(truncateVisible(origPrompt, width-30))
+	default:
+		// No prompt yet
+		taskDisplay = lineStyle.Render("…")
+	}
+	left2 := "  " + taskDisplay
+	branch := ""
+	if sess.Worktree != nil {
+		branch = sess.Branch()
+	}
+	branchStr := lineStyle.Render(truncateVisible(branch, 24))
+	line2 := rightAlign(left2, branchStr, width)
+
+	// --- Line 3 ---
+	var waitingReason string
+	for _, item := range d.items {
+		if item.kind != listItemAgent || item.agent == nil || item.agent.IsShell || item.session != sess {
+			continue
+		}
+		if item.agent.Status() == agent.StatusWaiting {
+			if waitingReason == "" {
+				waitingReason = item.agent.WaitingReason()
+			}
+		}
+	}
+
+	var statusLeft string
+	switch {
+	case waitingReason != "":
+		statusLeft = lineStyle.Render("  " + truncateVisible(waitingReason, width/2))
+	case sess.LastOutputTime().IsZero():
+		statusLeft = ""
+	default:
+		// Check if all agents are idle
+		anyActive := false
+		for _, item := range d.items {
+			if item.kind != listItemAgent || item.agent == nil || item.agent.IsShell || item.session != sess {
+				continue
+			}
+			st := item.agent.Status()
+			if st == agent.StatusActive || st == agent.StatusWaiting {
+				anyActive = true
+				break
+			}
+		}
+		if !anyActive {
+			idleMins := int(time.Since(sess.LastOutputTime()).Minutes())
+			statusLeft = lineStyle.Render(fmt.Sprintf("  idle %dm", idleMins))
+		} else {
+			statusLeft = ""
+		}
+	}
+
+	elapsed := sess.Elapsed()
+	var elapsedStr string
+	totalMins := int(elapsed.Minutes())
+	if totalMins >= 60 {
+		h := totalMins / 60
+		m := totalMins % 60
+		elapsedStr = fmt.Sprintf("%dh %dm", h, m)
+	} else {
+		elapsedStr = fmt.Sprintf("%dm", totalMins)
+	}
+	elapsedStyled := lineStyle.Render(elapsedStr)
+	line3 := rightAlign(statusLeft, elapsedStyled, width)
+
+	return []string{line1, line2, line3}
+}
+
+// rightAlign places left and right on the same line with padding so the total
+// visible width equals width. ANSI-escape-aware via lipgloss.Width.
+func rightAlign(left, right string, width int) string {
+	total := lipgloss.Width(left) + lipgloss.Width(right)
+	pad := width - total
+	if pad < 1 {
+		pad = 1
+	}
+	return left + strings.Repeat(" ", pad) + right
+}
+
 // renderPipelineWidget renders the 4-cell pipeline row.
 func (d dashboardModel) renderPipelineWidget(width int) string {
 	var inProgress, readyForReview, inReview, shipping int
@@ -1399,16 +1514,12 @@ func (d dashboardModel) renderFullscreenFocus(width, height int) string {
 		lines = append(lines, StyleSubtle.Render("SESSIONS"))
 		for i, item := range allSessions {
 			sess := item.session
-			name := sess.GetDisplayName()
 			selected := d.focusCursorSection == focusSectionActive && i == d.focusActiveIdx
-			prefix := "  "
-			nameStyled := name
-			if selected {
-				prefix = StyleActive.Render("> ")
-				nameStyled = lipgloss.NewStyle().Foreground(ColorText).Bold(true).Render(name)
+			card := d.renderFocusSessionCard(sess, selected, width)
+			lines = append(lines, card...)
+			if i < len(allSessions)-1 {
+				lines = append(lines, "")
 			}
-			badge := d.sessionFocusStatus(sess)
-			lines = append(lines, fmt.Sprintf("%s%s  %s", prefix, nameStyled, badge))
 		}
 		lines = append(lines, "")
 	}
