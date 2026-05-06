@@ -790,6 +790,17 @@ func (d dashboardModel) allInProgressSessions() []listItem {
 			result = append(result, item)
 		}
 	}
+	sort.SliceStable(result, func(i, j int) bool {
+		pi := d.sessionFocusPriority(result[i].session)
+		pj := d.sessionFocusPriority(result[j].session)
+		if pi != pj {
+			return pi < pj
+		}
+		// Same priority: sort by last output time DESC (more recent = earlier)
+		ti := result[i].session.LastOutputTime()
+		tj := result[j].session.LastOutputTime()
+		return ti.After(tj)
+	})
 	return result
 }
 
@@ -832,6 +843,36 @@ func (d dashboardModel) sessionFocusStatus(sess *agent.Session) string {
 		return lipgloss.NewStyle().Foreground(ColorSuccess).Render("✓ finished — awaiting prompt")
 	}
 	return StyleSubtle.Render(fmt.Sprintf("%d active, %d idle", activeCount, idleCount))
+}
+
+// sessionFocusPriority returns an integer priority for sorting sessions in the
+// focus mode SESSIONS list. Lower values surface first (needs attention first).
+// 0=error, 1=waiting, 2=active, 3=idle/other.
+func (d dashboardModel) sessionFocusPriority(sess *agent.Session) int {
+	var hasError, hasWaiting, hasActive bool
+	for _, item := range d.items {
+		if item.kind != listItemAgent || item.agent == nil || item.agent.IsShell || item.session != sess {
+			continue
+		}
+		switch item.agent.Status() {
+		case agent.StatusError:
+			hasError = true
+		case agent.StatusWaiting:
+			hasWaiting = true
+		case agent.StatusActive:
+			hasActive = true
+		}
+	}
+	if hasError {
+		return 0
+	}
+	if hasWaiting {
+		return 1
+	}
+	if hasActive {
+		return 2
+	}
+	return 3
 }
 
 // renderPipelineWidget renders the 4-cell pipeline row.
