@@ -5,14 +5,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
+	xvt "github.com/charmbracelet/x/vt"
 	"github.com/devenjarvis/baton/internal/hook"
 	bpty "github.com/devenjarvis/baton/internal/pty"
 	"github.com/devenjarvis/baton/internal/vt"
-
-	xvt "github.com/charmbracelet/x/vt"
 )
 
 // Agent ties together a PTY and VT terminal into a managed unit.
@@ -34,6 +35,7 @@ type Agent struct {
 	hasClaudeName    bool
 	status           Status
 	waitingReason    string
+	askingQuestion   bool
 	lastOutput       time.Time
 	lastInput        time.Time
 	composing        bool
@@ -417,6 +419,23 @@ func (a *Agent) OnHookEvent(e hook.Event) (statusChanged bool) {
 		// Claude finished its turn; the user is now in control. Clear the
 		// composing flag so input-display logic returns to its idle baseline.
 		a.composing = false
+		// Scan the visible viewport to find the last non-empty line and detect
+		// a trailing "?". RenderRegion holds only the terminal's own emulator
+		// lock; there is no a.mu path that would invert the order, so holding
+		// a.mu here is safe.
+		h := a.terminal.Height()
+		a.askingQuestion = false
+		if h > 0 {
+			raw := ansi.Strip(a.terminal.RenderRegion(0, h-1))
+			lines := strings.Split(raw, "\n")
+			for i := len(lines) - 1; i >= 0; i-- {
+				line := strings.TrimSpace(lines[i])
+				if line != "" {
+					a.askingQuestion = strings.HasSuffix(line, "?")
+					break
+				}
+			}
+		}
 		if a.status != StatusIdle {
 			a.status = StatusIdle
 			return true
@@ -454,6 +473,7 @@ func (a *Agent) OnHookEvent(e hook.Event) (statusChanged bool) {
 			return false
 		}
 		a.waitingReason = ""
+		a.askingQuestion = false
 		a.chimedForTurn = false
 		if a.status != StatusActive {
 			a.status = StatusActive
@@ -623,6 +643,15 @@ func (a *Agent) WaitingReason() string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.waitingReason
+}
+
+// AskingQuestion reports whether the agent's last terminal output (at the time
+// of the most recent KindStop event) ended with a "?", suggesting Claude asked
+// an informal question rather than finishing a task. Cleared on KindUserPromptSubmit.
+func (a *Agent) AskingQuestion() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.askingQuestion
 }
 
 // SetDisplayName sets the human-readable display name for this agent.

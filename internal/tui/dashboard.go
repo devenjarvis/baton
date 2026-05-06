@@ -794,10 +794,10 @@ func (d dashboardModel) allInProgressSessions() []listItem {
 }
 
 // sessionFocusStatus returns a styled inline status badge for a session row in
-// the unified SESSIONS list. Priority: Error > Waiting > finished (DoneAt set)
+// the unified SESSIONS list. Priority: Error > Waiting > May Need Input > finished (DoneAt set)
 // > normal (N active, M idle).
 func (d dashboardModel) sessionFocusStatus(sess *agent.Session) string {
-	var waitingCount, activeCount, idleCount int
+	var waitingCount, activeCount, idleCount, idleAskingCount int
 	var firstWaitingReason string
 	var hasError bool
 	for _, item := range d.items {
@@ -816,6 +816,9 @@ func (d dashboardModel) sessionFocusStatus(sess *agent.Session) string {
 			activeCount++
 		case agent.StatusIdle:
 			idleCount++
+			if item.agent.AskingQuestion() {
+				idleAskingCount++
+			}
 		}
 	}
 	if hasError {
@@ -827,6 +830,9 @@ func (d dashboardModel) sessionFocusStatus(sess *agent.Session) string {
 			badge += " — " + truncateVisible(firstWaitingReason, 40)
 		}
 		return lipgloss.NewStyle().Foreground(ColorWaiting).Render(badge)
+	}
+	if idleAskingCount > 0 {
+		return lipgloss.NewStyle().Foreground(ColorWarning).Render(fmt.Sprintf("? %d idle — may need input", idleAskingCount))
 	}
 	if !sess.DoneAt().IsZero() {
 		return lipgloss.NewStyle().Foreground(ColorSuccess).Render("✓ finished — awaiting prompt")

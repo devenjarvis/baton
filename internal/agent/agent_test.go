@@ -556,3 +556,75 @@ func TestShutdownCleansAll(t *testing.T) {
 		t.Errorf("expected 0 agents after shutdown, got %d", mgr.AgentCount())
 	}
 }
+
+func TestStopHookSetsAskingQuestionOnTrailingQuestion(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	cfg := Config{Name: "test-asking-q", Task: "test", Rows: 24, Cols: 80}
+	a, err := mgr.CreateWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "printf 'Is this working?'; cat")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for the output to render into the terminal.
+	time.Sleep(500 * time.Millisecond)
+
+	a.OnHookEvent(hookEvent("stop"))
+
+	if !a.AskingQuestion() {
+		t.Error("expected AskingQuestion true after Stop hook with trailing '?'")
+	}
+}
+
+func TestStopHookNoAskingQuestionWithoutTrailingQuestion(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	cfg := Config{Name: "test-no-asking-q", Task: "test", Rows: 24, Cols: 80}
+	a, err := mgr.CreateWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "printf 'Task complete.'; cat")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(500 * time.Millisecond)
+
+	a.OnHookEvent(hookEvent("stop"))
+
+	if a.AskingQuestion() {
+		t.Error("expected AskingQuestion false after Stop hook with non-question output")
+	}
+}
+
+func TestUserPromptSubmitClearsAskingQuestion(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	cfg := Config{Name: "test-clear-asking-q", Task: "test", Rows: 24, Cols: 80}
+	a, err := mgr.CreateWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "echo ready; cat")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(300 * time.Millisecond)
+
+	// Set askingQuestion directly to simulate a prior Stop with trailing "?".
+	a.mu.Lock()
+	a.askingQuestion = true
+	a.mu.Unlock()
+
+	a.OnHookEvent(hookEvent("user-prompt-submit"))
+
+	if a.AskingQuestion() {
+		t.Error("expected AskingQuestion cleared after KindUserPromptSubmit")
+	}
+}
