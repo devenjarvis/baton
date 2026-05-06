@@ -796,10 +796,11 @@ func (d dashboardModel) allInProgressSessions() []listItem {
 		if pi != pj {
 			return pi < pj
 		}
-		// Same priority: sort by last output time DESC (more recent = earlier)
-		ti := result[i].session.LastOutputTime()
-		tj := result[j].session.LastOutputTime()
-		return ti.After(tj)
+		// Same priority: stable order by CreatedAt ASC. Using a time-of-output
+		// key here would re-sort the list on every burst of agent output,
+		// causing visible flicker. The order should only change when a session
+		// crosses a priority boundary (i.e., a real state change).
+		return result[i].session.CreatedAt.Before(result[j].session.CreatedAt)
 	})
 	return result
 }

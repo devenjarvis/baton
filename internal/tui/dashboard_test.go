@@ -420,3 +420,38 @@ func TestAllInProgressSessions_SortOrder(t *testing.T) {
 		t.Errorf("second session after sort should be idle (priority 3), got %q", sessions[1].session.Name)
 	}
 }
+
+// TestAllInProgressSessions_StableWithinPriority pins the ordering of
+// same-priority sessions to CreatedAt rather than a continuously-changing
+// signal like LastOutputTime. This is what prevents focus-mode list flicker
+// while agents stream output: rebuilds during a render must produce the same
+// order until a session's status crosses a priority boundary.
+func TestAllInProgressSessions_StableWithinPriority(t *testing.T) {
+	t0 := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+
+	sessOlder := &agent.Session{ID: "so", Name: "older", CreatedAt: t0}
+	sessOlder.SetLifecyclePhase(agent.LifecycleInProgress)
+
+	sessNewer := &agent.Session{ID: "sn", Name: "newer", CreatedAt: t0.Add(time.Minute)}
+	sessNewer.SetLifecyclePhase(agent.LifecycleInProgress)
+
+	d := newDashboardModel()
+	d.prCache = make(map[string]*prCacheEntry)
+	// Insert newer first so we can confirm the sort actually runs and the
+	// result is keyed on CreatedAt, not insertion order.
+	d.items = []listItem{
+		{kind: listItemSession, session: sessNewer},
+		{kind: listItemSession, session: sessOlder},
+	}
+
+	for i := 0; i < 5; i++ {
+		sessions := d.allInProgressSessions()
+		if len(sessions) != 2 {
+			t.Fatalf("iter %d: expected 2 sessions, got %d", i, len(sessions))
+		}
+		if sessions[0].session != sessOlder || sessions[1].session != sessNewer {
+			t.Fatalf("iter %d: same-priority order should be CreatedAt ASC; got [%q, %q]",
+				i, sessions[0].session.Name, sessions[1].session.Name)
+		}
+	}
+}
