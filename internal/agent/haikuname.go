@@ -19,6 +19,17 @@ import (
 // slugify() so callers can use it without additional sanitization.
 type BranchNamer func(ctx context.Context, instruction string) (string, error)
 
+// TaskSummarizer asynchronously summarizes a user prompt into a short
+// plain-English description (10-15 words) suitable for display in the TUI.
+// Unlike BranchNamer the result is NOT slugified — it is display text.
+// Returns ("", nil) on empty prompt and on any subprocess failure — callers
+// should treat "" as "no summary available" and fall back gracefully.
+type TaskSummarizer func(ctx context.Context, prompt string) (string, error)
+
+// taskSummaryPrompt is prepended to the user prompt when asking Haiku for a
+// short plain-English task description.
+const taskSummaryPrompt = "Describe this task in 10-15 words of plain English, no punctuation at the end:\n\n"
+
 const claudeHaikuModel = "claude-haiku-4-5"
 
 // ErrClaudeNotFound is returned when the `claude` binary is not on PATH.
@@ -58,7 +69,32 @@ func DefaultBranchNamer() BranchNamer {
 	}
 }
 
-func runClaudeHaiku(ctx context.Context, claudePath, instruction string) (string, error) {
+// DefaultTaskSummarizer returns a TaskSummarizer that shells out to
+// `claude -p --model claude-haiku-4-5` to produce a short plain-English
+// description of the user's task. The result is NOT slugified — it is display
+// text for the TUI. Returns "" on empty prompt, and "" (not an error) on any
+// subprocess failure so callers can fall back gracefully.
+func DefaultTaskSummarizer() TaskSummarizer {
+	return func(ctx context.Context, prompt string) (string, error) {
+		if strings.TrimSpace(prompt) == "" {
+			return "", nil
+		}
+		claudePath, err := exec.LookPath("claude")
+		if err != nil {
+			return "", nil //nolint:nilerr // advisory display feature; absence of claude is not an error for callers
+		}
+		text, err := runClaudeHaikuText(ctx, claudePath, taskSummaryPrompt+prompt)
+		if err != nil {
+			return "", nil //nolint:nilerr // swallow subprocess errors; callers treat "" as "no summary available"
+		}
+		return text, nil
+	}
+}
+
+// runClaudeHaikuText runs `claude -p --model claude-haiku-4-5` with instruction
+// on stdin and returns the trimmed raw stdout. No slugification is applied.
+// This is the shared subprocess path; runClaudeHaiku adds slugification on top.
+func runClaudeHaikuText(ctx context.Context, claudePath, instruction string) (string, error) {
 	cmd := exec.CommandContext(ctx, claudePath, "-p", "--model", claudeHaikuModel)
 	cmd.Stdin = strings.NewReader(instruction)
 	// Strip baton's hook-wiring env vars so the Haiku subprocess does not
@@ -80,7 +116,16 @@ func runClaudeHaiku(ctx context.Context, claudePath, instruction string) (string
 		return "", fmt.Errorf("claude haiku: %w (stderr=%q)", err, strings.TrimSpace(stderr.String()))
 	}
 
-	slug := slugify(strings.TrimSpace(stdout.String()))
+	return strings.TrimSpace(stdout.String()), nil
+}
+
+func runClaudeHaiku(ctx context.Context, claudePath, instruction string) (string, error) {
+	raw, err := runClaudeHaikuText(ctx, claudePath, instruction)
+	if err != nil {
+		return "", err
+	}
+
+	slug := slugify(raw)
 	if slug == "" {
 		return "", ErrEmptySlug
 	}

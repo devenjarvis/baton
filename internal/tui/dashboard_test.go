@@ -7,6 +7,7 @@ import (
 
 	"github.com/devenjarvis/baton/internal/agent"
 	"github.com/devenjarvis/baton/internal/github"
+	"github.com/devenjarvis/baton/internal/hook"
 )
 
 func TestSelectionRect_Inactive(t *testing.T) {
@@ -327,5 +328,95 @@ func TestAdvanceTickers_EndReached_SnapsBack(t *testing.T) {
 	}
 	if !tk.pauseUntil.After(beforeSnap) {
 		t.Error("snap should set a fresh start pause")
+	}
+}
+
+// TestSessionFocusPriority_DefaultIsIdle verifies that a session whose agents
+// have not received any status-changing events (StatusStarting, the zero value)
+// reports priority 3 (idle/other).
+func TestSessionFocusPriority_DefaultIsIdle(t *testing.T) {
+	sess := &agent.Session{ID: "s1", Name: "s1"}
+	sess.SetLifecyclePhase(agent.LifecycleInProgress)
+	ag := &agent.Agent{Name: "a1"}
+
+	d := newDashboardModel()
+	d.prCache = make(map[string]*prCacheEntry)
+	d.items = []listItem{
+		{kind: listItemSession, session: sess},
+		{kind: listItemAgent, session: sess, agent: ag},
+	}
+
+	if got := d.sessionFocusPriority(sess); got != 3 {
+		t.Errorf("sessionFocusPriority with StatusStarting agent: got %d, want 3", got)
+	}
+}
+
+// TestSessionFocusPriority_ActiveBeforeIdle verifies that a session with an
+// active agent (priority 2) sorts ahead of one with only idle/default agents
+// (priority 3). We drive StatusActive via OnHookEvent(KindSessionStart).
+func TestSessionFocusPriority_ActiveBeforeIdle(t *testing.T) {
+	sessActive := &agent.Session{ID: "sa", Name: "active"}
+	sessActive.SetLifecyclePhase(agent.LifecycleInProgress)
+	agActive := &agent.Agent{Name: "ag-active"}
+	// Drive to StatusActive.
+	agActive.OnHookEvent(hook.Event{Kind: hook.KindSessionStart})
+
+	sessIdle := &agent.Session{ID: "si", Name: "idle"}
+	sessIdle.SetLifecyclePhase(agent.LifecycleInProgress)
+	agIdle := &agent.Agent{Name: "ag-idle"}
+
+	d := newDashboardModel()
+	d.prCache = make(map[string]*prCacheEntry)
+	d.items = []listItem{
+		{kind: listItemSession, session: sessActive},
+		{kind: listItemAgent, session: sessActive, agent: agActive},
+		{kind: listItemSession, session: sessIdle},
+		{kind: listItemAgent, session: sessIdle, agent: agIdle},
+	}
+
+	pa := d.sessionFocusPriority(sessActive)
+	pi := d.sessionFocusPriority(sessIdle)
+	if pa != 2 {
+		t.Errorf("active session priority: got %d, want 2", pa)
+	}
+	if pi != 3 {
+		t.Errorf("idle session priority: got %d, want 3", pi)
+	}
+}
+
+// TestAllInProgressSessions_SortOrder verifies that after building the result
+// slice, sessions with lower priority (more urgent) appear first.
+// Session order in d.items: idle first, then active — after sort active should
+// be first.
+func TestAllInProgressSessions_SortOrder(t *testing.T) {
+	sessIdle := &agent.Session{ID: "si", Name: "idle"}
+	sessIdle.SetLifecyclePhase(agent.LifecycleInProgress)
+	agIdle := &agent.Agent{Name: "ag-idle"}
+
+	sessActive := &agent.Session{ID: "sa", Name: "active"}
+	sessActive.SetLifecyclePhase(agent.LifecycleInProgress)
+	agActive := &agent.Agent{Name: "ag-active"}
+	// Drive to StatusActive.
+	agActive.OnHookEvent(hook.Event{Kind: hook.KindSessionStart})
+
+	d := newDashboardModel()
+	d.prCache = make(map[string]*prCacheEntry)
+	// Idle session is listed first in items; active second — sort should invert.
+	d.items = []listItem{
+		{kind: listItemSession, session: sessIdle},
+		{kind: listItemAgent, session: sessIdle, agent: agIdle},
+		{kind: listItemSession, session: sessActive},
+		{kind: listItemAgent, session: sessActive, agent: agActive},
+	}
+
+	sessions := d.allInProgressSessions()
+	if len(sessions) != 2 {
+		t.Fatalf("expected 2 sessions, got %d", len(sessions))
+	}
+	if sessions[0].session != sessActive {
+		t.Errorf("first session after sort should be active (priority 2), got %q", sessions[0].session.Name)
+	}
+	if sessions[1].session != sessIdle {
+		t.Errorf("second session after sort should be idle (priority 3), got %q", sessions[1].session.Name)
 	}
 }

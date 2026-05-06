@@ -1701,3 +1701,287 @@ func TestSmartBranchRename_TemplateWithoutPlaceholderAppendsPrompt(t *testing.T)
 		t.Errorf("rendered instruction = %q, want %q", got, wantInstruction)
 	}
 }
+
+// stubTaskSummarizer is a TaskSummarizer that returns a fixed result and counts calls.
+type stubTaskSummarizer struct {
+	result string
+	calls  atomic.Int32
+	block  chan struct{} // if non-nil, blocks on receive before returning
+}
+
+func (s *stubTaskSummarizer) fn() TaskSummarizer {
+	return func(ctx context.Context, prompt string) (string, error) {
+		s.calls.Add(1)
+		if s.block != nil {
+			select {
+			case <-s.block:
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
+		}
+		return s.result, nil
+	}
+}
+
+// waitForTaskSummary polls sess.HasTaskSummary() until it returns true or the deadline elapses.
+func waitForTaskSummary(t *testing.T, sess *Session, d time.Duration) bool {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		if sess.HasTaskSummary() {
+			return true
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return false
+}
+
+// TestTaskSummarizerTriggeredOnFirstActionablePrompt verifies that the first
+// actionable UserPromptSubmit causes the TaskSummarizer goroutine to run and
+// sets sess.HasTaskSummary() to true with the expected summary text.
+func TestTaskSummarizerTriggeredOnFirstActionablePrompt(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	stub := &stubTaskSummarizer{result: "fix the broken login flow"}
+	mgr.SetTaskSummarizer(stub.fn())
+	// Disable branch namer to keep the test focused on task summary.
+	mgr.SetBranchNamer(func(_ context.Context, _ string) (string, error) {
+		return "stub-branch", nil
+	})
+
+	cfg := Config{Name: "task-summary-test", Task: "test", Rows: 24, Cols: 80}
+	sess, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-mgr.Events():
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for EventCreated")
+	}
+
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindUserPromptSubmit,
+		AgentID: ag.ID,
+		Prompt:  "fix the broken login flow",
+	}); err != nil {
+		t.Fatalf("SendEvent: %v", err)
+	}
+
+	if !waitForTaskSummary(t, sess, 3*time.Second) {
+		t.Fatal("HasTaskSummary() did not become true within 3s")
+	}
+	if got := sess.TaskSummary(); got != "fix the broken login flow" {
+		t.Errorf("TaskSummary() = %q, want %q", got, "fix the broken login flow")
+	}
+	if stub.calls.Load() != 1 {
+		t.Errorf("summarizer call count = %d, want 1", stub.calls.Load())
+	}
+}
+
+// TestTaskSummarizerSkipsNonActionablePrompt verifies that slash-only and
+// empty prompts do not trigger the task summarizer.
+func TestTaskSummarizerSkipsNonActionablePrompt(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	stub := &stubTaskSummarizer{result: "should not be called"}
+	mgr.SetTaskSummarizer(stub.fn())
+	mgr.SetBranchNamer(nil)
+
+	cfg := Config{Name: "task-summary-skip", Task: "test", Rows: 24, Cols: 80}
+	sess, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-mgr.Events():
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for EventCreated")
+	}
+
+	// Non-actionable: slash-only prompt.
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindUserPromptSubmit,
+		AgentID: ag.ID,
+		Prompt:  "/clear",
+	}); err != nil {
+		t.Fatalf("SendEvent: %v", err)
+	}
+	time.Sleep(150 * time.Millisecond)
+
+	if sess.HasTaskSummary() {
+		t.Error("slash-only prompt should not set HasTaskSummary")
+	}
+	if stub.calls.Load() != 0 {
+		t.Errorf("summarizer should not be called for slash-only prompt, got %d", stub.calls.Load())
+	}
+}
+
+// TestTaskSummarizerNilDisablesFeature verifies that SetTaskSummarizer(nil)
+// disables the feature gracefully — no panic, no goroutine spawned.
+func TestTaskSummarizerNilDisablesFeature(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	mgr.SetTaskSummarizer(nil)
+	mgr.SetBranchNamer(nil)
+
+	cfg := Config{Name: "task-summary-nil", Task: "test", Rows: 24, Cols: 80}
+	sess, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-mgr.Events():
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for EventCreated")
+	}
+
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindUserPromptSubmit,
+		AgentID: ag.ID,
+		Prompt:  "do some real work",
+	}); err != nil {
+		t.Fatalf("SendEvent: %v", err)
+	}
+	time.Sleep(150 * time.Millisecond)
+
+	if sess.HasTaskSummary() {
+		t.Error("nil summarizer should not set HasTaskSummary")
+	}
+}
+
+// TestTaskSummarizerDoubleDispatchGated verifies that a second UserPromptSubmit
+// arriving while the first summarizer call is still running does not dispatch
+// a second goroutine.
+func TestTaskSummarizerDoubleDispatchGated(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	release := make(chan struct{})
+	stub := &stubTaskSummarizer{result: "slow-summary", block: release}
+	mgr.SetTaskSummarizer(stub.fn())
+	mgr.SetBranchNamer(func(_ context.Context, _ string) (string, error) {
+		return "stub", nil
+	})
+
+	cfg := Config{Name: "task-summary-gate", Task: "test", Rows: 24, Cols: 80}
+	sess, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-mgr.Events():
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for EventCreated")
+	}
+
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindUserPromptSubmit,
+		AgentID: ag.ID,
+		Prompt:  "first prompt",
+	}); err != nil {
+		t.Fatalf("SendEvent 1: %v", err)
+	}
+
+	// Wait for the first call to actually enter the stub.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && stub.calls.Load() < 1 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if stub.calls.Load() != 1 {
+		t.Fatal("first summarizer call did not start")
+	}
+
+	// Send a second prompt — it must NOT trigger a second summarizer call.
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindUserPromptSubmit,
+		AgentID: ag.ID,
+		Prompt:  "second prompt (should be gated)",
+	}); err != nil {
+		t.Fatalf("SendEvent 2: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if got := stub.calls.Load(); got != 1 {
+		t.Errorf("summarizer call count = %d, want 1 (second prompt should be gated)", got)
+	}
+
+	// Release the first call and check HasTaskSummary becomes true.
+	close(release)
+	if !waitForTaskSummary(t, sess, 2*time.Second) {
+		t.Fatal("HasTaskSummary() did not become true after release")
+	}
+	if n := stub.calls.Load(); n != 1 {
+		t.Errorf("final summarizer call count = %d, want 1", n)
+	}
+}
+
+// TestTaskSummarizerShutdownCancelsInflight verifies that Manager.Shutdown
+// cancels the in-flight summarizer goroutine so it doesn't outlive the manager.
+func TestTaskSummarizerShutdownCancelsInflight(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+
+	// Block the summarizer forever — only ctx cancellation should release it.
+	stub := &stubTaskSummarizer{result: "never-returns", block: make(chan struct{})}
+	mgr.SetTaskSummarizer(stub.fn())
+	mgr.SetBranchNamer(func(_ context.Context, _ string) (string, error) {
+		return "stub", nil
+	})
+
+	cfg := Config{Name: "task-summary-shutdown", Task: "test", Rows: 24, Cols: 80}
+	_, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-mgr.Events():
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for EventCreated")
+	}
+
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindUserPromptSubmit,
+		AgentID: ag.ID,
+		Prompt:  "trigger a summary that will block",
+	}); err != nil {
+		t.Fatalf("SendEvent: %v", err)
+	}
+
+	// Wait for the goroutine to actually enter the summarizer.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && stub.calls.Load() < 1 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if stub.calls.Load() < 1 {
+		t.Fatal("summarizer did not run before shutdown")
+	}
+
+	done := make(chan struct{})
+	var once sync.Once
+	go func() {
+		defer once.Do(func() { close(done) })
+		mgr.Shutdown()
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Shutdown did not return — summarizer goroutine likely leaked")
+	}
+}
