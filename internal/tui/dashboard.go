@@ -1547,16 +1547,36 @@ func (d dashboardModel) renderFullscreenFocus(width, height int) string {
 			} else {
 				cardStyle = StyleSubtle
 			}
-			line := cardStyle.Render(fmt.Sprintf("%s%s", prefix, name))
+
+			// Line 1: prefix + name (left) + prIndicator (right-aligned)
+			line1 := prefix + cardStyle.Render(name)
 			if prEntry := d.prCache[sess.ID]; prEntry != nil {
-				if ind := prIndicator(prEntry); ind != "" {
-					line += "  " + ind
+				if prInd := prIndicator(prEntry); prInd != "" {
+					line1 = rightAlign(prefix+cardStyle.Render(name), prInd, width)
 				}
 			}
-			if age != "" {
-				line += StyleSubtle.Render("  " + age)
+
+			// Line 2: task display (left) + age (right-aligned)
+			var taskDisplay string
+			origPrompt := sess.OriginalPrompt()
+			switch {
+			case sess.HasTaskSummary() && sess.TaskSummary() != "":
+				taskDisplay = cardStyle.Render(truncateVisible(sess.TaskSummary(), width-30))
+			case origPrompt != "":
+				taskDisplay = cardStyle.Render(truncateVisible(origPrompt, width-30))
+			default:
+				taskDisplay = cardStyle.Render("…")
 			}
-			lines = append(lines, line)
+			left2 := "  " + taskDisplay
+			line2 := left2
+			if age != "" {
+				line2 = rightAlign(left2, StyleSubtle.Render(age), width)
+			}
+
+			lines = append(lines, line1, line2)
+			if i < len(reviewSessions)-1 {
+				lines = append(lines, "")
+			}
 		}
 		lines = append(lines, "")
 	}
