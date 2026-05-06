@@ -893,7 +893,7 @@ func (d dashboardModel) renderFocusSessionCard(sess *agent.Session, selected boo
 		prefix = StyleActive.Render("> ")
 		nameStyled = lipgloss.NewStyle().Foreground(ColorText).Bold(true).Render(name)
 	} else {
-		nameStyled = name
+		nameStyled = lineStyle.Render(name)
 	}
 	badge := d.sessionFocusStatus(sess)
 	left1 := prefix + nameStyled
