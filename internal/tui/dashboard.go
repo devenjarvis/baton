@@ -1537,15 +1537,15 @@ func (d dashboardModel) renderFullscreenFocus(width, height int) string {
 				mins := int(time.Since(sess.DoneAt()).Minutes())
 				age = fmt.Sprintf("done %dm ago", mins)
 			}
-			prefix := "  "
-			if selected {
-				prefix = "> "
-			}
 			var cardStyle lipgloss.Style
 			if selected {
 				cardStyle = lipgloss.NewStyle().Foreground(ColorWarning)
 			} else {
 				cardStyle = StyleSubtle
+			}
+			prefix := "  "
+			if selected {
+				prefix = cardStyle.Render("> ")
 			}
 
 			// Line 1: prefix + name (left) + prIndicator (right-aligned)
