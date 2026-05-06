@@ -987,41 +987,6 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 						err:       err,
 					}
 				}
-			case "m":
-				sess := a.focusLaunchSession
-				a.resizeAgentForDashboard(a.focusLaunchAgent)
-				a.focusLaunchAgent = nil
-				a.focusLaunchSession = nil
-				a.dashboard.panelFocus = focusList
-				a.dashboard.scrollOffset = 0
-				if sess != nil && sess.LifecyclePhase() == agent.LifecycleInProgress && !sess.DoneAt().IsZero() {
-					sess.SetLifecyclePhase(agent.LifecycleReadyForReview)
-					a.focusQueueIndex = 0
-					return a, a.fetchReviewDiffCmd(sess)
-				}
-				return a, nil
-			case "r":
-				a.resizeAgentForDashboard(a.focusLaunchAgent)
-				a.focusLaunchAgent = nil
-				a.focusLaunchSession = nil
-				a.dashboard.scrollOffset = 0
-				reviewItems := a.dashboard.reviewQueueSessions()
-				if len(reviewItems) == 0 {
-					a.dashboard.panelFocus = focusList
-					return a, nil
-				}
-				idx := a.focusQueueIndex
-				if idx >= len(reviewItems) {
-					idx = len(reviewItems) - 1
-				}
-				sess := reviewItems[idx].session
-				sess.SetLifecyclePhase(agent.LifecycleInReview)
-				a.reviewSession = sess
-				a.dashboard.panelFocus = focusReview
-				if _, ok := a.reviewDiffCache[sess.ID]; !ok {
-					return a, a.fetchReviewDiffCmd(sess)
-				}
-				return a, nil
 			default:
 				if msg.Text != "" {
 					a.focusLaunchAgent.SendText(msg.Text)

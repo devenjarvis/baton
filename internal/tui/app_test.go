@@ -2237,144 +2237,88 @@ func TestFocusModeBlocksDKey(t *testing.T) {
 	}
 }
 
-// TestFocusLaunch_MKey_ExitsAndMarksReadyForReview verifies that pressing "m"
-// while viewing an agent in fullscreen exits focusLaunch and marks the session
-// ReadyForReview when the session is InProgress and DoneAt is set.
-func TestFocusLaunch_MKey_ExitsAndMarksReadyForReview(t *testing.T) {
-	sess := &agent.Session{Name: "active"}
+// TestFocusLaunch_FocusModeKeysForwardToAgent verifies that single-letter
+// focus-mode pipeline keybindings ("m", "r") are forwarded to the agent
+// terminal when focusLaunch is active, instead of triggering focus-mode
+// actions. Keybindings must not bleed across screens — focusLaunch is a
+// fullscreen Claude session and the user should be able to type any character.
+func TestFocusLaunch_FocusModeKeysForwardToAgent(t *testing.T) {
+	dir, err := os.MkdirTemp("", "baton-focuslaunch-keys-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+
+	run := func(args ...string) {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("cmd %v: %v\n%s", args, err, out)
+		}
+	}
+	run("git", "init")
+	run("git", "config", "commit.gpgsign", "false")
+	run("git", "commit", "--allow-empty", "-m", "init")
+
+	mgr := agent.NewManager(dir, config.Resolve(nil, nil))
+	defer mgr.Shutdown()
+
+	sess, ag, err := mgr.CreateSessionWithCommand(agent.Config{
+		Name: "fl-keys", Task: "test", RepoPath: dir, Rows: 24, Cols: 80,
+	}, func(_ string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 30")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	sess.SetLifecyclePhase(agent.LifecycleInProgress)
-	sess.MarkDone()
+	sess.MarkDone() // would qualify the session for "m" if it were intercepted
 
-	app := NewApp()
-	app.width = 120
-	app.dashboard.width = 120
-	// height=0 makes fixedTermHeight()<=0, skipping resize on the placeholder agent.
-	app.dashboard.height = 0
-	app.focusModeActive = true
-	app.dashboard.focusModeActive = true
-	app.dashboard.items = []listItem{
-		{kind: listItemRepo, repoPath: "/r", repoName: "repo"},
-		{kind: listItemSession, repoPath: "/r", session: sess},
-	}
-	app.dashboard.panelFocus = focusLaunch
-	app.focusLaunchAgent = &agent.Agent{}
-	app.focusLaunchSession = sess
-
-	model, _ := app.Update(tea.KeyPressMsg{Code: 'm', Text: "m"})
-	app = model.(App)
-
-	if app.dashboard.panelFocus != focusList {
-		t.Errorf("expected panelFocus=focusList after m, got %v", app.dashboard.panelFocus)
-	}
-	if app.focusLaunchAgent != nil {
-		t.Error("expected focusLaunchAgent=nil after m")
-	}
-	if app.focusLaunchSession != nil {
-		t.Error("expected focusLaunchSession=nil after m")
-	}
-	if sess.LifecyclePhase() != agent.LifecycleReadyForReview {
-		t.Errorf("expected session phase=ReadyForReview, got %v", sess.LifecyclePhase())
-	}
-}
-
-// TestFocusLaunch_MKey_ResetsFocusQueueIndex verifies that pressing "m" from
-// focusLaunch resets focusQueueIndex to 0 so a subsequent "r" opens the
-// newly-queued session rather than a stale position.
-func TestFocusLaunch_MKey_ResetsFocusQueueIndex(t *testing.T) {
-	sess := &agent.Session{Name: "active"}
-	sess.SetLifecyclePhase(agent.LifecycleInProgress)
-	sess.MarkDone()
-
-	app := NewApp()
-	app.width = 120
-	app.dashboard.width = 120
-	app.dashboard.height = 0
-	app.focusModeActive = true
-	app.dashboard.focusModeActive = true
-	app.dashboard.items = []listItem{
-		{kind: listItemRepo, repoPath: "/r", repoName: "repo"},
-		{kind: listItemSession, repoPath: "/r", session: sess},
-	}
-	app.dashboard.panelFocus = focusLaunch
-	app.focusLaunchAgent = &agent.Agent{}
-	app.focusLaunchSession = sess
-	app.focusQueueIndex = 2 // stale nonzero index
-
-	model, _ := app.Update(tea.KeyPressMsg{Code: 'm', Text: "m"})
-	app = model.(App)
-
-	if app.focusQueueIndex != 0 {
-		t.Errorf("expected focusQueueIndex=0 after m, got %d", app.focusQueueIndex)
-	}
-}
-
-// TestFocusLaunch_MKey_NoopWhenDoneAtZero verifies that pressing "m" while in
-// focusLaunch exits fullscreen but does not change the lifecycle phase when
-// the session's DoneAt is zero (agents still running).
-func TestFocusLaunch_MKey_NoopWhenDoneAtZero(t *testing.T) {
-	sess := &agent.Session{Name: "active"}
-	sess.SetLifecyclePhase(agent.LifecycleInProgress)
-	// DoneAt is zero: agents are still running.
-
-	app := NewApp()
-	app.width = 120
-	app.dashboard.width = 120
-	app.dashboard.height = 0
-	app.focusModeActive = true
-	app.dashboard.focusModeActive = true
-	app.dashboard.items = []listItem{
-		{kind: listItemRepo, repoPath: "/r", repoName: "repo"},
-		{kind: listItemSession, repoPath: "/r", session: sess},
-	}
-	app.dashboard.panelFocus = focusLaunch
-	app.focusLaunchAgent = &agent.Agent{}
-	app.focusLaunchSession = sess
-
-	model, _ := app.Update(tea.KeyPressMsg{Code: 'm', Text: "m"})
-	app = model.(App)
-
-	if app.dashboard.panelFocus != focusList {
-		t.Errorf("expected panelFocus=focusList after m, got %v", app.dashboard.panelFocus)
-	}
-	if sess.LifecyclePhase() != agent.LifecycleInProgress {
-		t.Errorf("expected session phase unchanged=InProgress, got %v", sess.LifecyclePhase())
-	}
-}
-
-// TestFocusLaunch_RKey_ExitsAndOpensReview verifies that pressing "r" while in
-// focusLaunch exits fullscreen and opens the review panel for the queued session.
-func TestFocusLaunch_RKey_ExitsAndOpensReview(t *testing.T) {
-	sessA := &agent.Session{Name: "active"}
-	sessA.SetLifecyclePhase(agent.LifecycleInProgress)
+	// Also queue a ReadyForReview session — would be picked up by "r" if intercepted.
 	sessR := &agent.Session{Name: "ready"}
 	sessR.SetLifecyclePhase(agent.LifecycleReadyForReview)
 
 	app := NewApp()
 	app.width = 120
+	app.height = 40
 	app.dashboard.width = 120
-	app.dashboard.height = 0
+	app.dashboard.height = 39
+	app.managers[dir] = mgr
+	app.activeRepo = dir
 	app.focusModeActive = true
 	app.dashboard.focusModeActive = true
 	app.dashboard.items = []listItem{
-		{kind: listItemRepo, repoPath: "/r", repoName: "repo"},
-		{kind: listItemSession, repoPath: "/r", session: sessA},
-		{kind: listItemSession, repoPath: "/r", session: sessR},
+		{kind: listItemRepo, repoPath: dir, repoName: "repo"},
+		{kind: listItemSession, repoPath: dir, session: sess},
+		{kind: listItemAgent, repoPath: dir, session: sess, agent: ag},
+		{kind: listItemSession, repoPath: dir, session: sessR},
 	}
 	app.dashboard.panelFocus = focusLaunch
-	app.focusLaunchAgent = &agent.Agent{}
-	app.focusLaunchSession = sessA
+	app.focusLaunchAgent = ag
+	app.focusLaunchSession = sess
 
-	model, _ := app.Update(tea.KeyPressMsg{Code: 'r', Text: "r"})
-	app = model.(App)
+	for _, ch := range []rune{'m', 'r'} {
+		model, _ := app.Update(tea.KeyPressMsg{Code: ch, Text: string(ch)})
+		app = model.(App)
 
-	if app.dashboard.panelFocus != focusReview {
-		t.Fatalf("expected panelFocus=focusReview after r, got %v", app.dashboard.panelFocus)
-	}
-	if app.focusLaunchAgent != nil {
-		t.Error("expected focusLaunchAgent=nil after r")
-	}
-	if sessR.LifecyclePhase() != agent.LifecycleInReview {
-		t.Errorf("expected sessR phase=InReview, got %v", sessR.LifecyclePhase())
+		if app.dashboard.panelFocus != focusLaunch {
+			t.Fatalf("press %q: expected panelFocus=focusLaunch (key forwarded to agent), got %v", ch, app.dashboard.panelFocus)
+		}
+		if app.focusLaunchAgent == nil || app.focusLaunchAgent.ID != ag.ID {
+			t.Fatalf("press %q: expected focusLaunchAgent unchanged, got %v", ch, app.focusLaunchAgent)
+		}
+		if app.focusLaunchSession == nil || app.focusLaunchSession.ID != sess.ID {
+			t.Fatalf("press %q: expected focusLaunchSession unchanged, got %v", ch, app.focusLaunchSession)
+		}
+		if sess.LifecyclePhase() != agent.LifecycleInProgress {
+			t.Fatalf("press %q: expected sess phase unchanged=InProgress, got %v", ch, sess.LifecyclePhase())
+		}
+		if sessR.LifecyclePhase() != agent.LifecycleReadyForReview {
+			t.Fatalf("press %q: expected sessR phase unchanged=ReadyForReview, got %v", ch, sessR.LifecyclePhase())
+		}
+		if app.reviewSession != nil {
+			t.Fatalf("press %q: expected reviewSession=nil, got %v", ch, app.reviewSession)
+		}
 	}
 }
 
