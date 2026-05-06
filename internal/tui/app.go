@@ -2151,10 +2151,11 @@ func (a App) updateGlobalConfig(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.dashboard.sidebarWidth = newResolved.SidebarWidth
 			a.resizeAllForDashboard()
 		}
-		// Refresh wellness settings from updated global config.
+		// Refresh wellness settings from updated global config. FocusModeEnabled
+		// is the startup default; saving the form must not override the live
+		// runtime toggle state — only `f` controls that.
 		a.focusSessionMinutes = newResolved.FocusSessionMinutes
 		a.focusBreakMinutes = newResolved.FocusBreakMinutes
-		a.focusModeActive = newResolved.FocusModeEnabled
 		a.view = ViewDashboard
 		return a, nil
 	case globalConfigCancelMsg:

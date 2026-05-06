@@ -1,9 +1,11 @@
 package tui
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -1436,6 +1438,61 @@ func TestFocusModeToggle(t *testing.T) {
 	}
 	if app.lastReviewAt.IsZero() {
 		t.Error("Expected lastReviewAt set when exiting focus mode (entering review)")
+	}
+}
+
+// TestFocusModeStartupDefault verifies that when global settings have
+// focus_mode_enabled=true, an initAppMsg starts the app with focus mode active.
+// The setting is the startup default; the runtime `f` toggle is independent.
+func TestFocusModeStartupDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	enabled := true
+	gs := config.GlobalSettings{FocusModeEnabled: &enabled}
+	dir := filepath.Join(home, ".baton")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	data, err := json.Marshal(&gs)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), data, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	app := NewApp()
+	if app.focusModeActive {
+		t.Fatal("focusModeActive should default to false before init")
+	}
+
+	model, _ := app.Update(initAppMsg{cfg: &config.Config{}})
+	app = model.(App)
+
+	if !app.focusModeActive {
+		t.Fatal("focusModeActive should be true after init when focus_mode_enabled=true")
+	}
+}
+
+// TestGlobalConfigSaveDoesNotOverrideRuntimeFocus verifies that saving global
+// settings does not toggle the live focus mode state. The setting is the
+// startup default; the runtime `f` key is the only thing that switches it
+// mid-session.
+func TestGlobalConfigSaveDoesNotOverrideRuntimeFocus(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	app := NewApp()
+	app.focusModeActive = true // user pressed `f`
+
+	enabled := false
+	settings := &config.GlobalSettings{FocusModeEnabled: &enabled}
+	model, _ := app.Update(globalConfigSaveMsg{settings: settings})
+	app = model.(App)
+
+	if !app.focusModeActive {
+		t.Fatal("focusModeActive should remain true after save; the saved setting is the startup default, not a runtime override")
 	}
 }
 
