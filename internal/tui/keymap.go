@@ -9,6 +9,7 @@ const (
 	ViewFileBrowser  // overlay: browse filesystem to add a repo
 	ViewGlobalConfig // overlay: edit global settings
 	ViewBranchPicker // overlay: pick branch/PR to open session on
+	ViewRepoPicker   // overlay: pick a registered repo to start a session in
 )
 
 // panelFocus tracks which dashboard panel has keyboard focus.

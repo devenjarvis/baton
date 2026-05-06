@@ -94,6 +94,12 @@ type App struct {
 	cfg          *config.Config
 	repoBrowser  fileBrowserModel
 	branchPicker branchPickerModel
+	repoPicker   repoPickerModel
+
+	// repoPickerPending is set when the file browser was opened from the repo
+	// picker. After the browser emits a select or cancel, control returns to
+	// ViewRepoPicker rather than the dashboard.
+	repoPickerPending bool
 
 	// Settings
 	globalSettings *config.GlobalSettings
@@ -134,8 +140,6 @@ type App struct {
 	focusBreakShortWarning bool
 	focusBreakTimerUp      bool // break duration elapsed; waiting on user to resume
 	focusBreakAnimFrame    int
-	repoPickerActive       bool
-	repoPickerForm         *configForm
 	reviewDiffCache        map[string]*reviewDiffEntry // keyed by session ID
 	reviewSession          *agent.Session              // session currently open in review panel
 
@@ -229,6 +233,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.repoBrowser.height = msg.Height - 1
 		a.branchPicker.width = msg.Width
 		a.branchPicker.height = msg.Height - 1
+		a.repoPicker.width = msg.Width
+		a.repoPicker.height = msg.Height - 1
 		a.recomputePRSectionY()
 		// A resize remaps the VT viewport — any in-flight selection is now
 		// pointing at stale cells. Drop it.
@@ -742,6 +748,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a.updateGlobalConfig(msg)
 	case ViewBranchPicker:
 		return a.updateBranchPicker(msg)
+	case ViewRepoPicker:
+		return a.updateRepoPicker(msg)
 	}
 
 	return a, nil
@@ -1079,55 +1087,6 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 
-		// Repo picker overlay: intercept all keys when active.
-		if a.repoPickerActive && a.repoPickerForm != nil {
-			switch msg.String() {
-			case "enter":
-				selectedIdx := a.repoPickerForm.selectIndex("Repo")
-				a.repoPickerActive = false
-				a.repoPickerForm = nil
-				if a.cfg != nil && selectedIdx >= 0 && selectedIdx < len(a.cfg.Repos) {
-					a.activeRepo = a.cfg.Repos[selectedIdx].Path
-					a.refreshAgentList()
-				}
-				repoPath := a.activeRepo
-				if repoPath == "" {
-					return a, nil
-				}
-				fixedW := a.dashboard.fixedTermWidth()
-				fixedH := a.dashboard.fixedTermHeight()
-				if fixedW <= 0 || fixedH <= 0 {
-					a.setError("Terminal size not yet known; try again")
-					return a, nil
-				}
-				resolved := a.resolvedCache[repoPath]
-				mgr := a.managers[repoPath]
-				if mgr == nil {
-					return a, nil
-				}
-				pickerCfg := agent.Config{
-					Rows:              fixedH,
-					Cols:              fixedW,
-					BypassPermissions: resolved.BypassPermissions,
-					AgentProgram:      resolved.AgentProgram,
-				}
-				return a, func() tea.Msg {
-					sess, ag, err := mgr.CreateSession(pickerCfg)
-					if err != nil {
-						return createResultMsg{err: err}
-					}
-					return createResultMsg{sessionID: sess.ID, agentID: ag.ID}
-				}
-			case "esc":
-				a.repoPickerActive = false
-				a.repoPickerForm = nil
-				return a, nil
-			default:
-				cmd := a.repoPickerForm.Update(msg)
-				return a, cmd
-			}
-		}
-
 		// Focus-mode key handling (fullscreen pipeline view).
 		if a.focusModeActive && a.dashboard.panelFocus != focusReview {
 			switch msg.String() {
@@ -1203,18 +1162,17 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 						a.newAgentPending = false
 					}
-					var options []string
-					activeIdx := 0
-					for i, repo := range a.cfg.Repos {
-						options = append(options, repo.DisplayName())
-						if repo.Path == a.activeRepo {
-							activeIdx = i
+					counts := make(map[string]int, len(a.cfg.Repos))
+					for _, repo := range a.cfg.Repos {
+						if mgr := a.managers[repo.Path]; mgr != nil {
+							counts[repo.Path] = mgr.AgentCount()
 						}
 					}
-					fields := addSelect(nil, "Repo", options, activeIdx)
-					form := newConfigForm(fields, 40)
-					a.repoPickerActive = true
-					a.repoPickerForm = &form
+					a.repoPicker = newRepoPickerModel()
+					a.repoPicker.width = a.width
+					a.repoPicker.height = a.height - 1
+					a.repoPicker.setRepos(a.cfg.Repos, counts, a.activeRepo)
+					a.view = ViewRepoPicker
 					return a, nil
 				}
 				// Single repo: exits this case without returning, so control
@@ -1938,10 +1896,40 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (a App) updateFileBrowser(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case fileBrowserSelectMsg:
-		a.view = ViewDashboard
+		// Snapshot count before addRepo so we can tell whether registration
+		// actually appended a new entry (vs. failing or dedup'ing). Without this
+		// the picker would highlight whatever was already last on failure.
+		priorRepoCount := 0
+		if a.cfg != nil {
+			priorRepoCount = len(a.cfg.Repos)
+		}
 		cmd := a.addRepo(msg.path)
+		if a.repoPickerPending {
+			a.repoPickerPending = false
+			newPath := a.activeRepo
+			if a.cfg != nil && len(a.cfg.Repos) > priorRepoCount {
+				newPath = a.cfg.Repos[len(a.cfg.Repos)-1].Path
+			}
+			counts := make(map[string]int, len(a.cfg.Repos))
+			for _, repo := range a.cfg.Repos {
+				if mgr := a.managers[repo.Path]; mgr != nil {
+					counts[repo.Path] = mgr.AgentCount()
+				}
+			}
+			a.repoPicker.width = a.width
+			a.repoPicker.height = a.height - 1
+			a.repoPicker.setRepos(a.cfg.Repos, counts, newPath)
+			a.view = ViewRepoPicker
+			return a, cmd
+		}
+		a.view = ViewDashboard
 		return a, cmd
 	case fileBrowserCancelMsg:
+		if a.repoPickerPending {
+			a.repoPickerPending = false
+			a.view = ViewRepoPicker
+			return a, nil
+		}
 		a.view = ViewDashboard
 		return a, nil
 	}
@@ -1995,6 +1983,59 @@ func (a App) updateBranchPicker(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	a.branchPicker, cmd = a.branchPicker.Update(msg)
+	return a, cmd
+}
+
+func (a App) updateRepoPicker(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case repoPickerSelectMsg:
+		a.view = ViewDashboard
+		repoPath := msg.path
+		if repoPath == "" {
+			return a, nil
+		}
+		a.activeRepo = repoPath
+		a.refreshAgentList()
+		fixedW := a.dashboard.fixedTermWidth()
+		fixedH := a.dashboard.fixedTermHeight()
+		if fixedW <= 0 || fixedH <= 0 {
+			a.setError("Terminal size not yet known; try again")
+			return a, nil
+		}
+		resolved := a.resolvedCache[repoPath]
+		mgr := a.managers[repoPath]
+		if mgr == nil {
+			return a, nil
+		}
+		pickerCfg := agent.Config{
+			Rows:              fixedH,
+			Cols:              fixedW,
+			BypassPermissions: resolved.BypassPermissions,
+			AgentProgram:      resolved.AgentProgram,
+		}
+		return a, func() tea.Msg {
+			sess, ag, err := mgr.CreateSession(pickerCfg)
+			if err != nil {
+				return createResultMsg{err: err}
+			}
+			return createResultMsg{sessionID: sess.ID, agentID: ag.ID}
+		}
+
+	case repoPickerAddRepoMsg:
+		a.repoPickerPending = true
+		a.repoBrowser = newFileBrowserModel()
+		a.repoBrowser.width = a.width
+		a.repoBrowser.height = a.height - 1
+		a.view = ViewFileBrowser
+		return a, nil
+
+	case repoPickerCancelMsg:
+		a.view = ViewDashboard
+		return a, nil
+	}
+
+	var cmd tea.Cmd
+	a.repoPicker, cmd = a.repoPicker.Update(msg)
 	return a, cmd
 }
 
@@ -2639,29 +2680,6 @@ func (a App) View() tea.View {
 				}
 			}
 		}
-		// Repo picker overlay: replace body with centered picker when active.
-		if a.repoPickerActive && a.repoPickerForm != nil {
-			hints = repoPickerHints
-			pickerW := a.width / 2
-			if pickerW > 50 {
-				pickerW = 50
-			}
-			if pickerW < 30 {
-				pickerW = 30
-			}
-			overlayContent := lipgloss.JoinVertical(
-				lipgloss.Left,
-				StyleTitle.Render("New session in..."),
-				"",
-				a.repoPickerForm.View(),
-			)
-			overlay := lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
-				Padding(0, 1).
-				Width(pickerW).
-				Render(overlayContent)
-			body = lipgloss.Place(a.width, a.height-1, lipgloss.Center, lipgloss.Center, overlay)
-		}
 		statusbar := renderStatusBar(hints, a.width)
 		content = lipgloss.JoinVertical(lipgloss.Left, body, statusbar)
 	case ViewDiff:
@@ -2677,6 +2695,10 @@ func (a App) View() tea.View {
 	case ViewBranchPicker:
 		body := a.branchPicker.View()
 		statusbar := renderStatusBar(branchPickerHints, a.width)
+		content = lipgloss.JoinVertical(lipgloss.Left, body, statusbar)
+	case ViewRepoPicker:
+		body := a.repoPicker.View()
+		statusbar := renderStatusBar(repoPickerHints, a.width)
 		content = lipgloss.JoinVertical(lipgloss.Left, body, statusbar)
 	}
 

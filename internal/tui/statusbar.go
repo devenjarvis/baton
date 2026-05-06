@@ -96,8 +96,10 @@ var (
 	}
 
 	repoPickerHints = []keyHint{
-		{"←/→", "cycle repo"},
-		{"enter", "confirm"},
+		{"j/k", "navigate"},
+		{"type", "filter"},
+		{"enter", "select"},
+		{"a", "add repo"},
 		{"esc", "cancel"},
 	}
 )

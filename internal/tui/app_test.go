@@ -1840,8 +1840,8 @@ func TestSoftAgentLimitGuardMultiRepo(t *testing.T) {
 	if app.err == "" {
 		t.Fatal("Expected warning message after first 'n' at limit")
 	}
-	if app.repoPickerActive {
-		t.Fatal("Expected repoPickerActive=false on first 'n' at limit")
+	if app.view == ViewRepoPicker {
+		t.Fatal("Expected view != ViewRepoPicker on first 'n' at limit")
 	}
 
 	// Second 'n' press: should clear pending and open the picker.
@@ -1850,8 +1850,8 @@ func TestSoftAgentLimitGuardMultiRepo(t *testing.T) {
 	if app.newAgentPending {
 		t.Fatal("Expected newAgentPending=false after second 'n'")
 	}
-	if !app.repoPickerActive {
-		t.Fatal("Expected repoPickerActive=true after second 'n' override")
+	if app.view != ViewRepoPicker {
+		t.Fatal("Expected view == ViewRepoPicker after second 'n' override")
 	}
 }
 
