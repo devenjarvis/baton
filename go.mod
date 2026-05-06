@@ -13,6 +13,7 @@ require (
 	github.com/charmbracelet/x/vt v0.0.0-20260413165052-6921c759c913
 	github.com/creack/pty v1.1.24
 	github.com/google/go-github/v69 v69.2.0
+	github.com/muesli/termenv v0.16.0
 	github.com/sergi/go-diff v1.4.0
 	github.com/spf13/cobra v1.10.2
 )
@@ -37,7 +38,6 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-runewidth v0.0.23 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
-	github.com/muesli/termenv v0.16.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
