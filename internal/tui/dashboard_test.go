@@ -455,3 +455,42 @@ func TestAllInProgressSessions_StableWithinPriority(t *testing.T) {
 		}
 	}
 }
+
+// TestReviewQueueSessions_IncludesInReview verifies that sessions whose phase
+// has progressed to LifecycleInReview still appear in the queue. Without this,
+// pressing ESC out of the review panel (which intentionally leaves the phase
+// at InReview) would orphan the session — invisible in both SESSIONS and
+// REVIEW QUEUE, even though the pipeline IN REVIEW count includes it.
+func TestReviewQueueSessions_IncludesInReview(t *testing.T) {
+	sessReady := &agent.Session{ID: "sr", Name: "ready"}
+	sessReady.SetLifecyclePhase(agent.LifecycleReadyForReview)
+
+	sessInReview := &agent.Session{ID: "si", Name: "in-review"}
+	sessInReview.SetLifecyclePhase(agent.LifecycleInReview)
+
+	sessProgress := &agent.Session{ID: "sp", Name: "in-progress"}
+	sessProgress.SetLifecyclePhase(agent.LifecycleInProgress)
+
+	d := newDashboardModel()
+	d.prCache = make(map[string]*prCacheEntry)
+	d.items = []listItem{
+		{kind: listItemSession, session: sessReady},
+		{kind: listItemSession, session: sessInReview},
+		{kind: listItemSession, session: sessProgress},
+	}
+
+	queue := d.reviewQueueSessions()
+	if len(queue) != 2 {
+		t.Fatalf("expected 2 sessions in queue (Ready+InReview), got %d", len(queue))
+	}
+	got := map[string]bool{}
+	for _, item := range queue {
+		got[item.session.Name] = true
+	}
+	if !got["ready"] || !got["in-review"] {
+		t.Errorf("expected queue to contain ready and in-review sessions, got %v", got)
+	}
+	if got["in-progress"] {
+		t.Error("InProgress session must not appear in review queue")
+	}
+}

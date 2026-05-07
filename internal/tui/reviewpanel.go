@@ -90,7 +90,9 @@ func renderReviewPanel(sess *agent.Session, entry *reviewDiffEntry, width, heigh
 	lines = append(lines, StyleSubtle.Render(strings.Repeat("─", width-2)))
 	hints := "  " +
 		lipgloss.NewStyle().Foreground(lipgloss.Color("#5ab58a")).Render("p") + StyleSubtle.Render(" — open PR in GitHub") +
-		"   " + lipgloss.NewStyle().Foreground(lipgloss.Color("#7ec8e3")).Render("e") + StyleSubtle.Render(" — open in editor") +
+		"   " + lipgloss.NewStyle().Foreground(lipgloss.Color("#7ec8e3")).Render("t") + StyleSubtle.Render(" — open agent terminal") +
+		"   " + StyleSubtle.Render("c — mark complete") +
+		"   " + StyleSubtle.Render("e — open in editor") +
 		"   " + StyleSubtle.Render("d — defer") +
 		"   " + StyleSubtle.Render("ESC — back to focus")
 	lines = append(lines, hints)
