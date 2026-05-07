@@ -1686,7 +1686,7 @@ func (d dashboardModel) renderFullscreenFocus(width, height int) string {
 		lines = append(lines, "")
 	}
 
-	return strings.Join(lines, "\n")
+	return lipgloss.Place(width, height, lipgloss.Left, lipgloss.Top, strings.Join(lines, "\n"))
 }
 
 func (d dashboardModel) renderPreview(width int) string {
