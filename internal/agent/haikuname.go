@@ -105,7 +105,8 @@ func buildClaudeHaikuArgs() []string {
 	if os.Getenv("ANTHROPIC_API_KEY") != "" {
 		args = append(args, "--bare")
 	}
-	args = append(args,
+	args = append(
+		args,
 		"--strict-mcp-config", "--mcp-config", "{}",
 		"--disable-slash-commands",
 		"--no-session-persistence",
