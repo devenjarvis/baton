@@ -5,9 +5,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/devenjarvis/baton/internal/agent"
 	"github.com/devenjarvis/baton/internal/github"
 	"github.com/devenjarvis/baton/internal/hook"
+	"github.com/muesli/termenv"
 )
 
 func TestSelectionRect_Inactive(t *testing.T) {
@@ -454,4 +456,126 @@ func TestAllInProgressSessions_StableWithinPriority(t *testing.T) {
 				i, sessions[0].session.Name, sessions[1].session.Name)
 		}
 	}
+}
+
+// TestSessionFocusStatusAllIdleReadyForInput verifies that a session whose
+// non-shell agents have all transitioned to StatusIdle (no AskingQuestion, no
+// DoneAt) renders the mint "ready for input" badge. This is the call-to-action
+// surface for "agents finished a turn, waiting on the user".
+func TestSessionFocusStatusAllIdleReadyForInput(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	sess := &agent.Session{ID: "s", Name: "ready"}
+	sess.SetLifecyclePhase(agent.LifecycleInProgress)
+	a1 := &agent.Agent{Name: "a1"}
+	a1.ForceStatusForTest(agent.StatusIdle)
+	a2 := &agent.Agent{Name: "a2"}
+	a2.ForceStatusForTest(agent.StatusIdle)
+
+	d := newDashboardModel()
+	d.prCache = make(map[string]*prCacheEntry)
+	d.items = []listItem{
+		{kind: listItemSession, session: sess},
+		{kind: listItemAgent, session: sess, agent: a1},
+		{kind: listItemAgent, session: sess, agent: a2},
+	}
+
+	got := d.sessionFocusStatus(sess)
+	if !strings.Contains(got, "ready for input") {
+		t.Errorf("badge missing %q text\ngot: %q", "ready for input", got)
+	}
+	want := lipgloss.NewStyle().Foreground(ColorReady).Render("✓ 2 ready for input")
+	if !strings.Contains(got, want) {
+		t.Errorf("badge missing ColorReady-styled segment\nwant contains: %q\ngot: %q", want, got)
+	}
+}
+
+// TestSessionFocusStatusMixedActiveIdle verifies that a session with one active
+// and one idle agent renders the mixed "N active · M ready" badge — the
+// trailing ready segment in ColorReady, the leading active segment in
+// StyleSubtle, joined by a middle dot. Stripe stays muted (covered by
+// TestSessionFocusStripeColorAllIdle); only the badge calls out the count.
+func TestSessionFocusStatusMixedActiveIdle(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	sess := &agent.Session{ID: "s", Name: "mixed"}
+	sess.SetLifecyclePhase(agent.LifecycleInProgress)
+	agActive := &agent.Agent{Name: "ag-active"}
+	agActive.OnHookEvent(hook.Event{Kind: hook.KindSessionStart})
+	agIdle := &agent.Agent{Name: "ag-idle"}
+	agIdle.ForceStatusForTest(agent.StatusIdle)
+
+	d := newDashboardModel()
+	d.prCache = make(map[string]*prCacheEntry)
+	d.items = []listItem{
+		{kind: listItemSession, session: sess},
+		{kind: listItemAgent, session: sess, agent: agActive},
+		{kind: listItemAgent, session: sess, agent: agIdle},
+	}
+
+	got := d.sessionFocusStatus(sess)
+	if !strings.Contains(got, "1 active") {
+		t.Errorf("badge missing %q segment\ngot: %q", "1 active", got)
+	}
+	if !strings.Contains(got, "1 ready") {
+		t.Errorf("badge missing %q segment\ngot: %q", "1 ready", got)
+	}
+	if !strings.Contains(got, "·") {
+		t.Errorf("badge missing %q separator\ngot: %q", "·", got)
+	}
+	wantReady := lipgloss.NewStyle().Foreground(ColorReady).Render("1 ready")
+	if !strings.Contains(got, wantReady) {
+		t.Errorf("badge ready segment not in ColorReady\nwant contains: %q\ngot: %q", wantReady, got)
+	}
+}
+
+// TestSessionFocusStripeColorAllIdle pins the stripe-color rules for the new
+// ready-for-input state: all-idle returns ColorReady, mixed (any active)
+// stays muted to preserve the noise budget, and all-active stays muted.
+// Higher-priority cases (error/waiting/asking/done) are covered by their own
+// tests; this one focuses on the new branch.
+func TestSessionFocusStripeColorAllIdle(t *testing.T) {
+	build := func(statuses ...agent.Status) (dashboardModel, *agent.Session) {
+		sess := &agent.Session{ID: "s", Name: "n"}
+		sess.SetLifecyclePhase(agent.LifecycleInProgress)
+		d := newDashboardModel()
+		d.prCache = make(map[string]*prCacheEntry)
+		items := []listItem{{kind: listItemSession, session: sess}}
+		for i, st := range statuses {
+			a := &agent.Agent{Name: "a"}
+			switch st {
+			case agent.StatusActive:
+				a.OnHookEvent(hook.Event{Kind: hook.KindSessionStart})
+			default:
+				a.ForceStatusForTest(st)
+			}
+			items = append(items, listItem{kind: listItemAgent, session: sess, agent: a})
+			_ = i
+		}
+		d.items = items
+		return d, sess
+	}
+
+	t.Run("all idle → ColorReady", func(t *testing.T) {
+		d, sess := build(agent.StatusIdle, agent.StatusIdle)
+		if got := d.sessionFocusStripeColor(sess); got != ColorReady {
+			t.Errorf("all-idle stripe: got %v, want ColorReady (%v)", got, ColorReady)
+		}
+	})
+	t.Run("mixed active+idle → ColorMuted", func(t *testing.T) {
+		d, sess := build(agent.StatusActive, agent.StatusIdle)
+		if got := d.sessionFocusStripeColor(sess); got != ColorMuted {
+			t.Errorf("mixed stripe: got %v, want ColorMuted (%v)", got, ColorMuted)
+		}
+	})
+	t.Run("all active → ColorMuted", func(t *testing.T) {
+		d, sess := build(agent.StatusActive, agent.StatusActive)
+		if got := d.sessionFocusStripeColor(sess); got != ColorMuted {
+			t.Errorf("all-active stripe: got %v, want ColorMuted (%v)", got, ColorMuted)
+		}
+	})
 }

@@ -64,6 +64,13 @@ type sessionTicker struct {
 // needs it today — add to theme.go if another view ever surfaces waiting.
 var ColorWaiting = lipgloss.Color("#D946EF")
 
+// ColorReady is the accent used in focus mode SESSIONS to flag sessions whose
+// agents are idle, finished a turn, ready for the next prompt — distinct from
+// ColorWaiting which is Claude-blocked on a permission/notification prompt.
+// Scoped to the dashboard because no other view surfaces this state today —
+// add to theme.go if another view ever needs it.
+var ColorReady = lipgloss.Color("#5EEAD4")
+
 // listItemKind distinguishes repo headers, session rows, and agent rows in the dashboard list.
 type listItemKind int
 
@@ -806,8 +813,9 @@ func (d dashboardModel) allInProgressSessions() []listItem {
 }
 
 // sessionFocusStatus returns a styled inline status badge for a session row in
-// the unified SESSIONS list. Priority: Error > Waiting > May Need Input > finished (DoneAt set)
-// > normal (N active, M idle).
+// the unified SESSIONS list. Priority: Error > Waiting > May Need Input >
+// finished (DoneAt set) > ready (all-idle, "✓ N ready for input") >
+// mixed (active+idle, "N active · M ready") > muted ("N active").
 func (d dashboardModel) sessionFocusStatus(sess *agent.Session) string {
 	var waitingCount, activeCount, idleCount, idleAskingCount int
 	var firstWaitingReason string
@@ -849,7 +857,16 @@ func (d dashboardModel) sessionFocusStatus(sess *agent.Session) string {
 	if !sess.DoneAt().IsZero() {
 		return lipgloss.NewStyle().Foreground(ColorSuccess).Render("✓ finished — awaiting prompt")
 	}
-	return StyleSubtle.Render(fmt.Sprintf("%d active, %d idle", activeCount, idleCount))
+	switch {
+	case activeCount == 0 && idleCount > 0:
+		return lipgloss.NewStyle().Foreground(ColorReady).Render(fmt.Sprintf("✓ %d ready for input", idleCount))
+	case activeCount > 0 && idleCount > 0:
+		left := StyleSubtle.Render(fmt.Sprintf("%d active", activeCount))
+		right := lipgloss.NewStyle().Foreground(ColorReady).Render(fmt.Sprintf("%d ready", idleCount))
+		return left + " · " + right
+	default:
+		return StyleSubtle.Render(fmt.Sprintf("%d active", activeCount))
+	}
 }
 
 // sessionFocusPriority returns an integer priority for sorting sessions in the
@@ -887,7 +904,7 @@ func (d dashboardModel) sessionFocusPriority(sess *agent.Session) int {
 // sessionFocusStatus so the stripe and the badge agree on the dominant
 // condition. Selection highlight is applied by the caller.
 func (d dashboardModel) sessionFocusStripeColor(sess *agent.Session) lipgloss.Color {
-	var hasError, hasWaiting, hasIdleAsking bool
+	var hasError, hasWaiting, hasIdleAsking, hasIdle, hasActive bool
 	for _, item := range d.items {
 		if item.kind != listItemAgent || item.agent == nil || item.agent.IsShell || item.session != sess {
 			continue
@@ -897,7 +914,10 @@ func (d dashboardModel) sessionFocusStripeColor(sess *agent.Session) lipgloss.Co
 			hasError = true
 		case agent.StatusWaiting:
 			hasWaiting = true
+		case agent.StatusActive:
+			hasActive = true
 		case agent.StatusIdle:
+			hasIdle = true
 			if item.agent.AskingQuestion() {
 				hasIdleAsking = true
 			}
@@ -912,6 +932,8 @@ func (d dashboardModel) sessionFocusStripeColor(sess *agent.Session) lipgloss.Co
 		return ColorWarning
 	case !sess.DoneAt().IsZero():
 		return ColorSuccess
+	case hasIdle && !hasActive:
+		return ColorReady
 	default:
 		return ColorMuted
 	}

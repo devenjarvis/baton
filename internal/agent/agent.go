@@ -635,6 +635,17 @@ func (a *Agent) Status() Status {
 	return a.status
 }
 
+// ForceStatusForTest sets the agent's status directly, bypassing the hook
+// pipeline. Test-only: production code drives status through OnHookEvent
+// (which depends on a real terminal for KindStop's askingQuestion scan).
+// Cross-package tests in internal/tui need this to construct agents in
+// StatusIdle without spinning up real PTYs.
+func (a *Agent) ForceStatusForTest(s Status) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.status = s
+}
+
 // WaitingReason returns the message from the most recent KindNotification event
 // that drove the agent to StatusWaiting, or "" if the agent is not waiting.
 // The reason is cleared when the agent transitions away from StatusWaiting via
