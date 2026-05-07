@@ -72,3 +72,28 @@ func TestWrapText(t *testing.T) {
 		t.Error("expected wrapping to produce multiple lines")
 	}
 }
+
+// TestRenderReviewPanel_FooterAdvertisesAllActions verifies that the action
+// footer surfaces the new t/c keys alongside p/e/d/ESC. Without these hints,
+// users who can't open a PR (no PR yet, design doc, etc.) have no visible
+// path forward and may end up orphaning the session.
+func TestRenderReviewPanel_FooterAdvertisesAllActions(t *testing.T) {
+	sess := agent.NewSessionForTest("sess-1", "fix-auth")
+	sess.SetOriginalPrompt("Fix the auth bug")
+	sess.MarkDone()
+
+	output := renderReviewPanel(sess, nil, 120, 40)
+
+	for _, want := range []string{
+		"open PR",
+		"open agent terminal",
+		"mark complete",
+		"open in editor",
+		"defer",
+		"back to focus",
+	} {
+		if !strings.Contains(output, want) {
+			t.Errorf("footer must advertise %q; got:\n%s", want, output)
+		}
+	}
+}

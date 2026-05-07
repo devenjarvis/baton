@@ -2541,3 +2541,101 @@ func TestFocusMode_RKey_NonEmptyQueue_OpensReviewPanel(t *testing.T) {
 		t.Errorf("expected sessR phase=InReview, got %v", sessR.LifecyclePhase())
 	}
 }
+
+// TestReviewPanel_CKey_MarksComplete verifies that pressing "c" in the review
+// panel transitions the session to LifecycleComplete and closes the panel.
+// This unblocks workflows where a session has no PR (design docs, exploration)
+// and the user wants to take it off the review queue.
+func TestReviewPanel_CKey_MarksComplete(t *testing.T) {
+	app, _, sessR := makeFocusModeMRApp(t)
+	sessR.SetLifecyclePhase(agent.LifecycleInReview)
+	app.reviewSession = sessR
+	app.dashboard.panelFocus = focusReview
+
+	model, _ := app.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
+	app = model.(App)
+
+	if sessR.LifecyclePhase() != agent.LifecycleComplete {
+		t.Errorf("expected sessR phase=Complete, got %v", sessR.LifecyclePhase())
+	}
+	if app.dashboard.panelFocus != focusList {
+		t.Errorf("expected panelFocus=focusList after c, got %v", app.dashboard.panelFocus)
+	}
+	if app.reviewSession != nil {
+		t.Errorf("expected reviewSession cleared, got %v", app.reviewSession)
+	}
+}
+
+// TestReviewPanel_TKey_NoAgents_ShowsError verifies that pressing "t" in the
+// review panel when the session has no agents (synthetic test scenario)
+// surfaces an error and clears reviewSession. Spawning a real-PTY-backed
+// agent for the success path is covered by TestFocusModeEnterOnActiveOpensFocusLaunch
+// since the underlying helper (openSessionInFocusLaunch) is shared.
+func TestReviewPanel_TKey_NoAgents_ShowsError(t *testing.T) {
+	app, _, sessR := makeFocusModeMRApp(t)
+	sessR.SetLifecyclePhase(agent.LifecycleInReview)
+	app.reviewSession = sessR
+	app.dashboard.panelFocus = focusReview
+
+	model, _ := app.Update(tea.KeyPressMsg{Code: 't', Text: "t"})
+	app = model.(App)
+
+	if app.err == "" {
+		t.Fatal("expected error when session has no agents")
+	}
+	if !strings.Contains(app.err, "no agents") {
+		t.Errorf("expected error to mention no agents, got %q", app.err)
+	}
+	if app.reviewSession != nil {
+		t.Errorf("expected reviewSession cleared after t, got %v", app.reviewSession)
+	}
+	// Phase preserved so the session is still in REVIEW QUEUE.
+	if sessR.LifecyclePhase() != agent.LifecycleInReview {
+		t.Errorf("expected sessR phase preserved=InReview, got %v", sessR.LifecyclePhase())
+	}
+}
+
+// TestReviewPanel_PKey_NoPR_DoesNotOrphan verifies the regression: pressing
+// "p" with no PR cached must NOT make the session unreachable. Even though
+// the session is already in LifecycleInReview, reviewQueueSessions() must
+// still surface it so the user can re-enter the panel after pressing ESC.
+func TestReviewPanel_PKey_NoPR_DoesNotOrphan(t *testing.T) {
+	app, _, sessR := makeFocusModeMRApp(t)
+	sessR.SetLifecyclePhase(agent.LifecycleInReview)
+	app.reviewSession = sessR
+	app.dashboard.panelFocus = focusReview
+
+	model, _ := app.Update(tea.KeyPressMsg{Code: 'p', Text: "p"})
+	app = model.(App)
+
+	if app.err == "" {
+		t.Fatal("expected error message when pressing p with no cached PR")
+	}
+	if !strings.Contains(app.err, "terminal") || !strings.Contains(app.err, "complete") {
+		t.Errorf("expected error to suggest t/c alternatives, got %q", app.err)
+	}
+
+	// Press ESC to close the panel — session stays InReview.
+	model, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	app = model.(App)
+
+	if app.dashboard.panelFocus != focusList {
+		t.Errorf("expected panelFocus=focusList after esc, got %v", app.dashboard.panelFocus)
+	}
+	if sessR.LifecyclePhase() != agent.LifecycleInReview {
+		t.Errorf("expected sessR phase=InReview after esc, got %v", sessR.LifecyclePhase())
+	}
+
+	// Regression: the InReview session must still appear in the review queue.
+	queue := app.dashboard.reviewQueueSessions()
+	found := false
+	for _, item := range queue {
+		if item.session == sessR {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("InReview session orphaned: not present in reviewQueueSessions() after p+esc with no PR")
+	}
+}

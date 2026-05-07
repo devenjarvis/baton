@@ -766,12 +766,20 @@ func (d dashboardModel) renderList(width int) string {
 	return strings.Join(lines, "\n")
 }
 
-// reviewQueueSessions returns listItems for sessions in ReadyForReview phase.
+// reviewQueueSessions returns listItems for sessions in ReadyForReview or
+// InReview phase. InReview sessions are kept in the queue so that an ESC out
+// of the review panel never orphans them — without this, a session whose user
+// peeked at the review panel and backed out (or hit "open PR" with no PR
+// cached) would disappear from both SESSIONS (InProgress only) and the queue,
+// even though the pipeline IN REVIEW count showed it was still there.
 func (d dashboardModel) reviewQueueSessions() []listItem {
 	var result []listItem
 	for _, item := range d.items {
-		if item.kind == listItemSession && item.session != nil &&
-			item.session.LifecyclePhase() == agent.LifecycleReadyForReview {
+		if item.kind != listItemSession || item.session == nil {
+			continue
+		}
+		phase := item.session.LifecyclePhase()
+		if phase == agent.LifecycleReadyForReview || phase == agent.LifecycleInReview {
 			result = append(result, item)
 		}
 	}
@@ -1658,11 +1666,16 @@ func (d dashboardModel) renderFullscreenFocus(width, height int) string {
 				prefix = cardStyle.Render("> ")
 			}
 
-			// Line 1: prefix + name (left) + prIndicator (right-aligned)
-			line1 := prefix + cardStyle.Render(name)
+			// Line 1: prefix + name (+ optional reviewing tag) (left) + prIndicator (right-aligned)
+			nameRendered := cardStyle.Render(name)
+			if sess.LifecyclePhase() == agent.LifecycleInReview {
+				tag := lipgloss.NewStyle().Foreground(lipgloss.Color("#9b7fdb")).Render(" (reviewing)")
+				nameRendered += tag
+			}
+			line1 := prefix + nameRendered
 			if prEntry := d.prCache[sess.ID]; prEntry != nil {
 				if prInd := prIndicator(prEntry); prInd != "" {
-					line1 = rightAlign(prefix+cardStyle.Render(name), prInd, width)
+					line1 = rightAlign(prefix+nameRendered, prInd, width)
 				}
 			}
 

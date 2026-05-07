@@ -1065,6 +1065,9 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, nil
 			case "p":
 				// Ship: open PR URL if one exists, transition to Shipping.
+				// TODO(stacked-PR): when entry.stack is non-empty, offer a way
+				// to cycle through stack entries instead of always opening the
+				// head PR.
 				sess := a.reviewSession
 				if entry := a.prCache[sess.ID]; entry != nil && entry.pr != nil && entry.pr.URL != "" {
 					if err := openURL(entry.pr.URL); err != nil {
@@ -1075,8 +1078,27 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.dashboard.panelFocus = focusList
 					a.reviewSession = nil
 				} else {
-					a.setError("no open PR yet — create one in GitHub first")
+					a.setError("no open PR yet — press t to open the agent terminal or c to mark complete")
 				}
+				return a, nil
+			case "t":
+				// Open the session's most-active agent in the fullscreen
+				// focusLaunch terminal. Useful for sessions with no PR yet
+				// (run gh pr create manually) or for inspecting individual
+				// agents within a multi-agent session via the tab bar.
+				sess := a.reviewSession
+				a.reviewSession = nil
+				if !a.openSessionInFocusLaunch(sess) {
+					a.setError("session has no agents to open")
+				}
+				return a, nil
+			case "c":
+				// Mark complete without a PR (e.g. design docs, exploratory
+				// branches). Closes the panel.
+				sess := a.reviewSession
+				sess.SetLifecyclePhase(agent.LifecycleComplete)
+				a.dashboard.panelFocus = focusList
+				a.reviewSession = nil
 				return a, nil
 			case "e":
 				// Open in editor — same pattern as the existing "i" key handler.
