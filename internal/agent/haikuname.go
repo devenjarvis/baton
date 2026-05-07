@@ -72,8 +72,12 @@ func DefaultBranchNamer() BranchNamer {
 // DefaultTaskSummarizer returns a TaskSummarizer that shells out to
 // `claude -p --model claude-haiku-4-5` to produce a short plain-English
 // description of the user's task. The result is NOT slugified — it is display
-// text for the TUI. Returns "" on empty prompt, and "" (not an error) on any
-// subprocess failure so callers can fall back gracefully.
+// text for the TUI. Returns ("", nil) on empty prompt and ("", nil) on a
+// subprocess runtime failure (callers treat "" as "no summary available").
+// Surfacing ErrClaudeNotFound when `claude` is missing from PATH is the one
+// exception: that's a terminal condition the retry helper should short-circuit
+// on, mirroring DefaultBranchNamer; the manager-side wrapper coerces it back
+// to "" before storing on the session.
 func DefaultTaskSummarizer() TaskSummarizer {
 	return func(ctx context.Context, prompt string) (string, error) {
 		if strings.TrimSpace(prompt) == "" {
@@ -81,7 +85,13 @@ func DefaultTaskSummarizer() TaskSummarizer {
 		}
 		claudePath, err := exec.LookPath("claude")
 		if err != nil {
-			return "", nil //nolint:nilerr // advisory display feature; absence of claude is not an error for callers
+			// Mirror DefaultBranchNamer: surface the sentinel so the retry
+			// helper short-circuits on attempt 1 instead of burning the
+			// remaining budget on a lookup that will fail identically every
+			// time. The manager-level wrapper coerces this back to "" before
+			// storing on the session, so the public-boundary "no summary"
+			// behavior is preserved.
+			return "", fmt.Errorf("%w: %v", ErrClaudeNotFound, err)
 		}
 		text, err := runClaudeHaikuText(ctx, claudePath, taskSummaryPrompt+prompt)
 		if err != nil {

@@ -476,7 +476,9 @@ func TestDefaultTaskSummarizer_EmptyPrompt(t *testing.T) {
 }
 
 // TestDefaultTaskSummarizer_ClaudeMissing verifies that when claude is not on
-// PATH the summarizer returns ("", nil) — no panic, no error.
+// PATH the summarizer surfaces ErrClaudeNotFound so callHaikuWithRetry can
+// short-circuit. The manager-side wrapper coerces the error back to "" before
+// storing on the session, preserving the public-boundary "no summary" effect.
 func TestDefaultTaskSummarizer_ClaudeMissing(t *testing.T) {
 	empty := t.TempDir()
 	t.Setenv("PATH", empty)
@@ -486,8 +488,8 @@ func TestDefaultTaskSummarizer_ClaudeMissing(t *testing.T) {
 	defer cancel()
 
 	got, err := s(ctx, "implement dark mode for the settings panel")
-	if err != nil {
-		t.Errorf("expected nil error when claude is absent, got: %v", err)
+	if !errors.Is(err, ErrClaudeNotFound) {
+		t.Errorf("expected ErrClaudeNotFound when claude is absent, got: %v", err)
 	}
 	if got != "" {
 		t.Errorf("expected empty string when claude is absent, got: %q", got)
