@@ -476,7 +476,9 @@ func TestDefaultTaskSummarizer_EmptyPrompt(t *testing.T) {
 }
 
 // TestDefaultTaskSummarizer_ClaudeMissing verifies that when claude is not on
-// PATH the summarizer returns ("", nil) — no panic, no error.
+// PATH the summarizer surfaces ErrClaudeNotFound so callHaikuWithRetry can
+// short-circuit. The manager-side wrapper coerces the error back to "" before
+// storing on the session, preserving the public-boundary "no summary" effect.
 func TestDefaultTaskSummarizer_ClaudeMissing(t *testing.T) {
 	empty := t.TempDir()
 	t.Setenv("PATH", empty)
@@ -486,8 +488,8 @@ func TestDefaultTaskSummarizer_ClaudeMissing(t *testing.T) {
 	defer cancel()
 
 	got, err := s(ctx, "implement dark mode for the settings panel")
-	if err != nil {
-		t.Errorf("expected nil error when claude is absent, got: %v", err)
+	if !errors.Is(err, ErrClaudeNotFound) {
+		t.Errorf("expected ErrClaudeNotFound when claude is absent, got: %v", err)
 	}
 	if got != "" {
 		t.Errorf("expected empty string when claude is absent, got: %q", got)
@@ -533,6 +535,74 @@ func TestDefaultTaskSummarizer_NonZeroExitReturnsEmpty(t *testing.T) {
 	if got != "" {
 		t.Errorf("expected empty string on subprocess failure, got: %q", got)
 	}
+}
+
+// TestBuildClaudeHaikuArgs_AlwaysOnFlags verifies the speedup flags that
+// disable MCP discovery, slash commands, session persistence, built-in
+// tools, and dynamic system prompt sections are present on every call,
+// alongside the model + -p invariants.
+func TestBuildClaudeHaikuArgs_AlwaysOnFlags(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "")
+
+	args := buildClaudeHaikuArgs()
+	joined := strings.Join(args, " ")
+
+	if args[0] != "-p" {
+		t.Errorf("first arg = %q, want -p", args[0])
+	}
+	if !containsPair(args, "--model", claudeHaikuModel) {
+		t.Errorf("missing --model %s; args=%v", claudeHaikuModel, args)
+	}
+	for _, want := range []string{
+		"--strict-mcp-config",
+		"--mcp-config {}",
+		"--disable-slash-commands",
+		"--no-session-persistence",
+		"--tools ",
+		"--setting-sources user",
+		"--exclude-dynamic-system-prompt-sections",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("argv missing %q; got %q", want, joined)
+		}
+	}
+}
+
+// TestBuildClaudeHaikuArgs_BareGatedByAPIKey verifies --bare is added iff
+// ANTHROPIC_API_KEY is set in the environment.
+func TestBuildClaudeHaikuArgs_BareGatedByAPIKey(t *testing.T) {
+	t.Run("with API key", func(t *testing.T) {
+		t.Setenv("ANTHROPIC_API_KEY", "sk-test")
+		args := buildClaudeHaikuArgs()
+		if !contains(args, "--bare") {
+			t.Errorf("expected --bare with ANTHROPIC_API_KEY set; got %v", args)
+		}
+	})
+	t.Run("without API key", func(t *testing.T) {
+		t.Setenv("ANTHROPIC_API_KEY", "")
+		args := buildClaudeHaikuArgs()
+		if contains(args, "--bare") {
+			t.Errorf("did not expect --bare without ANTHROPIC_API_KEY; got %v", args)
+		}
+	})
+}
+
+func contains(args []string, want string) bool {
+	for _, a := range args {
+		if a == want {
+			return true
+		}
+	}
+	return false
+}
+
+func containsPair(args []string, key, val string) bool {
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == key && args[i+1] == val {
+			return true
+		}
+	}
+	return false
 }
 
 // TestDefaultTaskSummarizer_OutputNotSlugified verifies that the summarizer
