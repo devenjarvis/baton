@@ -556,10 +556,13 @@ func NewSessionForTest(id, name string) *Session {
 // AddTestAgent injects a synthetic agent with the given id/shell flag/status
 // into the session for use in tests outside the agent package. It bypasses the
 // normal PTY-spawning path so callers don't need a real subprocess to exercise
-// status-dependent session logic (e.g. IsReviewable).
+// status-dependent session logic (e.g. IsReviewable). The status write is
+// guarded by a.mu to match the pattern of every production writer of status.
 func (s *Session) AddTestAgent(id string, isShell bool, status Status) *Agent {
 	a := &Agent{ID: id, IsShell: isShell, CreatedAt: time.Now()}
+	a.mu.Lock()
 	a.status = status
+	a.mu.Unlock()
 	s.mu.Lock()
 	s.agents[id] = a
 	s.mu.Unlock()
