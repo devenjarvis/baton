@@ -19,7 +19,7 @@ var (
 	dashboardHints = []keyHint{
 		{"j/k", "navigate"},
 		{"⏎", "open"},
-		{"n", "new"},
+		{"n", "new session"},
 		{"b", "build"},
 		{"m", "ready"},
 		{"r", "review"},

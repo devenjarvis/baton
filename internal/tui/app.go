@@ -1208,23 +1208,30 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				// Fall through to the global break handler below.
 			case "m":
-				// Mark the cursor-selected Building session as ReadyForReview.
-				if a.focusCursorSection != focusSectionBuilding {
-					a.setError("nothing to mark — cursor isn't on a Building session")
+				// Mark the cursor-selected Planning or Building session as
+				// ReadyForReview. We accept Planning too so the natural flow
+				// works when Claude finishes the work in one shot — the
+				// idle-reviewable cue ("press m to review") is rendered for
+				// any reviewable session regardless of phase, and pressing m
+				// shouldn't surprise the user with an error in that case.
+				var sess *agent.Session
+				switch a.focusCursorSection {
+				case focusSectionPlanning:
+					planning := a.dashboard.planningSessions()
+					if a.focusPlanningIdx < len(planning) {
+						sess = planning[a.focusPlanningIdx].session
+					}
+				case focusSectionBuilding:
+					building := a.dashboard.buildingSessions()
+					if a.focusBuildingIdx < len(building) {
+						sess = building[a.focusBuildingIdx].session
+					}
+				default:
+					a.setError("nothing to mark — cursor isn't on a Planning or Building session")
 					return a, nil
 				}
-				building := a.dashboard.buildingSessions()
-				if len(building) == 0 {
-					a.setError("no building sessions")
-					return a, nil
-				}
-				if a.focusBuildingIdx >= len(building) {
-					a.setError("no building sessions")
-					return a, nil
-				}
-				sess := building[a.focusBuildingIdx].session
 				if sess == nil {
-					a.setError("no building sessions")
+					a.setError("no session under cursor")
 					return a, nil
 				}
 				if !sess.IsReviewable() {

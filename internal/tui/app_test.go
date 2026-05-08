@@ -1780,8 +1780,8 @@ func TestFocusMode_MKey_CursorOnReviewSection_ShowsError(t *testing.T) {
 	if app.err == "" {
 		t.Fatal("expected error message when pressing m with cursor on review section")
 	}
-	if !strings.Contains(app.err, "Building") {
-		t.Errorf("expected error to mention Building, got %q", app.err)
+	if !strings.Contains(app.err, "Planning or Building") {
+		t.Errorf("expected error to mention Planning or Building, got %q", app.err)
 	}
 	// sessA must NOT have transitioned phase.
 	if sessA.LifecyclePhase() != agent.LifecycleInProgress {
@@ -2243,16 +2243,18 @@ func TestRepoPathForSession_FindsSessionsAcrossMultiRepo(t *testing.T) {
 
 // makeFourPhaseApp wires up an app with one session in each of the four
 // pipeline phases so tests can exercise navigation across all sections without
-// requiring a real manager / process.
+// requiring a real manager / process. Sessions are constructed via
+// NewSessionForTest so callers can attach AddTestAgent rows when they need
+// agent state to drive IsReviewable / status badges.
 func makeFourPhaseApp(t *testing.T) (App, *agent.Session, *agent.Session, *agent.Session, *agent.Session) {
 	t.Helper()
-	sessP := &agent.Session{Name: "planning"}
+	sessP := agent.NewSessionForTest("p", "planning")
 	sessP.SetLifecyclePhase(agent.LifecyclePlanning)
-	sessB := &agent.Session{Name: "building"}
+	sessB := agent.NewSessionForTest("b", "building")
 	sessB.SetLifecyclePhase(agent.LifecycleInProgress)
-	sessR := &agent.Session{Name: "review"}
+	sessR := agent.NewSessionForTest("r", "review")
 	sessR.SetLifecyclePhase(agent.LifecycleReadyForReview)
-	sessS := &agent.Session{Name: "shipping"}
+	sessS := agent.NewSessionForTest("s", "shipping")
 	sessS.SetLifecyclePhase(agent.LifecycleShipping)
 
 	app := NewApp()
@@ -2344,6 +2346,24 @@ func TestBKey_AdvancesPlanningToBuilding(t *testing.T) {
 	// section (Building, where the row just moved).
 	if app.focusCursorSection != focusSectionBuilding {
 		t.Fatalf("after 'b': expected cursor on Building, got %v", app.focusCursorSection)
+	}
+}
+
+// TestMKey_FromPlanning_AdvancesToReady verifies that pressing 'm' on a
+// Planning session whose agent is idle skips Building and transitions
+// directly to ReadyForReview. This matches the "press m to review" cue
+// rendered on any idle-reviewable card and supports the natural flow when
+// Claude finishes the requested work in one shot.
+func TestMKey_FromPlanning_AdvancesToReady(t *testing.T) {
+	app, sessP, _, _, _ := makeFourPhaseApp(t)
+	sessP.AddTestAgent("p-1", false, agent.StatusIdle)
+	app.focusCursorSection = focusSectionPlanning
+	app.focusPlanningIdx = 0
+
+	model, _ := app.Update(tea.KeyPressMsg{Code: 'm', Text: "m"})
+	app = model.(App)
+	if sessP.LifecyclePhase() != agent.LifecycleReadyForReview {
+		t.Fatalf("expected Planning → ReadyForReview on 'm' (skipping Building), got %v", sessP.LifecyclePhase())
 	}
 }
 
