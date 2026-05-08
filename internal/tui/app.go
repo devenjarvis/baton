@@ -1184,31 +1184,29 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return a, nil
 			case "b":
-				// Advance the cursor-selected Planning session to Building.
-				if a.focusCursorSection != focusSectionPlanning {
-					a.setError("nothing to start — cursor isn't on a Planning session")
-					return a, nil
+				// Context-sensitive: when the cursor is on a Planning row,
+				// 'b' advances it to Building. Otherwise we leave the case
+				// without returning so the global "take a break" handler in
+				// the switch below catches the press. Picking a Planning row
+				// to advance is a deliberate action, while taking a break is
+				// the catch-all everywhere else — so the cursor location is
+				// the disambiguator the user already has at hand.
+				if a.focusCursorSection == focusSectionPlanning {
+					planning := a.dashboard.planningSessions()
+					if len(planning) > 0 {
+						idx := a.focusPlanningIdx
+						if idx >= len(planning) {
+							idx = len(planning) - 1
+						}
+						if sess := planning[idx].session; sess != nil {
+							sess.SetLifecyclePhase(agent.LifecycleInProgress)
+							a.clampFocusCursor()
+							a.syncFocusCursorToDashboard()
+							return a, nil
+						}
+					}
 				}
-				planning := a.dashboard.planningSessions()
-				if len(planning) == 0 {
-					a.setError("no planning sessions")
-					return a, nil
-				}
-				idx := a.focusPlanningIdx
-				if idx >= len(planning) {
-					idx = len(planning) - 1
-				}
-				sess := planning[idx].session
-				if sess == nil {
-					a.setError("no planning sessions")
-					return a, nil
-				}
-				sess.SetLifecyclePhase(agent.LifecycleInProgress)
-				// Clamp cursor: planning section may now be empty; sync below
-				// will land on the next non-empty section in render order.
-				a.clampFocusCursor()
-				a.syncFocusCursorToDashboard()
-				return a, nil
+				// Fall through to the global break handler below.
 			case "m":
 				// Mark the cursor-selected Building session as ReadyForReview.
 				if a.focusCursorSection != focusSectionBuilding {

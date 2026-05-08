@@ -2347,17 +2347,22 @@ func TestBKey_AdvancesPlanningToBuilding(t *testing.T) {
 	}
 }
 
-// TestBKey_NoOpOutsidePlanning verifies that 'b' on a non-Planning section is
-// a no-op that surfaces an error rather than moving an unrelated session.
-func TestBKey_NoOpOutsidePlanning(t *testing.T) {
+// TestBKey_OutsidePlanning_FallsThroughToBreak verifies that 'b' on a
+// non-Planning section is NOT a session transition — it falls through to the
+// existing global "take a break" handler so the Planning advance and the
+// wellness break can share the same physical key.
+func TestBKey_OutsidePlanning_FallsThroughToBreak(t *testing.T) {
 	app, _, sessB, _, _ := makeFourPhaseApp(t)
 	app.focusCursorSection = focusSectionBuilding
 	app.focusBuildingIdx = 0
+	if app.focusBreakMode {
+		t.Fatal("precondition: focusBreakMode should be false")
+	}
 
 	model, _ := app.Update(tea.KeyPressMsg{Code: 'b', Text: "b"})
 	app = model.(App)
-	if app.err == "" {
-		t.Fatal("expected error when pressing 'b' outside Planning section")
+	if !app.focusBreakMode {
+		t.Fatal("expected 'b' outside Planning to engage the break overlay")
 	}
 	if sessB.LifecyclePhase() != agent.LifecycleInProgress {
 		t.Errorf("Building session phase changed unexpectedly: %v", sessB.LifecyclePhase())
