@@ -2724,8 +2724,12 @@ func (a App) View() tea.View {
 		case focusLaunch:
 			hints = focusLaunchHints
 		}
-		// Break mode hint or work-mode break suggestion.
-		// Skip when in focusLaunch: b routes to the agent terminal there, not to break control.
+		// `b` is dual-purpose: it advances a Planning session to Building when
+		// the cursor is on Planning, and otherwise triggers the wellness break.
+		// We expose this through a single hint slot to keep the bar from
+		// overflowing 120 cols — when the cursor is not on Planning AND the
+		// wellness timer is enabled, swap the desc on the static `b` entry to
+		// "break". Skip in focusLaunch: b routes to the agent terminal there.
 		if a.dashboard.panelFocus != focusLaunch {
 			if a.focusBreakMode {
 				if a.focusBreakTimerUp {
@@ -2733,8 +2737,16 @@ func (a App) View() tea.View {
 				} else {
 					hints = []keyHint{{key: "b", desc: "exit early"}}
 				}
-			} else if a.focusSessionMinutes > 0 {
-				hints = append(hints, keyHint{key: "b", desc: "take a break"})
+			} else if a.focusCursorSection != focusSectionPlanning && a.focusSessionMinutes > 0 {
+				// Copy first — `hints := dashboardHints` aliases the package
+				// var's backing array, and we'd otherwise mutate it globally.
+				hints = append([]keyHint(nil), hints...)
+				for i := range hints {
+					if hints[i].key == "b" {
+						hints[i].desc = "break"
+						break
+					}
+				}
 			}
 		}
 		// Agent-limit modal overlay: replace body with centered modal when active.
