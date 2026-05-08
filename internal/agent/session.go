@@ -290,6 +290,48 @@ func (s *Session) AgentCount() int {
 	return len(s.agents)
 }
 
+// PrimaryAgent returns the highest-priority non-shell agent in the session, or
+// nil if the session has no agents at all. Priority follows the focusLaunch
+// auto-pick order: Active > Waiting > Idle > Starting > Done/Error. Shell
+// agents are skipped unless they are the only thing in the session, in which
+// case the first shell is returned. Used by pipeline workflow keys (c, x) to
+// pick a deterministic target without forcing the user to drill into focusLaunch.
+func (s *Session) PrimaryAgent() *Agent {
+	agents := s.Agents()
+	if len(agents) == 0 {
+		return nil
+	}
+	priority := func(a *Agent) int {
+		switch a.Status() {
+		case StatusActive:
+			return 5
+		case StatusWaiting:
+			return 4
+		case StatusIdle:
+			return 3
+		case StatusStarting:
+			return 2
+		default:
+			return 1
+		}
+	}
+	var best *Agent
+	bestPri := -1
+	for _, a := range agents {
+		if a.IsShell {
+			continue
+		}
+		if pri := priority(a); pri > bestPri {
+			bestPri = pri
+			best = a
+		}
+	}
+	if best != nil {
+		return best
+	}
+	return agents[0]
+}
+
 // KillAgent kills a single agent but does not remove the session.
 func (s *Session) KillAgent(id string) {
 	s.mu.RLock()
