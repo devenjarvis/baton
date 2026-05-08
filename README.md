@@ -1,6 +1,6 @@
 # Baton
 
-A lightweight, TUI-first interface for running multiple [Claude Code](https://docs.anthropic.com/en/docs/claude-code) agents in parallel.
+A terminal-native dashboard for running [Claude Code](https://docs.anthropic.com/en/docs/claude-code) agents in parallel — designed around how many agents a human can actually oversee, not how many you can launch.
 
 <!-- TODO: record demo GIF and replace placeholder -->
 ![Baton demo](docs/demo.gif)
@@ -45,42 +45,43 @@ baton doctor
 
 ## Why Baton?
 
-If you use Claude Code regularly, you've probably wanted to run multiple tasks at once without juggling terminal windows. Baton gives you a single dashboard to manage parallel agents — each in its own isolated git worktree — and surfaces output, diffs, and status all in one place.
+Most parallel-agent tools optimize for throughput — how many agents you can run at once. Baton optimizes for the human running them. The whole product is built around a single, opinionated workflow: **one primary goal, up to three agents, a defined review point, and a 90-minute block.**
 
-**The core loop:**
+That opinion is grounded in evidence. BCG's 2026 study (n=1,488) found developers managing more than ~3 concurrent agents made 39% more errors and reported 33% more decision fatigue. METR's 2025 RCT measured a 19% productivity *slowdown* among experienced developers using AI tools, driven almost entirely by verification overhead. And every unnecessary context switch costs ~9.5 minutes of recovery time. The instinct to spawn another agent is almost always right; the instinct to monitor all of them simultaneously is what drains the day.
 
-1. Run `baton` inside a git repo
-2. Press `n` to create a session and give Claude a task
-3. Watch the agent work; press `⏎` to drop into the agent terminal, `esc` to return
-4. Press `m` to mark the session ready when Claude finishes its turn
-5. Press `r` to review and ship
+Baton turns that into a workflow:
 
-No tmux required. No context switching.
+- **One pipeline, one cursor.** A two-section dashboard — SESSIONS in progress, REVIEW QUEUE awaiting merge — replaces tmux pane-juggling and tab-switching. `j`/`k` walk both sections; everything else acts on whatever the cursor is on.
+- **Isolated git worktrees per session.** Each agent works on `baton/<name>` under `.baton/worktrees/`. Branches are conservative, merges are explicit (`git merge --no-ff` with confirmation), and your main checkout is never touched.
+- **Batch review, not continuous monitoring.** Hook-driven status (idle / active / waiting / done / error) means Baton tells you when an agent needs you. You don't watch streams — you check in when there's something to check.
+- **Wellness baked in, not bolted on.** A soft 3-agent cap, an automatic break overlay at 90 minutes, suppressed chimes for routine state changes, and a `.baton/logs/wellness.log` of every block. These aren't toggles — they're the product.
 
-Running three or more parallel agents creates real cognitive overhead that's easy to underestimate. BCG research (2026) found that developers managing more than roughly three concurrent agents experienced 33% more decision fatigue and made 39% more errors — a "brain fry" effect that compounds quickly as you add more threads. The instinct to spin up another agent is almost always right; the instinct to monitor all of them simultaneously is not.
+If you want to run 8 agents for 4 hours straight, Baton is the wrong tool. If you want to actually finish three things in a focused block and ship them, keep reading.
 
-The design targets behind Baton come from two well-established findings: context-switch recovery takes on average 9.5 minutes, and deep work cycles around a 90-minute block. Every unnecessary interrupt — a glance at a stuck agent, a quick tab-switch to check output — drains from those budgets in ways that don't show up until you're staring at your screen at 4 pm wondering where the day went.
-
-Baton's dashboard is the answer: a pipeline view with one cursor that moves across SESSIONS (in-progress) and a REVIEW QUEUE (ready to merge). You work in flow; Baton does the monitoring.
-
-## Usage
-
-Run `baton` inside a git repository:
+## Quick Start
 
 ```bash
-baton
+baton                         # inside any git repo
 ```
 
-The first run auto-registers the current directory and adds `.baton/` to `.gitignore`. Additional repos can be added from the TUI (`a`).
+The first run registers the repo and adds `.baton/` to `.gitignore`. From there:
 
-### Keybindings
+1. `n` — create a session and prompt Claude. The cursor jumps to the new session and opens its terminal.
+2. `esc` — return to the pipeline. Claude keeps running.
+3. `m` — mark a session ready when Claude finishes its turn.
+4. `r` — open the review panel for the cursor-selected REVIEW QUEUE row.
+5. Merge or discard. Worktree is cleaned up automatically.
 
-**Pipeline view** (the dashboard):
+No tmux. No tab-switching. One cursor.
+
+## Keybindings
+
+**Pipeline view** (the dashboard — the only top-level view):
 
 | Key              | Action                                                     |
 |------------------|------------------------------------------------------------|
 | `j` / `k`        | Move the cursor across SESSIONS and REVIEW QUEUE rows      |
-| `⏎` / `space`    | Open the cursor-selected session's agent in focusLaunch    |
+| `⏎` / `space`    | Open the cursor-selected session's agent terminal          |
 | `n`              | Create a new session                                       |
 | `N`              | Cycle to the next registered repo                          |
 | `m`              | Mark the cursor-selected SESSIONS row ready for review     |
@@ -98,7 +99,9 @@ The first run auto-registers the current directory and adds `.baton/` to `.gitig
 | `b`              | Take a break (engages the wellness break overlay)          |
 | `q`              | Detach and exit (prompts if agents are running)            |
 
-**Agent terminal** (focusLaunch — opened by pressing `⏎` on a session):
+Mouse: single-click on a session card moves the cursor; double-click activates (agent terminal for an active session, review panel for a queue row). Clicking the PR indicator on a review row opens the PR in the browser.
+
+**Agent terminal** (opened by pressing `⏎` on a session, `esc` returns):
 
 | Key              | Action                                          |
 |------------------|-------------------------------------------------|
@@ -131,9 +134,7 @@ The first run auto-registers the current directory and adds `.baton/` to `.gitig
 | `esc`     | Back to summary   |
 | `q`       | Back to dashboard |
 
-Click support on the dashboard: single-click on a session card moves the cursor; double-click activates (focusLaunch for an active session, review panel for a queue row). Clicking the PR indicator on a review row opens the PR in the browser.
-
-### Branch naming
+## Branch naming
 
 New sessions start on a random adjective-noun branch (e.g. `baton/warm-ibis`) so Claude can launch immediately. On the first real `user-prompt-submit`, the branch is renamed in place — `git branch -m` atomically updates the worktree's HEAD symref — to a slug of the prompt, e.g. `baton/add-dark-mode-to-dashboard`. Slash commands (`/clear`, `/help`) are skipped, so the next real prompt still triggers the rename. Sessions started on an existing branch (`o`) keep that branch as-is.
 
@@ -144,7 +145,7 @@ The prefix is configurable via `BranchPrefix` in global or per-repo settings, an
 
 Unknown `{tokens}` are left literal. Example: `BranchPrefix: "{user}/"` produces `dj/add-dark-mode` after the first-prompt rename.
 
-### Wellness controls
+## Wellness controls
 
 The dashboard surfaces three wellness affordances tuned to keep parallel-agent work sustainable:
 
@@ -172,9 +173,32 @@ When you merge, Baton runs `git merge --no-ff` from the worktree branch into the
 - Richer merge and conflict resolution flows
 - Better multi-repo session management
 
+## Development
+
+Baton is Go 1.25, single-binary. Common loop:
+
+```bash
+go build -o baton .         # build
+go test -race ./...         # run unit tests with the race detector (required before committing)
+go vet ./...                # static analysis
+golangci-lint run           # lint (config in .golangci.yml)
+gofumpt -w .                # format
+./baton doctor              # validate environment + hook pipeline round-trip
+```
+
+End-to-end TUI tests live under `internal/e2e/` behind the `e2e` build tag (needs [`tu`](https://github.com/charmbracelet/x/tree/main/tu) v0.6.0+):
+
+```bash
+go test -tags e2e -timeout 300s -v ./internal/e2e/
+```
+
+Every PR should drop a fragment under `changelog.d/` (e.g. `changelog.d/fix-login-redirect.md`) using `### Added` / `### Fixed` / `### Changed` / `### Removed` headers — the release script assembles `CHANGELOG.md` from those when a version is cut.
+
+For architecture, internal package layout, and the design philosophy behind the dashboard, see [`CLAUDE.md`](./CLAUDE.md).
+
 ## Contributing
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md). Bug reports and focused PRs are welcome; because Baton is a single-maintainer alpha, larger feature proposals should start as an issue.
+See [CONTRIBUTING.md](./CONTRIBUTING.md). Bug reports and focused PRs are welcome; because Baton is a single-maintainer alpha, larger feature proposals should start as an issue. Proposals that increase raw parallel-agent throughput at the cost of monitoring burden are unlikely to land — see the design philosophy in [CLAUDE.md](./CLAUDE.md).
 
 ## Security
 
