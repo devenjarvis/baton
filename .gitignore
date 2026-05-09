@@ -1,3 +1,4 @@
 baton
 .baton/
 dist/
+.claude/
