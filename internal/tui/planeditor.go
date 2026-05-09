@@ -15,13 +15,16 @@ import (
 
 // planEditorMode is the editor's current input mode. The default is
 // scroll-mode (read-only navigation); `i` enters edit-mode and `r` enters
-// revise-input-mode.
+// revise-input-mode. planEditorModeQuestion is entered automatically when
+// the planner subprocess raises an ask_user clarifying question; it
+// supersedes whatever mode was active and returns to scroll on submit.
 type planEditorMode int
 
 const (
 	planEditorModeScroll planEditorMode = iota
 	planEditorModeEdit
 	planEditorModeReviseInput
+	planEditorModeQuestion
 )
 
 // planEditorModel renders a session's .claude/plan.md and lets the user
@@ -47,6 +50,16 @@ type planEditorModel struct {
 	revisingFor time.Time
 	statusMsg   string // generic status line under the header (e.g. "Drafting…")
 	errMsg      string // inline error message; cleared on next interaction
+
+	// Planner question state. When questionAnswerCh is non-nil, the editor is
+	// in planEditorModeQuestion and mirrors the question text + a single-line
+	// input for the answer. Submitting (or skipping) the question writes a
+	// value to questionAnswerCh exactly once and clears these fields. Clearing
+	// without answering is a bug — the planner subprocess will hang.
+	questionText     string
+	questionInput    textinput.Model
+	questionAnswerCh chan<- string
+	priorMode        planEditorMode // mode to restore after the question is answered
 }
 
 // planEditorApproveMsg is emitted when the user approves the plan (`a`).
@@ -113,6 +126,12 @@ func newPlanEditor(sess *agent.Session, width, height int) planEditorModel {
 	ti.SetWidth(width - 4)
 	m.reviseInput = ti
 
+	qi := textinput.New()
+	qi.Placeholder = "Type an answer (enter to submit, esc to skip)"
+	qi.CharLimit = 1024
+	qi.SetWidth(width - 4)
+	m.questionInput = qi
+
 	m.reload()
 	return m
 }
@@ -128,6 +147,7 @@ func (m *planEditorModel) SetSize(w, h int) {
 	m.textarea.SetWidth(textareaWidth(w))
 	m.textarea.SetHeight(textareaHeight(h))
 	m.reviseInput.SetWidth(w - 4)
+	m.questionInput.SetWidth(w - 4)
 	m.clampScroll()
 }
 
@@ -157,6 +177,60 @@ func (m *planEditorModel) SetRevising(v bool) {
 // SetError sets a one-shot error message rendered below the header until
 // the next interaction.
 func (m *planEditorModel) SetError(s string) { m.errMsg = s }
+
+// AskQuestion puts the editor into planEditorModeQuestion with the given
+// question text and answer channel. It supersedes whatever mode was active
+// (the prior mode is restored on submit). If a question is already pending,
+// the new one is queued by replacing it — but in practice the planner is
+// configured to ask one question at a time, so this is a defensive guard,
+// not a routine code path: the previous answer channel gets the empty
+// answer so the in-flight handler unblocks.
+func (m *planEditorModel) AskQuestion(question string, answerCh chan<- string) tea.Cmd {
+	if m.questionAnswerCh != nil {
+		select {
+		case m.questionAnswerCh <- "":
+		default:
+		}
+	}
+	m.questionText = question
+	m.questionAnswerCh = answerCh
+	m.questionInput.SetValue("")
+	if m.mode != planEditorModeQuestion {
+		m.priorMode = m.mode
+	}
+	m.mode = planEditorModeQuestion
+	// Blur other inputs so keystrokes route to the question input only.
+	m.textarea.Blur()
+	m.reviseInput.Blur()
+	return m.questionInput.Focus()
+}
+
+// HasPendingQuestion reports whether the editor is currently waiting on the
+// user to answer (or skip) a planner question. The App uses this to suppress
+// duplicate dispatches and to decide whether esc should close the editor or
+// resolve the question.
+func (m *planEditorModel) HasPendingQuestion() bool { return m.questionAnswerCh != nil }
+
+// resolveQuestion sends answer to the planner, clears question state, and
+// restores the prior mode. Safe to call only when a question is pending.
+func (m *planEditorModel) resolveQuestion(answer string) {
+	if m.questionAnswerCh == nil {
+		return
+	}
+	// Non-blocking send: AnswerCh is buffered (cap 1) by the IPC server.
+	select {
+	case m.questionAnswerCh <- answer:
+	default:
+	}
+	m.questionAnswerCh = nil
+	m.questionText = ""
+	m.questionInput.Blur()
+	m.questionInput.SetValue("")
+	m.mode = m.priorMode
+	if m.mode == planEditorModeQuestion {
+		m.mode = planEditorModeScroll
+	}
+}
 
 // reload rereads the plan file from disk and resets dirty/scroll state.
 func (m *planEditorModel) reload() {
@@ -194,6 +268,11 @@ func (m *planEditorModel) Update(msg tea.Msg) tea.Cmd {
 			m.reviseInput, cmd = m.reviseInput.Update(msg)
 			return cmd
 		}
+		if m.mode == planEditorModeQuestion {
+			var cmd tea.Cmd
+			m.questionInput, cmd = m.questionInput.Update(msg)
+			return cmd
+		}
 		return nil
 	}
 	m.errMsg = ""
@@ -203,6 +282,8 @@ func (m *planEditorModel) Update(msg tea.Msg) tea.Cmd {
 		return m.updateEdit(keyMsg)
 	case planEditorModeReviseInput:
 		return m.updateReviseInput(keyMsg)
+	case planEditorModeQuestion:
+		return m.updateQuestion(keyMsg)
 	default:
 		return m.updateScroll(keyMsg)
 	}
@@ -338,6 +419,26 @@ func (m *planEditorModel) updateEdit(msg tea.KeyPressMsg) tea.Cmd {
 	return cmd
 }
 
+// updateQuestion handles input while the editor is parked on a planner
+// ask_user question. Enter submits the typed answer; esc submits an empty
+// answer (the agreed "skip / no answer" signal so the planner unblocks
+// rather than deadlocking). Answering also restores the prior input mode
+// so the user can continue scrolling/editing without re-entering it.
+func (m *planEditorModel) updateQuestion(msg tea.KeyPressMsg) tea.Cmd {
+	switch msg.String() {
+	case "esc":
+		m.resolveQuestion("")
+		return nil
+	case "enter":
+		answer := strings.TrimSpace(m.questionInput.Value())
+		m.resolveQuestion(answer)
+		return nil
+	}
+	var cmd tea.Cmd
+	m.questionInput, cmd = m.questionInput.Update(msg)
+	return cmd
+}
+
 func (m *planEditorModel) updateReviseInput(msg tea.KeyPressMsg) tea.Cmd {
 	switch msg.String() {
 	case "esc":
@@ -433,6 +534,8 @@ func (m *planEditorModel) View() string {
 		lines = append(lines, m.renderBody())
 		lines = append(lines, "")
 		lines = append(lines, StyleActive.Render("revise:")+" "+m.reviseInput.View())
+	case planEditorModeQuestion:
+		lines = append(lines, m.renderQuestionBody())
 	default:
 		lines = append(lines, m.renderBody())
 	}
@@ -534,6 +637,9 @@ func (m *planEditorModel) renderFooter() string {
 	case planEditorModeReviseInput:
 		hints = StyleActive.Render("enter") + StyleSubtle.Render(" submit  ") +
 			StyleActive.Render("esc") + StyleSubtle.Render(" cancel")
+	case planEditorModeQuestion:
+		hints = StyleActive.Render("enter") + StyleSubtle.Render(" answer  ") +
+			StyleActive.Render("esc") + StyleSubtle.Render(" skip")
 	default:
 		hints = StyleActive.Render("i") + StyleSubtle.Render(" edit  ") +
 			StyleActive.Render("r") + StyleSubtle.Render(" revise  ")
@@ -546,6 +652,21 @@ func (m *planEditorModel) renderFooter() string {
 	}
 	divider := StyleSubtle.Render(strings.Repeat("─", max(1, m.width-2)))
 	return divider + "\n" + hints
+}
+
+// renderQuestionBody renders the planner-question card: an "ask_user" badge,
+// the question text wrapped to width, a blank line, and the answer input.
+// Kept deliberately minimal — the goal is to make it impossible to miss the
+// question, not to entertain. The plan content is intentionally hidden to
+// keep the user's focus on the one decision the planner is blocking on.
+func (m *planEditorModel) renderQuestionBody() string {
+	var b strings.Builder
+	b.WriteString(StyleActive.Render("planner is asking:"))
+	b.WriteString("\n\n")
+	b.WriteString(ansi.Wrap(m.questionText, max(20, m.width-4), ""))
+	b.WriteString("\n\n")
+	b.WriteString(StyleActive.Render("answer:") + " " + m.questionInput.View())
+	return b.String()
 }
 
 // textareaWidth/textareaHeight reserve space for header, divider, status,

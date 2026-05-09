@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/devenjarvis/baton/internal/planner"
 )
 
 // stubPlanDrafter is a configurable PlanDrafter for tests. Each call records
@@ -739,4 +741,114 @@ func TestManager_RevisePlan_ShutdownDrainsGoroutine(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("Shutdown did not return within 3s while a revise was in flight")
+}
+
+// TestManager_StartDraft_QuestionRoundTrip verifies the full question IPC
+// lifecycle: StartDraft creates a planner.Server and threads its socket path
+// through DraftRequest; the drafter stub uses planner.AskQuestion to dial it,
+// the manager forwards the event onto PlannerQuestions() with the right
+// session ID, the test answers it, and the drafter resumes and produces a
+// plan. Also confirms the socket file is removed when the draft completes.
+func TestManager_StartDraft_QuestionRoundTrip(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	mgr.SetPlanDrafter(&stubPlanDrafter{
+		draftFn: func(ctx context.Context, req DraftRequest) (string, error) {
+			if req.QuestionSocket == "" {
+				return "", errors.New("expected non-empty QuestionSocket")
+			}
+			answer, err := planner.AskQuestion(req.QuestionSocket, "what color?")
+			if err != nil {
+				return "", err
+			}
+			if answer != "blue" {
+				return "", errors.New("unexpected answer: " + answer)
+			}
+			return "# Goal\nDo X\n\n## Tasks\n- [ ] step\n", nil
+		},
+	})
+
+	cfg := Config{Task: "test", Rows: 24, Cols: 80}
+	sess, _, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Subscribe before StartDraft so we don't miss the event on the buffered
+	// channel. The pump goroutine emits onto m.plannerQuestions; drafting
+	// runs in a separate goroutine, so the question event will be on the
+	// channel by the time the drafter calls AskQuestion.
+	if err := mgr.StartDraft(sess.ID, "add dark mode"); err != nil {
+		t.Fatalf("StartDraft: %v", err)
+	}
+
+	select {
+	case q := <-mgr.PlannerQuestions():
+		if q.SessionID != sess.ID {
+			t.Errorf("question SessionID = %q, want %q", q.SessionID, sess.ID)
+		}
+		if q.Question != "what color?" {
+			t.Errorf("question text = %q, want what color?", q.Question)
+		}
+		q.AnswerCh <- "blue"
+	case <-time.After(3 * time.Second):
+		t.Fatal("never received planner question on PlannerQuestions()")
+	}
+
+	waitForCondition(t, 3*time.Second, func() bool {
+		return !sess.IsDrafting() && sess.LifecyclePhase() == LifecyclePlanning && sess.HasPlan()
+	})
+	if sess.DraftError() != nil {
+		t.Fatalf("DraftError = %v, want nil", sess.DraftError())
+	}
+
+	// Socket file should be removed once the draft (and its planner.Server)
+	// has been closed in runDraft's defer.
+	socketPath := plannerQuestionSocketPath(repo, sess.ID)
+	waitForCondition(t, time.Second, func() bool {
+		_, err := os.Stat(socketPath)
+		return os.IsNotExist(err)
+	})
+}
+
+// TestManager_StartDraft_NoQuestionsByDefault verifies the channel stays
+// quiet when the drafter never calls ask_user — the typical case. The pump
+// must not synthesize spurious events.
+func TestManager_StartDraft_NoQuestionsByDefault(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	mgr.SetPlanDrafter(&stubPlanDrafter{
+		draftFn: func(ctx context.Context, req DraftRequest) (string, error) {
+			return "# Goal\nstub\n\n## Tasks\n- [ ] step\n", nil
+		},
+	})
+
+	cfg := Config{Task: "test", Rows: 24, Cols: 80}
+	sess, _, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := mgr.StartDraft(sess.ID, "add thing"); err != nil {
+		t.Fatalf("StartDraft: %v", err)
+	}
+
+	select {
+	case q := <-mgr.PlannerQuestions():
+		t.Errorf("unexpected planner question: %+v", q)
+	case <-time.After(500 * time.Millisecond):
+		// good — no question raised.
+	}
+
+	waitForCondition(t, 2*time.Second, func() bool {
+		return !sess.IsDrafting() && sess.HasPlan()
+	})
 }

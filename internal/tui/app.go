@@ -240,6 +240,24 @@ func listenEvents(mgr *agent.Manager) tea.Cmd {
 	}
 }
 
+// plannerQuestionMsg wraps an aggregated planner ask_user event for the TUI.
+// The App routes the question to the matching plan editor and immediately
+// re-subscribes so the next question lands without a gap.
+type plannerQuestionMsg struct {
+	question agent.PlannerQuestion
+	repoPath string
+}
+
+func listenPlannerQuestions(mgr *agent.Manager) tea.Cmd {
+	return func() tea.Msg {
+		q, ok := <-mgr.PlannerQuestions()
+		if !ok {
+			return nil // channel closed (shutdown)
+		}
+		return plannerQuestionMsg{question: q, repoPath: mgr.RepoPath()}
+	}
+}
+
 func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -322,7 +340,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				mgr := agent.NewManager(repo.Path, a.resolvedCache[repo.Path])
 				a.managers[repo.Path] = mgr
 				ensureGitignore(repo.Path)
-				cmds = append(cmds, listenEvents(mgr))
+				cmds = append(cmds, listenEvents(mgr), listenPlannerQuestions(mgr))
 			}
 		}
 		// Build resume work to run in the background so the TUI renders immediately.
@@ -612,6 +630,29 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 
+	case plannerQuestionMsg:
+		// Route to the matching plan editor if it's open on this session.
+		// Otherwise auto-skip with an empty answer so the planner subprocess
+		// doesn't hang waiting on a UI that isn't visible. This can only
+		// happen if the user closed the editor mid-draft; the planner will
+		// fall through to an unaided assumption rather than deadlocking.
+		if a.planEditor != nil && a.planEditor.sess != nil &&
+			a.planEditor.sess.ID == msg.question.SessionID {
+			cmd := a.planEditor.AskQuestion(msg.question.Question, msg.question.AnswerCh)
+			if mgr := a.managers[msg.repoPath]; mgr != nil {
+				return a, tea.Batch(cmd, listenPlannerQuestions(mgr))
+			}
+			return a, cmd
+		}
+		select {
+		case msg.question.AnswerCh <- "":
+		default:
+		}
+		if mgr := a.managers[msg.repoPath]; mgr != nil {
+			return a, listenPlannerQuestions(mgr)
+		}
+		return a, nil
+
 	case createResultMsg:
 		if msg.err != nil {
 			a.setError(msg.err.Error())
@@ -693,6 +734,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case planEditorCloseMsg:
+		// If the editor was parked on a planner question, answer it with the
+		// skip-signal before tearing the editor down so the planner subprocess
+		// unblocks promptly instead of waiting for its server to close.
+		if a.planEditor != nil && a.planEditor.HasPendingQuestion() {
+			a.planEditor.resolveQuestion("")
+		}
 		a.dashboard.panelFocus = focusList
 		a.planEditor = nil
 		return a, nil
@@ -704,7 +751,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case planEditorAbandonMsg:
 		// Tear down the session entirely — the user explicitly chose to walk
-		// away from this plan.
+		// away from this plan. Resolve any pending planner question first so
+		// the in-flight draft drains cleanly while KillSession is in flight.
+		if a.planEditor != nil && a.planEditor.HasPendingQuestion() {
+			a.planEditor.resolveQuestion("")
+		}
 		repoPath := a.repoPathForSession(msg.sessionID)
 		mgr := a.managers[repoPath]
 		a.dashboard.panelFocus = focusList
@@ -954,7 +1005,7 @@ func (a *App) addRepo(path string) tea.Cmd {
 		a.managers[absPath] = mgr
 		ensureGitignore(absPath)
 		a.refreshAgentList()
-		return listenEvents(mgr)
+		return tea.Batch(listenEvents(mgr), listenPlannerQuestions(mgr))
 	}
 	a.refreshAgentList()
 	return nil
