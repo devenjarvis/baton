@@ -140,7 +140,12 @@ func TestPromptModal_PasteForwardsToTextarea(t *testing.T) {
 	m.Open()
 
 	cmd := m.Update(tea.PasteMsg{Content: "pasted clipboard text"})
-	_ = cmd
+	// Bubbles v2 commits paste synchronously today, but run any returned
+	// cmd anyway so this test doesn't silently false-positive if a future
+	// bubbles release flips paste to async.
+	if cmd != nil {
+		cmd()
+	}
 	if got := m.textarea.Value(); !strings.Contains(got, "pasted clipboard text") {
 		t.Errorf("textarea value = %q, want it to contain pasted content", got)
 	}

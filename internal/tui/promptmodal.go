@@ -7,6 +7,10 @@ import (
 
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
+	// Two lipgloss versions intentionally: the v1 import drives Baton's
+	// layout helpers (StyleTitle, JoinVertical, etc.), while xlipgloss is
+	// the v2 type the bubbles/v2 textarea exposes in its Styles struct —
+	// we only need it to construct the empty CursorLine override below.
 	xlipgloss "charm.land/lipgloss/v2"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -83,6 +87,10 @@ func newPromptModal() promptModalModel {
 	// identically to every other line.
 	styles := ta.Styles()
 	styles.Focused.CursorLine = xlipgloss.NewStyle()
+	// ColorPrimary is a v1 lipgloss.Color; it satisfies the v2
+	// CursorStyle.Color field (image/color.Color) via its RGBA() method.
+	// If a future bubbles upgrade tightens the interface, this assignment
+	// will fail to compile — fix at that point with a v2-typed constant.
 	styles.Cursor.Color = ColorPrimary
 	ta.SetStyles(styles)
 	return promptModalModel{textarea: ta}
