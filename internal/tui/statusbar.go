@@ -15,17 +15,19 @@ var (
 	// dashboardHints is the unified hint set shown on the pipeline view (the
 	// only dashboard mode). Workflow keys (c/x/X/t/e/p/d/o/a/s) act on the
 	// session under the pipeline cursor. Kept tight so a 120-col terminal
-	// never truncates "quit" off the right edge.
+	// never truncates "quit" off the right edge — the `b` hint's desc is
+	// rewritten to "break" by App.View() outside the Planning section.
 	dashboardHints = []keyHint{
 		{"j/k", "navigate"},
 		{"⏎", "open"},
 		{"n", "new session"},
+		{"b", "build"},
 		{"m", "ready"},
 		{"r", "review"},
-		{"c", "add agent"},
+		{"c", "agent"},
 		{"d", "diff"},
 		{"t", "shell"},
-		{"x/X", "kill"},
+		{"x", "kill"},
 		{"s", "settings"},
 		{"q", "quit"},
 	}

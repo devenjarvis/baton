@@ -51,7 +51,7 @@ That opinion is grounded in evidence. BCG's 2026 study (n=1,488) found developer
 
 Baton turns that into a workflow:
 
-- **One pipeline, one cursor.** A two-section dashboard — SESSIONS in progress, REVIEW QUEUE awaiting merge — replaces tmux pane-juggling and tab-switching. `j`/`k` walk both sections; everything else acts on whatever the cursor is on.
+- **One pipeline, one cursor.** A four-section dashboard — PLANNING → BUILDING → REVIEWING → SHIPPING — replaces tmux pane-juggling and tab-switching. `j`/`k` walk every section; everything else acts on whatever the cursor is on.
 - **Isolated git worktrees per session.** Each agent works on `baton/<name>` under `.baton/worktrees/`. Branches are conservative, merges are explicit (`git merge --no-ff` with confirmation), and your main checkout is never touched.
 - **Batch review, not continuous monitoring.** Hook-driven status (idle / active / waiting / done / error) means Baton tells you when an agent needs you. You don't watch streams — you check in when there's something to check.
 - **Wellness baked in, not bolted on.** A soft 3-agent cap, an automatic break overlay at 90 minutes, suppressed chimes for routine state changes, and a `.baton/logs/wellness.log` of every block. These aren't toggles — they're the product.
@@ -66,11 +66,12 @@ baton                         # inside any git repo
 
 The first run registers the repo and adds `.baton/` to `.gitignore`. From there:
 
-1. `n` — create a session and prompt Claude. The cursor jumps to the new session and opens its terminal.
-2. `esc` — return to the pipeline. Claude keeps running.
-3. `m` — mark a session ready when Claude finishes its turn.
-4. `r` — open the review panel for the cursor-selected REVIEW QUEUE row.
-5. Merge or discard. Worktree is cleaned up automatically.
+1. `n` — create a session. It lands in PLANNING; the cursor jumps to it and opens its terminal so you can scope the work with Claude.
+2. `b` — promote the planning session to BUILDING when you've nailed down what to do.
+3. `esc` — return to the pipeline. Claude keeps running.
+4. `m` — mark a building session ready when Claude finishes its turn (it moves to REVIEWING).
+5. `r` — open the review panel; press `p` there to ship a PR (the session moves to SHIPPING).
+6. Merge or discard. Worktree is cleaned up automatically.
 
 No tmux. No tab-switching. One cursor.
 
@@ -78,28 +79,28 @@ No tmux. No tab-switching. One cursor.
 
 **Pipeline view** (the dashboard — the only top-level view):
 
-| Key              | Action                                                     |
-|------------------|------------------------------------------------------------|
-| `j` / `k`        | Move the cursor across SESSIONS and REVIEW QUEUE rows      |
-| `⏎` / `space`    | Open the cursor-selected session's agent terminal          |
-| `n`              | Create a new session                                       |
-| `N`              | Cycle to the next registered repo                          |
-| `m`              | Mark the cursor-selected SESSIONS row ready for review     |
-| `r`              | Open the review panel for the cursor-selected REVIEW row   |
-| `c`              | Add another agent to the cursor-selected session           |
-| `t`              | Open or focus a shell in the cursor-selected session       |
-| `d`              | Diff the cursor-selected session's worktree                |
-| `e`              | Open the worktree in the configured IDE                    |
-| `p`              | Open the session's PR in the browser                       |
-| `o`              | Create a session on an existing branch or PR               |
-| `a`              | Add a repo (file browser)                                  |
-| `s`              | Global settings                                            |
-| `x`              | Kill the cursor-selected session's primary agent           |
-| `X`              | Kill the entire cursor-selected session                    |
-| `b`              | Take a break (engages the wellness break overlay)          |
-| `q`              | Detach and exit (prompts if agents are running)            |
+| Key              | Action                                                                   |
+|------------------|--------------------------------------------------------------------------|
+| `j` / `k`        | Move the cursor across all four pipeline sections                        |
+| `⏎` / `space`    | Open the cursor-selected row (terminal, review panel, or PR by section)  |
+| `n`              | Create a new session (lands in PLANNING)                                 |
+| `N`              | Cycle to the next registered repo                                        |
+| `b`              | On a PLANNING row: advance to BUILDING. Anywhere else: take a break      |
+| `m`              | Mark the cursor-selected BUILDING row ready for review                   |
+| `r`              | Open the review panel for the cursor-selected REVIEWING row              |
+| `c`              | Add another agent to the cursor-selected session                         |
+| `t`              | Open or focus a shell in the cursor-selected session                     |
+| `d`              | Diff the cursor-selected session's worktree                              |
+| `e`              | Open the worktree in the configured IDE                                  |
+| `p`              | Open the session's PR in the browser                                     |
+| `o`              | Create a session on an existing branch or PR                             |
+| `a`              | Add a repo (file browser)                                                |
+| `s`              | Global settings                                                          |
+| `x`              | Kill the cursor-selected session's primary agent                         |
+| `X`              | Kill the entire cursor-selected session                                  |
+| `q`              | Detach and exit (prompts if agents are running)                          |
 
-Mouse: single-click on a session card moves the cursor; double-click activates (agent terminal for an active session, review panel for a queue row). Clicking the PR indicator on a review row opens the PR in the browser.
+Mouse: single-click on a session card moves the cursor; double-click activates (agent terminal for PLANNING / BUILDING, review panel for REVIEWING, PR-or-terminal for SHIPPING). Clicking the PR indicator on a REVIEWING or SHIPPING row opens the PR in the browser.
 
 **Agent terminal** (opened by pressing `⏎` on a session, `esc` returns):
 
@@ -151,7 +152,7 @@ The dashboard surfaces three wellness affordances tuned to keep parallel-agent w
 
 - **Session timer** (`focus_session_minutes`, default `90`) — when the configured block elapses, Baton automatically opens a centered break overlay with a coherent-breathing animation.
 - **Soft agent limit** (`max_concurrent_agents`, default `3`) — pressing `n` past the cap shows a one-key warning; pressing `n` a second time overrides and spawns anyway.
-- **Soft review backlog** (`max_review_backlog`, default `5`) — same two-press override pattern when the REVIEW QUEUE has too many sessions waiting.
+- **Soft review backlog** (`max_review_backlog`, default `5`) — same two-press override pattern when the REVIEWING section has too many sessions waiting.
 
 Every block (work + break) is appended to `.baton/logs/wellness.log` so you can audit your own pacing later.
 

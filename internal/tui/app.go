@@ -127,8 +127,10 @@ type App struct {
 	agentLimitModalActive  bool
 	focusSessionMinutes    int          // cached from resolved global settings
 	focusBreakMinutes      int          // cached from resolved global settings
-	focusActiveIdx         int          // index into allInProgressSessions()
-	focusQueueIndex        int          // index into reviewQueueSessions
+	focusPlanningIdx       int          // index into planningSessions()
+	focusBuildingIdx       int          // index into buildingSessions()
+	focusReviewIdx         int          // index into reviewQueueSessions()
+	focusShippingIdx       int          // index into shippingSessions()
 	focusCursorSection     focusSection // which section the pipeline cursor is on
 	focusLaunchAgent       *agent.Agent
 	focusLaunchSession     *agent.Session
@@ -272,7 +274,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.dashboard.sidebarWidth = resolved.SidebarWidth
 		a.focusSessionMinutes = resolved.FocusSessionMinutes
 		a.focusBreakMinutes = resolved.FocusBreakMinutes
-		a.focusCursorSection = focusSectionActive
+		a.focusCursorSection = focusSectionPlanning
 		// Default activeRepo to the first registered repo so the pipeline
 		// header shows "repo: <name>" and workflow keys ('n', 'a', 'o') target
 		// a known repo on a fresh dashboard.
@@ -600,14 +602,19 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					item.agent.Resize(a.focusLaunchTermHeight(), a.dashboard.width)
 					// Move the pipeline cursor to the new session so when the
 					// user esc's back to focusList their cursor is on the row
-					// they just spawned.
+					// they just spawned. Walk every section because newSession
+					// defaults to LifecyclePlanning and AddAgent/Restore paths
+					// can land in any phase.
 					if item.session != nil {
-						for idx, s := range a.dashboard.allInProgressSessions() {
-							if s.session == item.session {
-								a.focusActiveIdx = idx
-								a.focusCursorSection = focusSectionActive
-								a.syncFocusCursorToDashboard()
-								break
+					Sections:
+						for _, section := range focusSectionsInOrder() {
+							for idx, s := range a.focusSectionItems(section) {
+								if s.session == item.session {
+									*a.focusSectionIdx(section) = idx
+									a.focusCursorSection = section
+									a.syncFocusCursorToDashboard()
+									break Sections
+								}
 							}
 						}
 					}
@@ -1176,24 +1183,58 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.refreshAgentList()
 				}
 				return a, nil
+			case "b":
+				// Context-sensitive: when the cursor is on a Planning row,
+				// 'b' advances it to Building. Otherwise we leave the case
+				// without returning so the global "take a break" handler in
+				// the switch below catches the press. Picking a Planning row
+				// to advance is a deliberate action, while taking a break is
+				// the catch-all everywhere else — so the cursor location is
+				// the disambiguator the user already has at hand.
+				if a.focusCursorSection == focusSectionPlanning {
+					planning := a.dashboard.planningSessions()
+					if len(planning) > 0 {
+						idx := a.focusPlanningIdx
+						if idx >= len(planning) {
+							idx = len(planning) - 1
+						}
+						if sess := planning[idx].session; sess != nil {
+							sess.SetLifecyclePhase(agent.LifecycleInProgress)
+							a.clampFocusCursor()
+							a.syncFocusCursorToDashboard()
+						}
+					}
+					// Cursor is on Planning — even if the section was empty in
+					// a fast-tick race window, swallow the press here so we
+					// don't accidentally trigger the wellness break.
+					return a, nil
+				}
+				// Fall through to the global break handler below.
 			case "m":
-				// Mark the session under the focus cursor as ReadyForReview.
-				if a.focusCursorSection != focusSectionActive {
-					a.setError("nothing to mark — cursor is on the review queue")
+				// Mark the cursor-selected Planning or Building session as
+				// ReadyForReview. We accept Planning too so the natural flow
+				// works when Claude finishes the work in one shot — the
+				// idle-reviewable cue ("press m to review") is rendered for
+				// any reviewable session regardless of phase, and pressing m
+				// shouldn't surprise the user with an error in that case.
+				var sess *agent.Session
+				switch a.focusCursorSection {
+				case focusSectionPlanning:
+					planning := a.dashboard.planningSessions()
+					if a.focusPlanningIdx < len(planning) {
+						sess = planning[a.focusPlanningIdx].session
+					}
+				case focusSectionBuilding:
+					building := a.dashboard.buildingSessions()
+					if a.focusBuildingIdx < len(building) {
+						sess = building[a.focusBuildingIdx].session
+					}
+				default:
+					a.setError("nothing to mark — cursor isn't on a Planning or Building session")
 					return a, nil
 				}
-				inProgress := a.dashboard.allInProgressSessions()
-				if len(inProgress) == 0 {
-					a.setError("no in-progress sessions")
-					return a, nil
-				}
-				if a.focusActiveIdx >= len(inProgress) {
-					a.setError("no in-progress sessions")
-					return a, nil
-				}
-				sess := inProgress[a.focusActiveIdx].session
 				if sess == nil {
-					a.setError("no in-progress sessions")
+					a.setError("no session under cursor")
 					return a, nil
 				}
 				if !sess.IsReviewable() {
@@ -1208,7 +1249,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return a, nil
 				}
 				sess.SetLifecyclePhase(agent.LifecycleReadyForReview)
-				a.focusQueueIndex = 0
+				a.focusReviewIdx = 0
 				return a, a.fetchReviewDiffCmd(sess)
 			case "r":
 				reviewItems := a.dashboard.reviewQueueSessions()
@@ -1216,7 +1257,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.setError("review queue is empty — press m on a finished session first")
 					return a, nil
 				}
-				idx := a.focusQueueIndex
+				idx := a.focusReviewIdx
 				if idx >= len(reviewItems) {
 					idx = len(reviewItems) - 1
 				}
@@ -1704,13 +1745,13 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !hit {
 			return a, nil
 		}
-		// Detect a PR-indicator click on review-queue rows: the prIndicator is
-		// right-aligned on the card; the X-column check below narrows the hit
-		// region without needing per-row Y granularity from pipelineHitTest.
-		if section == focusSectionReview {
-			reviewSessions := a.dashboard.reviewQueueSessions()
-			if idx < len(reviewSessions) {
-				sess := reviewSessions[idx].session
+		// Detect a PR-indicator click on review/shipping rows: the prIndicator
+		// is right-aligned on the card; the X-column check below narrows the
+		// hit region without needing per-row Y granularity from pipelineHitTest.
+		if section == focusSectionReview || section == focusSectionShipping {
+			items := a.focusSectionItems(section)
+			if idx < len(items) {
+				sess := items[idx].session
 				if entry := a.prCache[sess.ID]; entry != nil && entry.pr != nil && entry.pr.URL != "" {
 					indicatorWidth := prIndicatorWidth(entry)
 					if indicatorWidth > 0 && msg.X >= a.width-indicatorWidth-2 {
@@ -1739,12 +1780,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.lastPipelineClickIdx = idx
 
 		a.focusCursorSection = section
-		switch section {
-		case focusSectionActive:
-			a.focusActiveIdx = idx
-		case focusSectionReview:
-			a.focusQueueIndex = idx
-		}
+		*a.focusSectionIdx(section) = idx
 		a.syncFocusCursorToDashboard()
 
 		if isDoubleClick {
@@ -2260,8 +2296,10 @@ func (a *App) refreshAgentList() {
 	a.dashboard.focusBreakAnimFrame = a.focusBreakAnimFrame
 	a.dashboard.focusBreakShortWarning = a.focusBreakShortWarning
 	a.dashboard.focusBreakTimerUp = a.focusBreakTimerUp
-	a.dashboard.focusActiveIdx = a.focusActiveIdx
-	a.dashboard.focusQueueIndex = a.focusQueueIndex
+	a.dashboard.focusPlanningIdx = a.focusPlanningIdx
+	a.dashboard.focusBuildingIdx = a.focusBuildingIdx
+	a.dashboard.focusReviewIdx = a.focusReviewIdx
+	a.dashboard.focusShippingIdx = a.focusShippingIdx
 	a.dashboard.focusCursorSection = a.focusCursorSection
 	a.dashboard.activeRepoName = a.activeRepoDisplayName()
 	a.dashboard.activeRepoPath = a.activeRepo
@@ -2356,32 +2394,67 @@ func (a *App) refreshAgentList() {
 	a.clampFocusCursor()
 }
 
-// focusSectionCounts returns the number of rows in each fullscreen-focus section.
-func (a *App) focusSectionCounts() (active, review int) {
-	return len(a.dashboard.allInProgressSessions()),
-		len(a.dashboard.reviewQueueSessions())
+// focusSectionCounts returns the number of rows in each fullscreen-focus
+// section, indexed by focusSection. Order matches focusSectionsInOrder().
+func (a *App) focusSectionCounts() [4]int {
+	return [4]int{
+		focusSectionPlanning: len(a.dashboard.planningSessions()),
+		focusSectionBuilding: len(a.dashboard.buildingSessions()),
+		focusSectionReview:   len(a.dashboard.reviewQueueSessions()),
+		focusSectionShipping: len(a.dashboard.shippingSessions()),
+	}
+}
+
+// focusSectionIdx returns a pointer to the per-section cursor index field for
+// the given section, so navigation/clamp logic can move and bound-check them
+// without a fan-out switch in every caller. Panics on an unknown section so a
+// future focusSection constant added without updating this switch surfaces as
+// a clear test failure rather than silently corrupting focusBuildingIdx.
+func (a *App) focusSectionIdx(s focusSection) *int {
+	switch s {
+	case focusSectionPlanning:
+		return &a.focusPlanningIdx
+	case focusSectionBuilding:
+		return &a.focusBuildingIdx
+	case focusSectionReview:
+		return &a.focusReviewIdx
+	case focusSectionShipping:
+		return &a.focusShippingIdx
+	}
+	panic(fmt.Sprintf("focusSectionIdx: unknown focusSection %d", s))
+}
+
+// focusSectionItems returns the listItem slice that backs the given section.
+// Panics on an unknown section, matching focusSectionIdx, so a missing case
+// fails fast in tests instead of silently rendering an empty section.
+func (a *App) focusSectionItems(s focusSection) []listItem {
+	switch s {
+	case focusSectionPlanning:
+		return a.dashboard.planningSessions()
+	case focusSectionBuilding:
+		return a.dashboard.buildingSessions()
+	case focusSectionReview:
+		return a.dashboard.reviewQueueSessions()
+	case focusSectionShipping:
+		return a.dashboard.shippingSessions()
+	}
+	panic(fmt.Sprintf("focusSectionItems: unknown focusSection %d", s))
 }
 
 // pipelineHitTest maps a mouse-click Y coordinate (relative to the dashboard
 // content origin, not screen) to the session under the click. Mirrors the
-// vertical layout in dashboardModel.renderFullscreenFocus:
+// vertical layout in dashboardModel.renderFullscreenFocus, walking sections in
+// focusSectionsInOrder():
 //
 //	row 0:                 header line
 //	row 1:                 separator
 //	rows 2..5:             pipeline widget (4 rows)
 //	row 6:                 blank
-//	row 7:                 "SESSIONS" label (only if active sessions exist)
-//	row 8..11:             card 0 (4 rows)
-//	row 12:                blank between cards
-//	row 13..16:            card 1
-//	... etc
-//	row N:                 blank
-//	row N+1:               "REVIEW QUEUE" label (only if queue is non-empty)
-//	row N+2..3:            review row 0 (2 rows)
-//	row N+4:               blank
-//	... etc
+//	(per non-empty section, in order Planning → Building → Reviewing → Shipping:)
+//	  label row + N rows per row (4 for Planning/Building cards, 2 for Reviewing/Shipping)
+//	  blank row between rows; trailing blank row before next section
 //
-// Returns (section, index, true) when the click landed on a session card,
+// Returns (section, index, true) when the click landed on a session row,
 // otherwise ok=false. dashboardContentY is the click's Y relative to the
 // dashboard content origin (i.e. screenY - dashboardTopY).
 func (a *App) pipelineHitTest(dashboardContentY int) (focusSection, int, bool) {
@@ -2392,42 +2465,39 @@ func (a *App) pipelineHitTest(dashboardContentY int) (focusSection, int, bool) {
 		blankRows    = 1
 		labelRows    = 1
 		cardRows     = 4
-		reviewRows   = 2
+		queueRows    = 2
 	)
-	activeSessions := a.dashboard.allInProgressSessions()
-	reviewSessions := a.dashboard.reviewQueueSessions()
+	rowsPerItem := func(s focusSection) int {
+		switch s {
+		case focusSectionPlanning, focusSectionBuilding:
+			return cardRows
+		default:
+			return queueRows
+		}
+	}
 
 	cursor := headerRows + sepRows + pipelineRows + blankRows
-	if len(activeSessions) > 0 {
+	for _, section := range focusSectionsInOrder() {
+		items := a.focusSectionItems(section)
+		if len(items) == 0 {
+			continue
+		}
 		cursor += labelRows
-		for i := range activeSessions {
+		rowH := rowsPerItem(section)
+		for i := range items {
 			start := cursor
-			end := start + cardRows
+			end := start + rowH
 			if dashboardContentY >= start && dashboardContentY < end {
-				return focusSectionActive, i, true
+				return section, i, true
 			}
 			cursor = end
-			if i < len(activeSessions)-1 {
+			if i < len(items)-1 {
 				cursor += blankRows
 			}
 		}
 		cursor += blankRows
 	}
-	if len(reviewSessions) > 0 {
-		cursor += labelRows
-		for i := range reviewSessions {
-			start := cursor
-			end := start + reviewRows
-			if dashboardContentY >= start && dashboardContentY < end {
-				return focusSectionReview, i, true
-			}
-			cursor = end
-			if i < len(reviewSessions)-1 {
-				cursor += blankRows
-			}
-		}
-	}
-	return focusSectionActive, 0, false
+	return focusSectionPlanning, 0, false
 }
 
 // cursorSelectedSession returns the session under the pipeline cursor, or nil
@@ -2435,29 +2505,15 @@ func (a *App) pipelineHitTest(dashboardContentY int) (focusSection, int, bool) {
 // this rather than dashboard.selectedSession() because the pipeline addresses
 // sessions by section + index, not by a `selected` row in the items list.
 func (a *App) cursorSelectedSession() *agent.Session {
-	switch a.focusCursorSection {
-	case focusSectionActive:
-		sessions := a.dashboard.allInProgressSessions()
-		if len(sessions) == 0 {
-			return nil
-		}
-		idx := a.focusActiveIdx
-		if idx < 0 || idx >= len(sessions) {
-			idx = 0
-		}
-		return sessions[idx].session
-	case focusSectionReview:
-		sessions := a.dashboard.reviewQueueSessions()
-		if len(sessions) == 0 {
-			return nil
-		}
-		idx := a.focusQueueIndex
-		if idx < 0 || idx >= len(sessions) {
-			idx = 0
-		}
-		return sessions[idx].session
+	items := a.focusSectionItems(a.focusCursorSection)
+	if len(items) == 0 {
+		return nil
 	}
-	return nil
+	idx := *a.focusSectionIdx(a.focusCursorSection)
+	if idx < 0 || idx >= len(items) {
+		idx = 0
+	}
+	return items[idx].session
 }
 
 // cursorSelectedRepoPath returns the repo path of the session under the
@@ -2483,7 +2539,7 @@ func (a *App) cursorSelectedRepoPath() string {
 // When the cursor's current section becomes empty, it falls through to the next
 // non-empty section in render order so the cursor stays on a visible row.
 func (a *App) clampFocusCursor() {
-	actCount, revCount := a.focusSectionCounts()
+	counts := a.focusSectionCounts()
 
 	clamp := func(idx, n int) int {
 		if n <= 0 {
@@ -2497,40 +2553,75 @@ func (a *App) clampFocusCursor() {
 		}
 		return idx
 	}
-	a.focusActiveIdx = clamp(a.focusActiveIdx, actCount)
-	a.focusQueueIndex = clamp(a.focusQueueIndex, revCount)
+	a.focusPlanningIdx = clamp(a.focusPlanningIdx, counts[focusSectionPlanning])
+	a.focusBuildingIdx = clamp(a.focusBuildingIdx, counts[focusSectionBuilding])
+	a.focusReviewIdx = clamp(a.focusReviewIdx, counts[focusSectionReview])
+	a.focusShippingIdx = clamp(a.focusShippingIdx, counts[focusSectionShipping])
 
-	counts := [2]int{actCount, revCount}
-	if counts[int(a.focusCursorSection)] > 0 {
+	if counts[a.focusCursorSection] > 0 {
 		return
 	}
-	for i, c := range counts {
-		if c > 0 {
-			a.focusCursorSection = focusSection(i)
+	for _, s := range focusSectionsInOrder() {
+		if counts[s] > 0 {
+			a.focusCursorSection = s
 			return
 		}
 	}
-	a.focusCursorSection = focusSectionActive
+	a.focusCursorSection = focusSectionPlanning
 }
 
 // moveFocusCursorUp moves the fullscreen-focus cursor up one row. When at the
 // top of the current section, it transitions to the previous non-empty section.
 func (a *App) moveFocusCursorUp() {
-	actCount, _ := a.focusSectionCounts()
-
-	switch a.focusCursorSection {
-	case focusSectionActive:
-		if a.focusActiveIdx > 0 {
-			a.focusActiveIdx--
+	idx := a.focusSectionIdx(a.focusCursorSection)
+	if *idx > 0 {
+		*idx--
+		return
+	}
+	// Walk render-order sections backwards from the current one; jump to the
+	// last row of the first non-empty earlier section.
+	order := focusSectionsInOrder()
+	cur := -1
+	for i, s := range order {
+		if s == a.focusCursorSection {
+			cur = i
+			break
 		}
-	case focusSectionReview:
-		if a.focusQueueIndex > 0 {
-			a.focusQueueIndex--
+	}
+	counts := a.focusSectionCounts()
+	for i := cur - 1; i >= 0; i-- {
+		s := order[i]
+		if counts[s] > 0 {
+			a.focusCursorSection = s
+			*a.focusSectionIdx(s) = counts[s] - 1
 			return
 		}
-		if actCount > 0 {
-			a.focusCursorSection = focusSectionActive
-			a.focusActiveIdx = actCount - 1
+	}
+}
+
+// moveFocusCursorDown moves the fullscreen-focus cursor down one row. When at
+// the bottom of the current section, it transitions to the next non-empty section.
+func (a *App) moveFocusCursorDown() {
+	counts := a.focusSectionCounts()
+	idx := a.focusSectionIdx(a.focusCursorSection)
+	if *idx < counts[a.focusCursorSection]-1 {
+		*idx++
+		return
+	}
+	order := focusSectionsInOrder()
+	cur := -1
+	for i, s := range order {
+		if s == a.focusCursorSection {
+			cur = i
+			break
+		}
+	}
+	for i := cur + 1; i < len(order); i++ {
+		s := order[i]
+		if counts[s] > 0 {
+			a.focusCursorSection = s
+			*a.focusSectionIdx(s) = 0
+			return
 		}
 	}
 }
@@ -2539,38 +2630,34 @@ func (a *App) moveFocusCursorUp() {
 // dashboard model so the next render reflects navigation immediately, without
 // waiting for the 100ms tick that drives refreshAgentList.
 func (a *App) syncFocusCursorToDashboard() {
-	a.dashboard.focusActiveIdx = a.focusActiveIdx
-	a.dashboard.focusQueueIndex = a.focusQueueIndex
+	a.dashboard.focusPlanningIdx = a.focusPlanningIdx
+	a.dashboard.focusBuildingIdx = a.focusBuildingIdx
+	a.dashboard.focusReviewIdx = a.focusReviewIdx
+	a.dashboard.focusShippingIdx = a.focusShippingIdx
 	a.dashboard.focusCursorSection = a.focusCursorSection
 }
 
 // activateFocusCursor opens the row currently under the fullscreen-focus
-// cursor. Active sessions jump into a focusLaunch terminal (openSessionInFocusLaunch
-// picks the highest-priority agent, so waiting agents are correctly targeted);
-// review-queue sessions open the review panel. Returns ok=false when the
-// cursor's section has no actionable row.
+// cursor. Planning + Building rows jump into a focusLaunch terminal so the
+// user can drive the agent. Reviewing rows open the review panel. Shipping
+// rows open the PR URL when one is cached, otherwise fall back to the agent
+// terminal so the user can run gh manually. Returns ok=false when the cursor's
+// section has no actionable row.
 func (a *App) activateFocusCursor() (tea.Cmd, bool) {
+	items := a.focusSectionItems(a.focusCursorSection)
+	if len(items) == 0 {
+		return nil, false
+	}
+	idx := *a.focusSectionIdx(a.focusCursorSection)
+	if idx >= len(items) {
+		idx = len(items) - 1
+	}
+	sess := items[idx].session
+
 	switch a.focusCursorSection {
-	case focusSectionActive:
-		sessions := a.dashboard.allInProgressSessions()
-		if len(sessions) == 0 {
-			return nil, false
-		}
-		idx := a.focusActiveIdx
-		if idx >= len(sessions) {
-			idx = len(sessions) - 1
-		}
-		return nil, a.openSessionInFocusLaunch(sessions[idx].session)
+	case focusSectionPlanning, focusSectionBuilding:
+		return nil, a.openSessionInFocusLaunch(sess)
 	case focusSectionReview:
-		reviewItems := a.dashboard.reviewQueueSessions()
-		if len(reviewItems) == 0 {
-			return nil, false
-		}
-		idx := a.focusQueueIndex
-		if idx >= len(reviewItems) {
-			idx = len(reviewItems) - 1
-		}
-		sess := reviewItems[idx].session
 		sess.SetLifecyclePhase(agent.LifecycleInReview)
 		a.reviewSession = sess
 		a.dashboard.panelFocus = focusReview
@@ -2578,6 +2665,14 @@ func (a *App) activateFocusCursor() (tea.Cmd, bool) {
 			return a.fetchReviewDiffCmd(sess), true
 		}
 		return nil, true
+	case focusSectionShipping:
+		if entry := a.prCache[sess.ID]; entry != nil && entry.pr != nil && entry.pr.URL != "" {
+			if err := openURL(entry.pr.URL); err != nil {
+				a.setError(err.Error())
+			}
+			return nil, true
+		}
+		return nil, a.openSessionInFocusLaunch(sess)
 	}
 	return nil, false
 }
@@ -2610,28 +2705,6 @@ func (a *App) openSessionInFocusLaunch(sess *agent.Session) bool {
 	return true
 }
 
-// moveFocusCursorDown moves the fullscreen-focus cursor down one row. When at
-// the bottom of the current section, it transitions to the next non-empty section.
-func (a *App) moveFocusCursorDown() {
-	actCount, revCount := a.focusSectionCounts()
-
-	switch a.focusCursorSection {
-	case focusSectionActive:
-		if a.focusActiveIdx < actCount-1 {
-			a.focusActiveIdx++
-			return
-		}
-		if revCount > 0 {
-			a.focusCursorSection = focusSectionReview
-			a.focusQueueIndex = 0
-		}
-	case focusSectionReview:
-		if a.focusQueueIndex < revCount-1 {
-			a.focusQueueIndex++
-		}
-	}
-}
-
 func (a App) View() tea.View {
 	var content string
 
@@ -2651,8 +2724,12 @@ func (a App) View() tea.View {
 		case focusLaunch:
 			hints = focusLaunchHints
 		}
-		// Break mode hint or work-mode break suggestion.
-		// Skip when in focusLaunch: b routes to the agent terminal there, not to break control.
+		// `b` is dual-purpose: it advances a Planning session to Building when
+		// the cursor is on Planning, and otherwise triggers the wellness break.
+		// We expose this through a single hint slot to keep the bar from
+		// overflowing 120 cols — when the cursor is not on Planning AND the
+		// wellness timer is enabled, swap the desc on the static `b` entry to
+		// "break". Skip in focusLaunch: b routes to the agent terminal there.
 		if a.dashboard.panelFocus != focusLaunch {
 			if a.focusBreakMode {
 				if a.focusBreakTimerUp {
@@ -2660,8 +2737,16 @@ func (a App) View() tea.View {
 				} else {
 					hints = []keyHint{{key: "b", desc: "exit early"}}
 				}
-			} else if a.focusSessionMinutes > 0 {
-				hints = append(hints, keyHint{key: "b", desc: "take a break"})
+			} else if a.focusCursorSection != focusSectionPlanning && a.focusSessionMinutes > 0 {
+				// Copy first — `hints := dashboardHints` aliases the package
+				// var's backing array, and we'd otherwise mutate it globally.
+				hints = append([]keyHint(nil), hints...)
+				for i := range hints {
+					if hints[i].key == "b" {
+						hints[i].desc = "break"
+						break
+					}
+				}
 			}
 		}
 		// Agent-limit modal overlay: replace body with centered modal when active.

@@ -9,9 +9,10 @@ import (
 )
 
 // emptyPipelineMarker is rendered (in the pipeline widget) when there are no
-// sessions; SESSIONS isn't shown until at least one in-progress session exists.
-// Used as a "fresh dashboard" anchor.
-const emptyPipelineMarker = "IN PROGRESS"
+// sessions; section labels (PLANNING/BUILDING/REVIEWING/SHIPPING) only appear
+// when at least one session is in that phase. Used as a "fresh dashboard"
+// anchor.
+const emptyPipelineMarker = "BUILDING"
 
 // TestSessionCreation verifies that pressing "n" on the dashboard creates a
 // new session, auto-focuses focusLaunch with a bash prompt, and that pressing
