@@ -999,6 +999,13 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case tea.PasteMsg:
+		// Prompt modal consumes paste while open (same precedence as the
+		// KeyPressMsg branch below) so cmd+v / bracketed paste inserts into
+		// the textarea instead of being swallowed by the focusLaunch path.
+		if a.promptModal.Active() {
+			cmd := a.promptModal.Update(msg)
+			return a, cmd
+		}
 		if a.dashboard.panelFocus == focusLaunch && a.focusLaunchAgent != nil {
 			a.focusLaunchAgent.Paste(msg.Content)
 			return a, nil

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	xlipgloss "charm.land/lipgloss/v2"
 )
 
 func TestPromptModal_OpenFocusesAndClearsValue(t *testing.T) {
@@ -130,5 +131,75 @@ func TestModalWidth_Clamps(t *testing.T) {
 	// Narrow viewport: must leave 2 cols of margin so border fits.
 	if w := modalWidth(40); w > 38 {
 		t.Errorf("modalWidth(40) = %d, want <= 38 (viewport-2 clamp)", w)
+	}
+}
+
+func TestPromptModal_PasteForwardsToTextarea(t *testing.T) {
+	m := newPromptModal()
+	m.SetSize(120, 40)
+	m.Open()
+
+	cmd := m.Update(tea.PasteMsg{Content: "pasted clipboard text"})
+	_ = cmd
+	if got := m.textarea.Value(); !strings.Contains(got, "pasted clipboard text") {
+		t.Errorf("textarea value = %q, want it to contain pasted content", got)
+	}
+}
+
+func TestPromptModal_OpenPicksStablePairAndRotates(t *testing.T) {
+	prev := pickPrompt
+	defer func() { pickPrompt = prev }()
+
+	picks := []int{2, 5, 0, 3}
+	calls := 0
+	pickPrompt = func(n int) int {
+		i := picks[calls] % n
+		calls++
+		return i
+	}
+
+	m := newPromptModal()
+	m.SetSize(120, 40)
+	m.Open()
+	if m.titleIdx != 2 {
+		t.Errorf("first open titleIdx = %d, want 2", m.titleIdx)
+	}
+	if m.placeholderIdx != 5 {
+		t.Errorf("first open placeholderIdx = %d, want 5", m.placeholderIdx)
+	}
+	wantTitle := promptModalTitles[2]
+	wantPH := promptModalPlaceholders[5]
+
+	view1 := m.View()
+	view2 := m.View()
+	if view1 != view2 {
+		t.Error("View() must be stable across renders within one open session")
+	}
+	if !strings.Contains(view1, wantTitle) {
+		t.Errorf("view does not contain selected title %q", wantTitle)
+	}
+	if m.textarea.Placeholder != wantPH {
+		t.Errorf("textarea.Placeholder = %q, want %q", m.textarea.Placeholder, wantPH)
+	}
+
+	m.Close()
+	m.Open()
+	if m.titleIdx != 0 {
+		t.Errorf("second open titleIdx = %d, want 0", m.titleIdx)
+	}
+	if m.placeholderIdx != 3 {
+		t.Errorf("second open placeholderIdx = %d, want 3", m.placeholderIdx)
+	}
+}
+
+func TestPromptModal_FocusedCursorLineHasNoBackground(t *testing.T) {
+	m := newPromptModal()
+	bg := m.textarea.Styles().Focused.CursorLine.GetBackground()
+	// An untouched style returns NoColor{} from GetBackground; the bubbles
+	// default would return a real Color. Compare to a fresh empty style's
+	// background to avoid coupling the test to NoColor's exact type.
+	want := xlipgloss.NewStyle().GetBackground()
+	if bg != want {
+		t.Errorf("CursorLine background = %v, want %v (no background)", bg, want)
 	}
 }
