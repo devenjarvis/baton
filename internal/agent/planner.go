@@ -45,13 +45,17 @@ type ReviseRequest struct {
 // the plan editor expects (Goal / Context / Tasks / Verification / Not in
 // scope). Kept in lockstep with the editor's render so a renamed section
 // would be a code-coupled change, not a silent drift.
-const planDraftPrompt = `You are helping a developer plan a coding task before they hand it to an AI coding agent. Produce a concise markdown plan with these sections, in order:
+const planDraftPrompt = `You are helping a developer plan a coding task before they hand it to an AI coding agent. Your working directory is the developer's worktree root.
+
+You have a read-only toolset: Read, Grep, Glob, LS, LSP, WebFetch, WebSearch. Before writing the plan, USE THEM to ground your work in the real codebase — locate the files the task touches, scan the conventions in that area, and check related code or imports. A plan that names actual files, functions, and constraints is far more useful than one written from the prompt alone. You cannot write, edit, run shell commands, or call MCP servers; this is a research-then-draft pass, not an implementation.
+
+Once you've researched enough, produce a concise markdown plan with these sections, in order:
 
 # Goal
 One sentence: what is the developer trying to accomplish?
 
 ## Context
-2-3 sentences of background. What part of the system does this touch, and what constraints matter?
+2-3 sentences of background. What part of the system does this touch, and what constraints matter? Cite real file paths or symbols where relevant.
 
 ## Tasks
 A short checklist of the steps to ship this. Each task should be small and independently verifiable. Use markdown task syntax: - [ ] description.
@@ -62,7 +66,7 @@ How will the developer know the change works? Tests, manual checks, or both.
 ## Not in scope
 What this plan deliberately excludes.
 
-Keep the whole plan under 400 words. The developer will edit your output before approving — favor a short, clear plan they can refine over an exhaustive one. Output only the markdown plan; no preamble, no surrounding explanation.
+The 400-word cap applies to the PLAN OUTPUT only — research with the tools as much as you need; tool calls and what you read don't count toward the cap, so don't truncate research mid-flight to stay short. The developer will edit your output before approving — favor a short, clear, code-grounded plan they can refine over an exhaustive one. Output only the markdown plan; no preamble, no surrounding explanation, no summary of what you researched.
 
 The developer's task description follows.
 
@@ -71,7 +75,9 @@ The developer's task description follows.
 // planRevisePrompt frames each Revise call. The current plan and critique
 // are appended verbatim so the model sees the literal markdown it produced
 // earlier alongside the change request.
-const planRevisePrompt = `You are revising an existing plan for a coding task based on the developer's feedback. Output the full revised plan with the same five sections (Goal / Context / Tasks / Verification / Not in scope). Preserve sections, wording, and tasks the feedback does not touch — make small, surgical changes. Output only the markdown plan; no preamble.
+const planRevisePrompt = `You are revising an existing plan for a coding task based on the developer's feedback. Your working directory is the developer's worktree root, and you have the same read-only toolset as the original drafter (Read, Grep, Glob, LS, LSP, WebFetch, WebSearch). If the critique points at code or files the current plan didn't already cover, re-read the relevant source before revising — don't invent paths or symbols.
+
+Output the full revised plan with the same five sections (Goal / Context / Tasks / Verification / Not in scope). Preserve sections, wording, and tasks the feedback does not touch — make small, surgical changes. Keep the plan under 400 words; research and tool use don't count toward that cap. Output only the markdown plan; no preamble.
 
 CURRENT PLAN:
 `
@@ -128,8 +134,15 @@ func (d *defaultPlanDrafter) Revise(ctx context.Context, req ReviseRequest) (str
 
 // buildClaudePlannerArgs returns the argv (excluding the binary path) for a
 // one-shot planning subprocess. Mirrors buildClaudeHaikuArgs but uses Sonnet.
-// Tools stay disabled — the planner generates a markdown document, it does
-// not need to touch the filesystem or call MCP servers.
+// The drafter is given a read-only tool allowlist so it can research the
+// codebase (Read/Grep/Glob/LS/LSP) and pull external docs (WebFetch/WebSearch)
+// before producing the plan markdown. Writes, Bash, and MCP servers stay
+// blocked — the planner is a thinker, not an editor. Setting sources include
+// project so worktree-local CLAUDE.md guidance reaches the drafter.
+//
+// Under --bare (API-key path) the harness skips LSP and CLAUDE.md
+// auto-discovery regardless of these flags; that's accepted as a known
+// limitation. Read/Grep/Glob/LS still function in bare mode.
 //
 // The --mcp-config payload MUST be a JSON object containing an "mcpServers"
 // key (with an empty record as the value to declare zero servers). Claude's
@@ -147,8 +160,8 @@ func buildClaudePlannerArgs() []string {
 		"--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`,
 		"--disable-slash-commands",
 		"--no-session-persistence",
-		"--tools", "",
-		"--setting-sources", "user",
+		"--tools", "Read,Grep,Glob,LS,LSP,WebFetch,WebSearch",
+		"--setting-sources", "user,project",
 		"--exclude-dynamic-system-prompt-sections",
 	)
 	return args
