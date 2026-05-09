@@ -2573,3 +2573,43 @@ func TestNKeyOpensPromptModal_WhenPlanFirstEnabled(t *testing.T) {
 		t.Errorf("no session should exist after esc, got %d", len(mgr.ListSessions()))
 	}
 }
+
+// TestCreateResult_SessionsCreatedCount_OnlyIncrementsForNewSession asserts
+// the wellness counter increments exactly once per new session, regardless
+// of whether the session was born via the legacy `n` path, the skip path,
+// or the plan-first approve path. Specifically: a createResultMsg without
+// isNewSession (an AddAgent or AddShell into an existing session) must not
+// increment the counter.
+func TestCreateResult_SessionsCreatedCount_OnlyIncrementsForNewSession(t *testing.T) {
+	app := NewApp()
+	app.activeRepo = "/repo"
+	if app.sessionsCreatedCount != 0 {
+		t.Fatalf("initial sessionsCreatedCount = %d, want 0", app.sessionsCreatedCount)
+	}
+
+	// New session: counter ticks.
+	model, _ := app.Update(createResultMsg{sessionID: "s1", agentID: "a1", isNewSession: true})
+	app = model.(App)
+	if app.sessionsCreatedCount != 1 {
+		t.Errorf("after isNewSession=true, sessionsCreatedCount = %d, want 1", app.sessionsCreatedCount)
+	}
+
+	// AddAgent into existing session: counter must NOT tick.
+	model, _ = app.Update(createResultMsg{sessionID: "s1", agentID: "a2"})
+	app = model.(App)
+	if app.sessionsCreatedCount != 1 {
+		t.Errorf("after AddAgent (isNewSession=false), sessionsCreatedCount = %d, want 1", app.sessionsCreatedCount)
+	}
+
+	// Another fresh session: counter ticks again.
+	model, _ = app.Update(createResultMsg{sessionID: "s2", agentID: "a3", isNewSession: true})
+	app = model.(App)
+	if app.sessionsCreatedCount != 2 {
+		t.Errorf("after second new session, sessionsCreatedCount = %d, want 2", app.sessionsCreatedCount)
+	}
+
+	// agentsCreatedCount sanity: every successful createResultMsg increments.
+	if app.agentsCreatedCount != 3 {
+		t.Errorf("agentsCreatedCount = %d, want 3", app.agentsCreatedCount)
+	}
+}

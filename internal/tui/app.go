@@ -38,10 +38,21 @@ type agentEventMsg struct {
 }
 
 // createResultMsg carries the result of async agent creation.
+//
+// isNewSession distinguishes "fresh session" call sites (CreateSession,
+// CreateSessionOnBranch, the plan-first skip path, and approvePlanAndSpawn's
+// first AddAgent) from "added an agent to an existing session" sites
+// (AddAgent via `c`, AddShell via `t`). The handler increments
+// sessionsCreatedCount only when isNewSession is true. We carry the bit on
+// the message rather than inferring it from sess.AgentCount() == 1, because
+// the plan-first approve path adds its first agent to a session that was
+// already created earlier — the heuristic would double-count if we
+// incremented on session creation as well.
 type createResultMsg struct {
-	sessionID string
-	agentID   string
-	err       error
+	sessionID    string
+	agentID      string
+	err          error
+	isNewSession bool
 }
 
 // killScope distinguishes an agent-level kill from a session-level kill so the
@@ -596,19 +607,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		a.agentsCreatedCount++
-		if msg.sessionID != "" && msg.agentID != "" {
-			// Count new sessions (agentID present means a session was also created).
-			// Distinguish new session (sessionID returned fresh from CreateSession)
-			// vs AddAgent (sessionID pre-existing) by checking if agentID is the
-			// first agent in the session.
-			if mgr := a.managers[a.activeRepo]; mgr != nil {
-				for _, sess := range mgr.ListSessions() {
-					if sess.ID == msg.sessionID && sess.AgentCount() == 1 {
-						a.sessionsCreatedCount++
-						break
-					}
-				}
-			}
+		if msg.isNewSession {
+			a.sessionsCreatedCount++
 		}
 		a.refreshAgentList()
 		// Find the new agent by ID, select it, and auto-focus its terminal in
@@ -1538,7 +1538,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if err != nil {
 					return createResultMsg{err: err}
 				}
-				return createResultMsg{sessionID: sess.ID, agentID: ag.ID}
+				return createResultMsg{sessionID: sess.ID, agentID: ag.ID, isNewSession: true}
 			}
 
 		case "c":
@@ -2082,7 +2082,7 @@ func (a App) updateBranchPicker(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if err != nil {
 				return createResultMsg{err: err}
 			}
-			return createResultMsg{sessionID: sess.ID, agentID: ag.ID}
+			return createResultMsg{sessionID: sess.ID, agentID: ag.ID, isNewSession: true}
 		}
 
 	case branchPickerCancelMsg:
@@ -2133,7 +2133,7 @@ func (a App) updateRepoPicker(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if err != nil {
 				return createResultMsg{err: err}
 			}
-			return createResultMsg{sessionID: sess.ID, agentID: ag.ID}
+			return createResultMsg{sessionID: sess.ID, agentID: ag.ID, isNewSession: true}
 		}
 
 	case repoPickerAddRepoMsg:
@@ -2855,7 +2855,7 @@ func (a *App) submitPromptModal(msg promptModalSubmitMsg) (tea.Model, tea.Cmd) {
 				return createResultMsg{err: err}
 			}
 			sess.SetLifecyclePhase(agent.LifecycleInProgress)
-			return createResultMsg{sessionID: sess.ID, agentID: ag.ID}
+			return createResultMsg{sessionID: sess.ID, agentID: ag.ID, isNewSession: true}
 		}
 	}
 
@@ -2880,7 +2880,12 @@ func (a *App) submitPromptModal(msg promptModalSubmitMsg) (tea.Model, tea.Cmd) {
 		// Fall through and open the editor anyway so the user can edit by
 		// hand or abandon the session.
 	}
-	a.sessionsCreatedCount++
+	// sessionsCreatedCount is intentionally NOT incremented here. The user
+	// hasn't committed to this session yet — they could abandon it from the
+	// editor (`q`) before any real agent spawns. We count the session only
+	// when approvePlanAndSpawn fires (and the skip path counts via its own
+	// createResultMsg with isNewSession=true), so each approved/skipped
+	// session is logged exactly once.
 	a.refreshAgentList()
 	a.openPlanEditor(sess)
 	return a, nil
@@ -2967,7 +2972,11 @@ func (a *App) approvePlanAndSpawn(msg planEditorApproveMsg) (tea.Model, tea.Cmd)
 			return createResultMsg{err: err}
 		}
 		sess.SetLifecyclePhase(agent.LifecycleInProgress)
-		return createResultMsg{sessionID: sessID, agentID: ag.ID}
+		// isNewSession=true: from the wellness counter's perspective, an
+		// approved plan is when a session "starts" — submitPromptModal
+		// deliberately doesn't increment on plan creation, since the user
+		// could still abandon it before approving.
+		return createResultMsg{sessionID: sessID, agentID: ag.ID, isNewSession: true}
 	}
 }
 

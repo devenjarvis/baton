@@ -50,10 +50,12 @@ type planEditorModel struct {
 }
 
 // planEditorApproveMsg is emitted when the user approves the plan (`a`).
-// The App spawns the real agent in response.
+// The App spawns the real agent in response. The plan text itself isn't
+// carried on the message — by the time approve fires, the editor has
+// already written any pending textarea content to disk via Session.WritePlan,
+// so the spawned agent reads .claude/plan.md directly.
 type planEditorApproveMsg struct {
 	sessionID string
-	plan      string
 }
 
 // planEditorReviseMsg is emitted when the user submits a revise critique.
@@ -109,13 +111,17 @@ func newPlanEditor(sess *agent.Session, width, height int) planEditorModel {
 }
 
 // SetSize updates internal width/height and resizes the textarea. Called by
-// the App on tea.WindowSizeMsg while the editor is focused.
+// the App on tea.WindowSizeMsg while the editor is focused. We clamp scroll
+// here because shrinking the height also shrinks bodyHeight, which can leave
+// scrollOff above its new max — keeping the clamp out of the View() path is
+// what lets renderBody stay pure.
 func (m *planEditorModel) SetSize(w, h int) {
 	m.width = w
 	m.height = h
 	m.textarea.SetWidth(textareaWidth(w))
 	m.textarea.SetHeight(textareaHeight(h))
 	m.reviseInput.SetWidth(w - 4)
+	m.clampScroll()
 }
 
 // SetDrafting toggles the drafting placeholder. While drafting, scroll-mode
@@ -341,8 +347,7 @@ func (m *planEditorModel) emitApprove() tea.Cmd {
 		return nil
 	}
 	sessID := m.sess.ID
-	plan := m.plan
-	return func() tea.Msg { return planEditorApproveMsg{sessionID: sessID, plan: plan} }
+	return func() tea.Msg { return planEditorApproveMsg{sessionID: sessID} }
 }
 
 func (m *planEditorModel) emitAbandon() tea.Cmd {
@@ -461,14 +466,22 @@ func (m *planEditorModel) renderBody() string {
 		return StyleSubtle.Render("(no plan content yet — press i to start writing or r to revise)")
 	}
 	body := m.bodyHeight()
-	if m.scrollOff >= len(all) {
-		m.scrollOff = max(0, len(all)-body)
+	// Use a local start so View() stays pure — never mutate m.scrollOff
+	// from the render path. Update()/SetSize keep m.scrollOff in range via
+	// clampScroll; this local clamp guards a stale scrollOff in the render
+	// frame that races a textarea shrink (e.g. plan reload after revise).
+	start := m.scrollOff
+	if start > len(all)-body {
+		start = len(all) - body
 	}
-	end := m.scrollOff + body
+	if start < 0 {
+		start = 0
+	}
+	end := start + body
 	if end > len(all) {
 		end = len(all)
 	}
-	return strings.Join(all[m.scrollOff:end], "\n")
+	return strings.Join(all[start:end], "\n")
 }
 
 func (m *planEditorModel) renderFooter() string {
