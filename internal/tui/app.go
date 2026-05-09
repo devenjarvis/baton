@@ -1602,6 +1602,14 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if err != nil {
 					return createResultMsg{err: err}
 				}
+				// Legacy n (PlanFirstEnabled=false) spawns the agent
+				// immediately, so the session belongs in BUILDING from the
+				// start. Without this transition the row would land in
+				// PLANNING, where the dashboard renders plan-status badges
+				// rather than agent activity. The skip path in
+				// submitPromptModal does the same — keeping both call sites
+				// consistent.
+				sess.SetLifecyclePhase(agent.LifecycleInProgress)
 				return createResultMsg{sessionID: sess.ID, agentID: ag.ID, isNewSession: true}
 			}
 
@@ -2146,6 +2154,10 @@ func (a App) updateBranchPicker(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if err != nil {
 				return createResultMsg{err: err}
 			}
+			// Branch-picker sessions spawn an agent immediately on the
+			// chosen branch; they belong in BUILDING. See the legacy n
+			// path for the same rationale.
+			sess.SetLifecyclePhase(agent.LifecycleInProgress)
 			return createResultMsg{sessionID: sess.ID, agentID: ag.ID, isNewSession: true}
 		}
 
@@ -2197,6 +2209,9 @@ func (a App) updateRepoPicker(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if err != nil {
 				return createResultMsg{err: err}
 			}
+			// Repo-picker sessions spawn an agent immediately; they
+			// belong in BUILDING. See the legacy n path for rationale.
+			sess.SetLifecyclePhase(agent.LifecycleInProgress)
 			return createResultMsg{sessionID: sess.ID, agentID: ag.ID, isNewSession: true}
 		}
 
