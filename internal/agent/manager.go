@@ -493,7 +493,11 @@ func (m *Manager) StartDraft(sessionID, prompt string) error {
 		return fmt.Errorf("prompt is empty or non-actionable")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), PlanDraftTimeout)
+	// No wall-clock timeout: Sonnet drafting can legitimately take minutes on
+	// complex prompts and the user is actively waiting for the editor. The
+	// only cancellation paths are user-initiated — KillSession, manager
+	// shutdown via m.done in runDraft, or an explicit CancelDraft.
+	ctx, cancel := context.WithCancel(context.Background())
 	if !sess.TryStartDraft(cancel) {
 		cancel()
 		return ErrDraftInFlight
@@ -619,7 +623,10 @@ func (m *Manager) RevisePlan(sessionID, critique string) error {
 		return fmt.Errorf("snapshot plan: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), PlanDraftTimeout)
+	// No wall-clock timeout for the same reason as StartDraft: revise is a
+	// Sonnet call the user is actively waiting on. User cancels via the TUI;
+	// closeSession / KillSession / Shutdown propagate via m.done in runRevise.
+	ctx, cancel := context.WithCancel(context.Background())
 	if !sess.TryStartRevise(cancel) {
 		cancel()
 		return ErrReviseInFlight
@@ -1564,8 +1571,9 @@ func (m *Manager) closeSession(sessionID string, sess *Session) {
 	// with KillSession. The current pipeline never reaches closeSession with
 	// a draft or revise running (both precede building), but StartDraft /
 	// RevisePlan do not enforce that precondition — without this call,
-	// Shutdown could block on m.watchers for up to PlanDraftTimeout if the
-	// gap is ever reached. Both Cancel* calls are no-ops when nothing's running.
+	// Shutdown would block on m.watchers indefinitely if the gap is ever
+	// reached, since drafting has no wall-clock timeout. Both Cancel* calls
+	// are no-ops when nothing's running.
 	sess.CancelDraft()
 	sess.CancelRevise()
 	sess.KillAll()

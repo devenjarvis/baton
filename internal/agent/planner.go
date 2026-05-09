@@ -13,11 +13,6 @@ import (
 
 const claudeSonnetModel = "claude-sonnet-4-6"
 
-// PlanDraftTimeout bounds a single Draft or Revise subprocess. Plan generation
-// is one-shot (no retry), so this is also the wall-clock budget the user
-// waits before the editor opens. Declared as var so tests can shrink it.
-var PlanDraftTimeout = 60 * time.Second
-
 // ErrEmptyPrompt is returned when Draft is called with an empty user prompt.
 var ErrEmptyPrompt = errors.New("planner: empty user prompt")
 
@@ -83,9 +78,14 @@ CURRENT PLAN:
 
 // DefaultPlanDrafter returns a PlanDrafter that shells out to
 // `claude -p --model claude-sonnet-4-6` with the planning instruction piped
-// on stdin. Mirrors DefaultBranchNamer's approach: bounded per-call context,
-// env stripped of baton hook wiring so the subprocess does not register
-// against the running TUI's hook socket as the parent agent.
+// on stdin. Env stripped of baton hook wiring so the subprocess does not
+// register against the running TUI's hook socket as the parent agent.
+//
+// Cancellation is caller-driven via ctx (no wall-clock timeout in the default
+// path): Sonnet drafting can take a couple of minutes on complex prompts and
+// the user is actively waiting for the editor — manager StartDraft / Revise
+// pass a cancel-only context so the only kill paths are user-initiated
+// (KillSession, manager shutdown, an explicit CancelDraft / CancelRevise).
 //
 // Sonnet (not Haiku) is intentional: planning quality compounds downstream,
 // since a fuzzier plan turns into a fuzzier agent run and more verification
