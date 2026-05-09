@@ -103,7 +103,13 @@ func TestDefaultPlanDrafter_DraftNonZeroExitSurfacesStderr(t *testing.T) {
 	}
 }
 
-func TestDefaultPlanDrafter_DraftContextTimeout(t *testing.T) {
+// TestDefaultPlanDrafter_DraftContextCancel verifies that an external
+// cancellation (caller's ctx) kills the subprocess promptly. The production
+// flow has no wall-clock timeout, so cancellation only ever comes from the
+// user (KillSession, manager shutdown, explicit CancelDraft) — but the
+// underlying mechanism is the same as a context expiring, which is what
+// this test exercises with a short deadline as a stand-in for a user cancel.
+func TestDefaultPlanDrafter_DraftContextCancel(t *testing.T) {
 	dir := t.TempDir()
 	writeSlowClaude(t, dir, 10)
 	withPATH(t, dir)
@@ -115,10 +121,10 @@ func TestDefaultPlanDrafter_DraftContextTimeout(t *testing.T) {
 	start := time.Now()
 	_, err := d.Draft(ctx, DraftRequest{UserPrompt: "add dark mode"})
 	if err == nil {
-		t.Fatal("expected timeout error")
+		t.Fatal("expected error from canceled context")
 	}
 	if elapsed := time.Since(start); elapsed > 3*time.Second {
-		t.Errorf("Draft waited %v after 200ms timeout (expected to be killed promptly)", elapsed)
+		t.Errorf("Draft waited %v after context cancellation (expected to be killed promptly)", elapsed)
 	}
 }
 
