@@ -652,6 +652,10 @@ func (d dashboardModel) renderFocusSessionCard(sess *agent.Session, selected boo
 // or Drafting card. Priority: Drafting > Revising > DraftError > plan task
 // summary > "no plan yet". Drafting and revising are mutually exclusive at
 // the session level, so the fall-through ordering is unambiguous.
+//
+// Reads plan content via Session.CachedPlan to keep the per-render hot path
+// off os.Stat + os.ReadFile. Cache is invalidated by WritePlan, which the
+// drafter and revise paths both go through.
 func planningStatusBadge(sess *agent.Session) string {
 	if sess.IsDrafting() {
 		return lipgloss.NewStyle().Foreground(ColorWarning).Render("✎ drafting…")
@@ -662,12 +666,9 @@ func planningStatusBadge(sess *agent.Session) string {
 	if err := sess.DraftError(); err != nil {
 		return lipgloss.NewStyle().Foreground(ColorError).Render("✗ draft failed")
 	}
-	if !sess.HasPlan() {
+	plan, present := sess.CachedPlan()
+	if !present {
 		return StyleSubtle.Render("○ no plan yet")
-	}
-	plan, err := sess.ReadPlan()
-	if err != nil {
-		return StyleSubtle.Render("○ plan unreadable")
 	}
 	total, done := planTaskCounts(plan)
 	if total == 0 {
@@ -689,18 +690,22 @@ func planningDescription(sess *agent.Session) (string, bool) {
 		}
 		return "drafting plan…", true
 	}
+	if sess.IsRevising() {
+		// Match the badge ("✎ revising…") so the card reads as a unit.
+		// Without this branch the description would fall through to the
+		// pre-revise plan's first uncompleted task, which is technically
+		// correct but visually inconsistent with the badge.
+		return "revising plan…", true
+	}
 	if err := sess.DraftError(); err != nil {
 		return "draft failed: " + err.Error(), false
 	}
-	if !sess.HasPlan() {
+	plan, present := sess.CachedPlan()
+	if !present {
 		if p := sess.OriginalPrompt(); p != "" {
 			return p, true
 		}
 		return "no plan yet — press space to write one", true
-	}
-	plan, err := sess.ReadPlan()
-	if err != nil {
-		return "plan unreadable: " + err.Error(), false
 	}
 	if next := firstUncompletedTask(plan); next != "" {
 		return "next: " + next, false

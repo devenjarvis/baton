@@ -584,26 +584,23 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// the rendered plan without requiring a re-open.
 		if msg.event.Type == agent.EventStatusChanged && a.planEditor != nil &&
 			a.planEditor.sess != nil && a.planEditor.sess.ID == msg.event.SessionID {
+			// Read both flags up-front so the Reload decision sees a coherent
+			// snapshot. RevisePlan emits EventStatusChanged synchronously with
+			// IsRevising=true (before runRevise spawns), so a naive
+			// "Reload when !drafting" path would reset scrollOff at the moment
+			// the revise banner appears. Only Reload when neither subprocess
+			// is in flight — that's the single state where plan.md is stable
+			// and the editor view should reflect disk.
 			drafting := a.planEditor.sess.IsDrafting()
+			revising := a.planEditor.sess.IsRevising()
 			a.planEditor.SetDrafting(drafting)
-			if !drafting {
+			a.planEditor.SetRevising(revising)
+			if !drafting && !revising {
 				a.planEditor.Reload()
 				if derr := a.planEditor.sess.DraftError(); derr != nil {
 					a.planEditor.SetError("draft failed: " + derr.Error())
-				}
-			}
-			revising := a.planEditor.sess.IsRevising()
-			a.planEditor.SetRevising(revising)
-			if !revising {
-				if rerr := a.planEditor.sess.ReviseError(); rerr != nil {
+				} else if rerr := a.planEditor.sess.ReviseError(); rerr != nil {
 					a.planEditor.SetError("revise failed: " + rerr.Error())
-				} else if a.planEditor.sess.HasPlan() {
-					// Successful revise just rewrote plan.md — pick up the new
-					// content. We Reload unconditionally on draft completion;
-					// here we gate on HasPlan so a revise that errored before
-					// the drafter ran (no write happened) doesn't drop any
-					// in-progress textarea edits.
-					a.planEditor.Reload()
 				}
 			}
 		}

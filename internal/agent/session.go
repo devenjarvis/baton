@@ -43,6 +43,14 @@ type Session struct {
 	revising       bool  // true while a plan-revising subprocess is in flight; gates double-dispatch
 	reviseCancel   context.CancelFunc
 	reviseErr      error // last revise error, surfaced by the editor; cleared on successful revise
+	// Plan-content cache, keyed by the most recent successful WritePlan.
+	// Populated lazily by CachedPlan() on first read so resumed sessions
+	// also benefit. The dashboard hot path (per-render Planning card)
+	// reads this instead of os.ReadFile to avoid a stat+read+parse cycle
+	// at every tick.
+	planCacheLoaded  bool
+	planCachePresent bool
+	planCacheContent string
 }
 
 // newSession creates a session with the given worktree. New sessions land in
@@ -886,6 +894,16 @@ func (s *Session) WritePlan(content string) error {
 		return fmt.Errorf("plan: renaming temp file to %s: %w", planPath, err)
 	}
 	committed = true
+
+	// Update the in-memory cache so the dashboard render path can skip
+	// os.Stat + os.ReadFile on subsequent ticks. Locking is brief; we
+	// only enter after the file write has succeeded.
+	s.mu.Lock()
+	s.planCacheLoaded = true
+	s.planCachePresent = true
+	s.planCacheContent = content
+	s.mu.Unlock()
+
 	return nil
 }
 
@@ -893,6 +911,62 @@ func (s *Session) WritePlan(content string) error {
 func (s *Session) HasPlan() bool {
 	_, err := os.Stat(s.PlanPath())
 	return err == nil
+}
+
+// CachedPlan returns the most recently written plan content along with a
+// flag indicating whether a plan exists. The cache is primed by WritePlan
+// (and indirectly by RestorePrevPlan, which calls WritePlan); on a
+// resumed session that was created before the cache existed, the first
+// call lazily loads from disk. Use this in hot paths like the dashboard
+// render loop instead of HasPlan() + ReadPlan(), which together do a
+// stat + read on every TUI tick.
+//
+// Returns ("", false) when no plan file exists. Read errors are not
+// surfaced — callers in render hot paths can't usefully react to them
+// and the plain ReadPlan() path is still available for callers that need
+// to handle errors explicitly.
+func (s *Session) CachedPlan() (string, bool) {
+	s.mu.RLock()
+	if s.planCacheLoaded {
+		content, present := s.planCacheContent, s.planCachePresent
+		s.mu.RUnlock()
+		return content, present
+	}
+	s.mu.RUnlock()
+
+	// Lazy load. Drop the read lock before doing I/O so a concurrent
+	// WritePlan can populate the cache while we read; if it does, we
+	// just observe its write on the next call.
+	data, err := os.ReadFile(s.PlanPath())
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			s.mu.Lock()
+			if !s.planCacheLoaded {
+				s.planCacheLoaded = true
+				s.planCachePresent = false
+				s.planCacheContent = ""
+			}
+			s.mu.Unlock()
+			return "", false
+		}
+		// Any other error: don't poison the cache. Callers in render
+		// paths see ("", false) and fall back to their no-plan branch.
+		return "", false
+	}
+	content := string(data)
+
+	s.mu.Lock()
+	if !s.planCacheLoaded {
+		s.planCacheLoaded = true
+		s.planCachePresent = true
+		s.planCacheContent = content
+	} else {
+		// A WritePlan landed during our read; trust the cache.
+		content = s.planCacheContent
+	}
+	present := s.planCachePresent
+	s.mu.Unlock()
+	return content, present
 }
 
 // HasPrevPlan reports whether a previous-plan snapshot exists on disk.

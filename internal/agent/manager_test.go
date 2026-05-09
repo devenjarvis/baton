@@ -696,3 +696,47 @@ func TestManager_RevisePlan_KillSessionCancelsSubprocess(t *testing.T) {
 		t.Error("revise subprocess context was not cancelled by KillSession")
 	}
 }
+
+func TestManager_RevisePlan_ShutdownDrainsGoroutine(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+
+	finished := atomic.Bool{}
+	mgr.SetPlanDrafter(&stubPlanDrafter{
+		reviseFn: func(ctx context.Context, req ReviseRequest) (string, error) {
+			<-ctx.Done()
+			return "", ctx.Err()
+		},
+	})
+
+	sess, _, _ := mgr.CreateSessionWithCommand(
+		Config{Task: "test", Rows: 24, Cols: 80},
+		func(name string) *exec.Cmd { return exec.Command("bash", "-c", "sleep 5") },
+	)
+	if err := sess.WritePlan("# Goal\nx\n"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := mgr.RevisePlan(sess.ID, "improve"); err != nil {
+		t.Fatal(err)
+	}
+	waitForCondition(t, time.Second, func() bool { return sess.IsRevising() })
+
+	go func() {
+		mgr.Shutdown()
+		finished.Store(true)
+	}()
+
+	// Shutdown must complete in bounded time even with a revise in flight.
+	// The runRevise goroutine is registered in m.watchers and listens on
+	// m.done — Shutdown closes m.done, the inner goroutine cancels the
+	// drafter context, and runRevise exits via its defer chain.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if finished.Load() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("Shutdown did not return within 3s while a revise was in flight")
+}

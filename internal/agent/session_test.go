@@ -1319,3 +1319,85 @@ func TestSession_ReviseGate_DoubleDispatchRejected(t *testing.T) {
 		t.Error("IsRevising should be false after finishRevise")
 	}
 }
+
+func TestSession_CachedPlan_EmptyForFreshSession(t *testing.T) {
+	dir := t.TempDir()
+	s := newSession("id", "name", &git.WorktreeInfo{Path: dir})
+	plan, present := s.CachedPlan()
+	if present {
+		t.Errorf("CachedPlan() present=true for fresh session, want false")
+	}
+	if plan != "" {
+		t.Errorf("CachedPlan() plan=%q for fresh session, want empty", plan)
+	}
+}
+
+func TestSession_CachedPlan_PopulatedByWritePlan(t *testing.T) {
+	dir := t.TempDir()
+	s := newSession("id", "name", &git.WorktreeInfo{Path: dir})
+	const body = "# Goal\nDo a thing\n\n## Tasks\n- [ ] one\n"
+	if err := s.WritePlan(body); err != nil {
+		t.Fatal(err)
+	}
+	plan, present := s.CachedPlan()
+	if !present {
+		t.Fatal("CachedPlan() present=false after WritePlan")
+	}
+	if plan != body {
+		t.Errorf("CachedPlan() plan = %q, want %q", plan, body)
+	}
+}
+
+func TestSession_CachedPlan_LazyLoadsFromDisk(t *testing.T) {
+	// Resumed sessions don't go through WritePlan in the current process,
+	// so the first CachedPlan() call must lazy-load from disk.
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const body = "# Goal\nresumed\n\n- [x] done\n- [ ] todo\n"
+	if err := os.WriteFile(filepath.Join(dir, ".claude", "plan.md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := newSession("id", "name", &git.WorktreeInfo{Path: dir})
+	plan, present := s.CachedPlan()
+	if !present || plan != body {
+		t.Errorf("CachedPlan() = (%q, %v), want (%q, true)", plan, present, body)
+	}
+	// Second call must hit the cache. Truncate the file under the cache to
+	// confirm — if the cache works, we still see the cached body.
+	if err := os.WriteFile(filepath.Join(dir, ".claude", "plan.md"), []byte("changed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	plan2, _ := s.CachedPlan()
+	if plan2 != body {
+		t.Errorf("second CachedPlan() = %q, want cached %q (cache miss)", plan2, body)
+	}
+}
+
+func TestSession_CachedPlan_RestorePrevPlanRefreshesCache(t *testing.T) {
+	dir := t.TempDir()
+	s := newSession("id", "name", &git.WorktreeInfo{Path: dir})
+	const v1 = "# Goal\nv1\n"
+	const v2 = "# Goal\nv2\n"
+	if err := s.WritePlan(v1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.snapshotPlanToPrev(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WritePlan(v2); err != nil {
+		t.Fatal(err)
+	}
+	plan, _ := s.CachedPlan()
+	if plan != v2 {
+		t.Fatalf("after WritePlan(v2), cache = %q, want %q", plan, v2)
+	}
+	if _, _, err := s.RestorePrevPlan(); err != nil {
+		t.Fatal(err)
+	}
+	plan, _ = s.CachedPlan()
+	if plan != v1 {
+		t.Errorf("after RestorePrevPlan, cache = %q, want %q", plan, v1)
+	}
+}
