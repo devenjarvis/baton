@@ -247,8 +247,8 @@ func TestBuildClaudePlannerArgs_UsesSonnet(t *testing.T) {
 		"--strict-mcp-config",
 		"--disable-slash-commands",
 		"--no-session-persistence",
-		"--tools ",
-		"--setting-sources user",
+		"--tools Read,Grep,Glob,LS,LSP,WebFetch,WebSearch",
+		"--setting-sources user,project",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("argv missing %q; got %q", want, joined)
