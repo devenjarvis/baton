@@ -26,9 +26,10 @@ const (
 // supplied by the CLI wrapper from the BATON_AGENT_ID environment variable
 // so the server can dispatch to the right agent. Message is populated from
 // Notification payloads (empty for other kinds). Prompt is populated from
-// UserPromptSubmit payloads (empty for other kinds). Raw preserves the original
-// Claude JSON for forward-compatibility with fields the server doesn't
-// currently consume.
+// UserPromptSubmit payloads (empty for other kinds). ToolName and ToolInput
+// are populated from PreToolUse payloads (empty for other kinds). Raw preserves
+// the original Claude JSON for forward-compatibility with fields the server
+// doesn't currently consume.
 type Event struct {
 	Kind      Kind            `json:"kind"`
 	AgentID   string          `json:"agent_id"`
@@ -36,5 +37,7 @@ type Event struct {
 	CWD       string          `json:"cwd,omitempty"`
 	Message   string          `json:"message,omitempty"`
 	Prompt    string          `json:"prompt,omitempty"`
+	ToolName  string          `json:"tool_name,omitempty"`
+	ToolInput json.RawMessage `json:"tool_input,omitempty"`
 	Raw       json.RawMessage `json:"raw,omitempty"`
 }

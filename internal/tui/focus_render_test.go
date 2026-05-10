@@ -208,6 +208,182 @@ func TestRenderFocusSessionCard_RepoPrefix(t *testing.T) {
 	}
 }
 
+// TestBuildingProgressBadge verifies the badge string for various todo states.
+func TestBuildingProgressBadge(t *testing.T) {
+	tests := []struct {
+		name        string
+		todos       []agent.TodoItem
+		activeCount int
+		wantEmpty   bool
+		wantSubstr  string
+	}{
+		{
+			name:      "no todos returns empty",
+			todos:     nil,
+			wantEmpty: true,
+		},
+		{
+			name:        "2/5 with 1 active",
+			todos:       makeTodos(5, 2),
+			activeCount: 1,
+			wantSubstr:  "2/5",
+		},
+		{
+			name:        "active count included",
+			todos:       makeTodos(3, 0),
+			activeCount: 2,
+			wantSubstr:  "2 active",
+		},
+		{
+			name:        "no active count omitted when zero",
+			todos:       makeTodos(3, 1),
+			activeCount: 0,
+			wantSubstr:  "1/3",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := buildingProgressBadge(tc.todos, tc.activeCount)
+			if tc.wantEmpty {
+				if got != "" {
+					t.Errorf("expected empty badge, got %q", got)
+				}
+				return
+			}
+			plain := ansi.Strip(got)
+			if !strings.Contains(plain, tc.wantSubstr) {
+				t.Errorf("expected badge to contain %q, got %q", tc.wantSubstr, plain)
+			}
+		})
+	}
+}
+
+// makeTodos builds a slice of n TodoItems with done of them marked completed.
+func makeTodos(n, done int) []agent.TodoItem {
+	items := make([]agent.TodoItem, n)
+	for i := range items {
+		if i < done {
+			items[i] = agent.TodoItem{Content: "task", Status: "completed"}
+		} else {
+			items[i] = agent.TodoItem{Content: "task", Status: "pending"}
+		}
+	}
+	return items
+}
+
+// TestSessionFocusStatus_BuildingWithTodosShowsProgressBadge verifies that
+// sessionFocusStatus shows a "▸ done/total" progress badge for a Building
+// session that has received ≥1 TodoWrite, instead of the plain "N active, M idle".
+func TestSessionFocusStatus_BuildingWithTodosShowsProgressBadge(t *testing.T) {
+	sess := agent.NewSessionForTest("s", "my-session")
+	sess.SetLifecyclePhase(agent.LifecycleInProgress)
+	ag := sess.AddTestAgent("a-1", false, agent.StatusActive)
+	ag.SetTodos([]agent.TodoItem{
+		{Content: "step one", Status: "completed", ActiveForm: ""},
+		{Content: "step two", Status: "in_progress", ActiveForm: "Doing step two"},
+		{Content: "step three", Status: "pending", ActiveForm: ""},
+	})
+
+	d := newDashboardModel()
+	d.items = []listItem{
+		{kind: listItemSession, repoPath: "/r", session: sess},
+		{kind: listItemAgent, repoPath: "/r", session: sess, agent: ag},
+	}
+
+	badge := ansi.Strip(d.sessionFocusStatus(sess))
+	if !strings.Contains(badge, "1/3") {
+		t.Errorf("expected progress badge with 1/3, got %q", badge)
+	}
+	if strings.Contains(badge, "active, ") {
+		t.Errorf("expected progress badge to replace 'N active, M idle', got %q", badge)
+	}
+}
+
+// TestSessionFocusStatus_BuildingWithTodosErrorPreempts verifies that error
+// status still preempts the todo progress badge.
+func TestSessionFocusStatus_BuildingWithTodosErrorPreempts(t *testing.T) {
+	sess := agent.NewSessionForTest("s", "my-session")
+	sess.SetLifecyclePhase(agent.LifecycleInProgress)
+	ag := sess.AddTestAgent("a-1", false, agent.StatusError)
+	ag.SetTodos([]agent.TodoItem{
+		{Content: "step one", Status: "in_progress", ActiveForm: "Doing step one"},
+	})
+
+	d := newDashboardModel()
+	d.items = []listItem{
+		{kind: listItemSession, repoPath: "/r", session: sess},
+		{kind: listItemAgent, repoPath: "/r", session: sess, agent: ag},
+	}
+
+	badge := ansi.Strip(d.sessionFocusStatus(sess))
+	if !strings.Contains(badge, "error") {
+		t.Errorf("expected error badge to preempt todos, got %q", badge)
+	}
+}
+
+// TestFocusTaskDescription_WithTodos verifies that focusTaskDescription returns
+// the in_progress todo's activeForm on line1 and the first pending todo on line2.
+func TestFocusTaskDescription_WithTodos(t *testing.T) {
+	sess := agent.NewSessionForTest("s", "my-session")
+	sess.SetLifecyclePhase(agent.LifecycleInProgress)
+	ag := sess.AddTestAgent("a-1", false, agent.StatusActive)
+	ag.SetTodos([]agent.TodoItem{
+		{Content: "write unit tests", Status: "in_progress", ActiveForm: "Writing unit tests"},
+		{Content: "open PR", Status: "pending", ActiveForm: ""},
+	})
+	// PrimaryAgent() reads from session's agents map.
+	_ = ag
+
+	line1, line2, pending := focusTaskDescription(sess, 80)
+	if !strings.Contains(line1, "Writing unit tests") {
+		t.Errorf("line1 should contain active todo activeForm, got %q", line1)
+	}
+	if !strings.Contains(line2, "open PR") {
+		t.Errorf("line2 should contain next pending todo, got %q", line2)
+	}
+	if pending {
+		t.Error("expected pending=false for todo-driven description")
+	}
+}
+
+// TestFocusTaskDescription_WithoutTodos verifies that focusTaskDescription
+// falls back to the task summary / original prompt when no todos are present.
+func TestFocusTaskDescription_WithoutTodos(t *testing.T) {
+	sess := agent.NewSessionForTest("s", "my-session")
+	sess.SetLifecyclePhase(agent.LifecycleInProgress)
+	sess.SetTaskSummary("implement oauth flow")
+
+	line1, _, _ := focusTaskDescription(sess, 80)
+	if !strings.Contains(line1, "implement oauth flow") {
+		t.Errorf("expected task summary fallback, got %q", line1)
+	}
+}
+
+// TestFocusTaskDescription_ReviewableFallsThrough verifies that stale todos
+// do not surface on lines 2-3 when the session IsReviewable (all agents Idle).
+// The badge on line 1 already shows "✓ idle — press m to review" in that state,
+// so todo lines would be contradictory.
+func TestFocusTaskDescription_ReviewableFallsThrough(t *testing.T) {
+	sess := agent.NewSessionForTest("s", "my-session")
+	sess.SetLifecyclePhase(agent.LifecycleInProgress)
+	sess.SetTaskSummary("implement oauth flow")
+	// Agent is Idle → IsReviewable() == true.
+	ag := sess.AddTestAgent("a-1", false, agent.StatusIdle)
+	ag.SetTodos([]agent.TodoItem{
+		{Content: "stale task", Status: "in_progress", ActiveForm: "Stale active work"},
+	})
+
+	line1, line2, _ := focusTaskDescription(sess, 80)
+	// Must NOT show the in_progress todo text.
+	if strings.Contains(line1, "Stale active work") || strings.Contains(line2, "Stale active work") {
+		t.Errorf("expected todo description suppressed for reviewable session, got line1=%q line2=%q", line1, line2)
+	}
+	// Should fall back to the task summary.
+	if !strings.Contains(line1, "implement oauth flow") {
+		t.Errorf("expected task summary fallback when reviewable, got %q", line1)
+	}
+}
+
 // TestRenderQueueRow_RepoPrefix verifies the same cross-repo disambiguation
 // for the REVIEWING / SHIPPING sections. renderQueueRow has independent
 // rendering from renderFocusSessionCard, so it needs its own coverage to

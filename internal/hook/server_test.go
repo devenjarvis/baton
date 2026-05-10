@@ -1,6 +1,7 @@
 package hook
 
 import (
+	"encoding/json"
 	"net"
 	"os"
 	"path/filepath"
@@ -132,6 +133,43 @@ func TestServerClosesEventsChannel(t *testing.T) {
 	_, ok := <-srv.Events()
 	if ok {
 		t.Error("expected events channel to be closed")
+	}
+}
+
+// TestPreToolUseRoundTrip verifies that ToolName and ToolInput survive the
+// JSON marshal/unmarshal path through the hook server.
+func TestPreToolUseRoundTrip(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "hook.sock")
+	srv, err := NewServer(socketPath)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	defer func() { _ = srv.Close() }()
+
+	toolInput := json.RawMessage(`{"todos":[{"content":"write tests","status":"in_progress","activeForm":"Writing tests"}]}`)
+	want := Event{
+		Kind:      KindPreToolUse,
+		AgentID:   "session-1-agent-1",
+		ToolName:  "TodoWrite",
+		ToolInput: toolInput,
+	}
+	if err := SendEvent(socketPath, want); err != nil {
+		t.Fatalf("SendEvent: %v", err)
+	}
+
+	select {
+	case got := <-srv.Events():
+		if got.Kind != want.Kind {
+			t.Errorf("Kind: got %q, want %q", got.Kind, want.Kind)
+		}
+		if got.ToolName != want.ToolName {
+			t.Errorf("ToolName: got %q, want %q", got.ToolName, want.ToolName)
+		}
+		if string(got.ToolInput) != string(want.ToolInput) {
+			t.Errorf("ToolInput: got %q, want %q", got.ToolInput, want.ToolInput)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for event")
 	}
 }
 

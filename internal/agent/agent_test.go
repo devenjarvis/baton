@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"strings"
@@ -792,5 +793,219 @@ func TestUserPromptSubmitClearsAskingQuestion(t *testing.T) {
 
 	if a.AskingQuestion() {
 		t.Error("expected AskingQuestion cleared after KindUserPromptSubmit")
+	}
+}
+
+// TestOnHookEvent_TodoWrite verifies that a PreToolUse event for TodoWrite
+// unmarshals the tool_input.todos array and stores it on the agent.
+func TestOnHookEvent_TodoWrite(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	cfg := Config{Name: "test-todo-write", Task: "test", Rows: 24, Cols: 80}
+	a, err := mgr.CreateWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed the agent as Active so the PreToolUse guard passes.
+	a.OnHookEvent(hook.Event{Kind: hook.KindSessionStart, AgentID: a.ID})
+
+	toolInput, _ := json.Marshal(map[string]any{
+		"todos": []map[string]any{
+			{"content": "write tests", "status": "in_progress", "activeForm": "Writing tests"},
+			{"content": "ship feature", "status": "pending", "activeForm": ""},
+		},
+	})
+
+	changed := a.OnHookEvent(hook.Event{
+		Kind:      hook.KindPreToolUse,
+		AgentID:   a.ID,
+		ToolName:  "TodoWrite",
+		ToolInput: json.RawMessage(toolInput),
+	})
+
+	if !changed {
+		t.Error("expected OnHookEvent to return true (repaint needed) after TodoWrite")
+	}
+
+	todos := a.Todos()
+	if len(todos) != 2 {
+		t.Fatalf("expected 2 todos, got %d", len(todos))
+	}
+	if todos[0].Status != "in_progress" {
+		t.Errorf("todos[0].Status: got %q, want %q", todos[0].Status, "in_progress")
+	}
+	if todos[0].ActiveForm != "Writing tests" {
+		t.Errorf("todos[0].ActiveForm: got %q, want %q", todos[0].ActiveForm, "Writing tests")
+	}
+	if todos[1].Content != "ship feature" {
+		t.Errorf("todos[1].Content: got %q, want %q", todos[1].Content, "ship feature")
+	}
+	if a.TodosUpdatedAt().IsZero() {
+		t.Error("expected TodosUpdatedAt to be set after TodoWrite")
+	}
+}
+
+// TestOnHookEvent_TodoWrite_NonTodoWritePreToolUse verifies that a PreToolUse
+// for a different tool does not populate todos.
+func TestOnHookEvent_TodoWrite_NonTodoWritePreToolUse(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	cfg := Config{Name: "test-non-todo", Task: "test", Rows: 24, Cols: 80}
+	a, err := mgr.CreateWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	a.OnHookEvent(hook.Event{Kind: hook.KindSessionStart, AgentID: a.ID})
+	a.OnHookEvent(hook.Event{
+		Kind:      hook.KindPreToolUse,
+		AgentID:   a.ID,
+		ToolName:  "Bash",
+		ToolInput: json.RawMessage(`{"command":"ls"}`),
+	})
+
+	if todos := a.Todos(); len(todos) != 0 {
+		t.Errorf("expected no todos for non-TodoWrite tool, got %d", len(todos))
+	}
+}
+
+// TestSetTodos_GetTodos verifies the Todos/SetTodos/TodosUpdatedAt round-trip
+// without needing the hook path.
+func TestSetTodos_GetTodos(t *testing.T) {
+	a := &Agent{}
+
+	if got := a.Todos(); got != nil {
+		t.Errorf("expected nil todos before SetTodos, got %v", got)
+	}
+	if !a.TodosUpdatedAt().IsZero() {
+		t.Error("expected zero TodosUpdatedAt before SetTodos")
+	}
+
+	items := []TodoItem{
+		{Content: "task one", Status: "in_progress", ActiveForm: "Doing task one"},
+		{Content: "task two", Status: "pending", ActiveForm: ""},
+	}
+	a.SetTodos(items)
+
+	got := a.Todos()
+	if len(got) != 2 {
+		t.Fatalf("expected 2 todos, got %d", len(got))
+	}
+	if got[0].Content != items[0].Content || got[0].ActiveForm != items[0].ActiveForm {
+		t.Errorf("todos[0] mismatch: got %+v, want %+v", got[0], items[0])
+	}
+	if a.TodosUpdatedAt().IsZero() {
+		t.Error("expected non-zero TodosUpdatedAt after SetTodos")
+	}
+
+	// Verify the returned slice is a copy (mutation doesn't affect agent state).
+	got[0].Content = "mutated"
+	if a.Todos()[0].Content == "mutated" {
+		t.Error("Todos() should return a copy, not a reference to internal slice")
+	}
+}
+
+// TestOnHookEvent_TodoWrite_FromWaiting verifies that a PreToolUse/TodoWrite
+// when the agent is StatusWaiting (permission prompt just approved) transitions
+// the agent to Active AND sets todos.
+func TestOnHookEvent_TodoWrite_FromWaiting(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	cfg := Config{Name: "test-todo-waiting", Task: "test", Rows: 24, Cols: 80}
+	a, err := mgr.CreateWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Drive to Waiting via SessionStart + Notification.
+	a.OnHookEvent(hook.Event{Kind: hook.KindSessionStart, AgentID: a.ID})
+	a.OnHookEvent(hook.Event{Kind: hook.KindNotification, AgentID: a.ID, Message: "needs permission"})
+	if s := a.Status(); s != StatusWaiting {
+		t.Fatalf("expected Waiting before TodoWrite, got %s", s)
+	}
+
+	toolInput, _ := json.Marshal(map[string]any{
+		"todos": []map[string]any{
+			{"content": "build feature", "status": "in_progress", "activeForm": "Building feature"},
+		},
+	})
+	changed := a.OnHookEvent(hook.Event{
+		Kind:      hook.KindPreToolUse,
+		AgentID:   a.ID,
+		ToolName:  "TodoWrite",
+		ToolInput: json.RawMessage(toolInput),
+	})
+
+	if !changed {
+		t.Error("expected changed=true (status transition Waiting→Active)")
+	}
+	if s := a.Status(); s != StatusActive {
+		t.Errorf("expected Active after PreToolUse/TodoWrite from Waiting, got %s", s)
+	}
+	todos := a.Todos()
+	if len(todos) != 1 || todos[0].ActiveForm != "Building feature" {
+		t.Errorf("expected todos set from TodoWrite payload, got %+v", todos)
+	}
+}
+
+// TestOnHookEvent_TodoWrite_IgnoredOnDoneAgent verifies that a PreToolUse/TodoWrite
+// arriving after an agent has exited does not update its todo list.
+func TestOnHookEvent_TodoWrite_IgnoredOnDoneAgent(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	cfg := Config{Name: "test-todo-done", Task: "test", Rows: 24, Cols: 80}
+	a, err := mgr.CreateWithCommand(cfg, func(name string) *exec.Cmd {
+		// Exit immediately so the agent reaches StatusDone.
+		return exec.Command("bash", "-c", "exit 0")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for the agent to exit naturally.
+	select {
+	case <-a.Done():
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for agent to exit")
+	}
+	if s := a.Status(); s != StatusDone {
+		t.Fatalf("expected Done after clean exit, got %s", s)
+	}
+
+	toolInput, _ := json.Marshal(map[string]any{
+		"todos": []map[string]any{
+			{"content": "late todo", "status": "in_progress", "activeForm": "Late"},
+		},
+	})
+	changed := a.OnHookEvent(hook.Event{
+		Kind:      hook.KindPreToolUse,
+		AgentID:   a.ID,
+		ToolName:  "TodoWrite",
+		ToolInput: json.RawMessage(toolInput),
+	})
+
+	if changed {
+		t.Error("expected changed=false for Done agent")
+	}
+	if len(a.Todos()) != 0 {
+		t.Errorf("expected no todos set on Done agent, got %+v", a.Todos())
+	}
+	if a.Status() != StatusDone {
+		t.Errorf("expected status to remain Done, got %s", a.Status())
 	}
 }
