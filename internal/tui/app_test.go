@@ -2636,6 +2636,150 @@ func TestCreateResult_SessionsCreatedCount_OnlyIncrementsForNewSession(t *testin
 // dashboard.selectedRepoPath() — which reads d.selected against a hierarchical
 // items list whose cursor doesn't follow either the pipeline cursor or the
 // repo-picker selection.
+// TestSubmitPromptModal_PlanningPath_StaysDashboard verifies that the planning
+// path of submitPromptModal no longer opens the plan editor immediately.
+// Instead focus stays on the dashboard (panelFocus != focusPlanEditor) and the
+// pipeline cursor lands on the new drafting session in the Planning section.
+func TestSubmitPromptModal_PlanningPath_StaysDashboard(t *testing.T) {
+	dir, err := os.MkdirTemp("", "baton-planfirst-stay-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	for _, args := range [][]string{
+		{"git", "init"},
+		{"git", "config", "commit.gpgsign", "false"},
+		{"git", "commit", "--allow-empty", "-m", "init"},
+	} {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("setup %v: %v\n%s", args, err, out)
+		}
+	}
+
+	mgr := agent.NewManager(dir, config.Resolve(nil, nil))
+	defer mgr.Shutdown()
+	mgr.SetPlanDrafter(nil) // disable real Sonnet subprocess
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.managers[dir] = mgr
+	app.activeRepo = dir
+	resolved := config.ResolvedSettings{
+		BypassPermissions: true,
+		AgentProgram:      "bash",
+		PlanFirstEnabled:  true,
+	}
+	app.resolvedCache[dir] = resolved
+
+	model, _ := app.Update(promptModalSubmitMsg{prompt: "write the feature", skipPlanning: false})
+	if p, ok := model.(*App); ok {
+		app = *p
+	} else {
+		app = model.(App)
+	}
+
+	if app.dashboard.panelFocus == focusPlanEditor {
+		t.Error("planning path should stay on dashboard, not open the plan editor")
+	}
+	sessions := mgr.ListSessions()
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session after planning path, got %d", len(sessions))
+	}
+	if app.focusCursorSection != focusSectionPlanning {
+		t.Errorf("cursor section: got %v, want focusSectionPlanning", app.focusCursorSection)
+	}
+	planning := app.dashboard.planningSessions()
+	if len(planning) == 0 {
+		t.Fatal("planning section is empty after submitPromptModal planning path")
+	}
+	if app.focusPlanningIdx >= len(planning) {
+		t.Fatalf("focusPlanningIdx %d out of range (len=%d)", app.focusPlanningIdx, len(planning))
+	}
+	if got := planning[app.focusPlanningIdx].session; got == nil || got.ID != sessions[0].ID {
+		t.Errorf("cursor does not point at new session: got %v", got)
+	}
+}
+
+// TestPlannerQuestionMsg_AutoOpensPlanEditor verifies that a plannerQuestionMsg
+// for a session with no open plan editor causes the editor to open automatically
+// and routes the question — rather than silently skipping it.
+func TestPlannerQuestionMsg_AutoOpensPlanEditor(t *testing.T) {
+	dir, err := os.MkdirTemp("", "baton-planner-question-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	for _, args := range [][]string{
+		{"git", "init"},
+		{"git", "config", "commit.gpgsign", "false"},
+		{"git", "commit", "--allow-empty", "-m", "init"},
+	} {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("setup %v: %v\n%s", args, err, out)
+		}
+	}
+
+	mgr := agent.NewManager(dir, config.Resolve(nil, nil))
+	defer mgr.Shutdown()
+	mgr.SetPlanDrafter(nil)
+
+	cfg := agent.Config{Rows: 24, Cols: 80, AgentProgram: "bash"}
+	sess, err := mgr.CreateSessionForPlanning(cfg)
+	if err != nil {
+		t.Fatalf("CreateSessionForPlanning: %v", err)
+	}
+	sess.SetLifecyclePhase(agent.LifecycleDrafting)
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.managers[dir] = mgr
+	app.activeRepo = dir
+	app.resolvedCache[dir] = config.ResolvedSettings{AgentProgram: "bash"}
+	// Confirm no editor is open.
+	if app.planEditor != nil {
+		t.Fatal("precondition: planEditor should be nil")
+	}
+
+	answerCh := make(chan string, 1)
+	msg := plannerQuestionMsg{
+		question: agent.PlannerQuestion{
+			SessionID: sess.ID,
+			Question:  "What is the deadline?",
+			AnswerCh:  answerCh,
+		},
+		repoPath: dir,
+	}
+	model, _ := app.Update(msg)
+	if p, ok := model.(*App); ok {
+		app = *p
+	} else {
+		app = model.(App)
+	}
+
+	if app.planEditor == nil {
+		t.Fatal("expected plan editor to open automatically on plannerQuestionMsg")
+	}
+	if app.planEditor.sess == nil || app.planEditor.sess.ID != sess.ID {
+		t.Errorf("editor opened for wrong session: got %v", app.planEditor.sess)
+	}
+	if app.dashboard.panelFocus != focusPlanEditor {
+		t.Errorf("expected panelFocus=focusPlanEditor, got %v", app.dashboard.panelFocus)
+	}
+	if !app.planEditor.HasPendingQuestion() {
+		t.Error("expected editor to have a pending question after plannerQuestionMsg")
+	}
+}
+
 func TestSubmitPromptModalRoutesToActiveRepo(t *testing.T) {
 	initRepo := func(t *testing.T) string {
 		t.Helper()

@@ -633,11 +633,21 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case plannerQuestionMsg:
-		// Route to the matching plan editor if it's open on this session.
-		// Otherwise auto-skip with an empty answer so the planner subprocess
-		// doesn't hang waiting on a UI that isn't visible. This can only
-		// happen if the user closed the editor mid-draft; the planner will
-		// fall through to an unaided assumption rather than deadlocking.
+		// If the plan editor isn't open for this session, auto-open it now so
+		// the clarifying question is surfaced instead of silently skipped.
+		// This is the normal case when drafting runs in the background while
+		// the dashboard is focused.
+		if a.planEditor == nil || a.planEditor.sess == nil ||
+			a.planEditor.sess.ID != msg.question.SessionID {
+			if mgr := a.managers[msg.repoPath]; mgr != nil {
+				for _, s := range mgr.ListSessions() {
+					if s.ID == msg.question.SessionID {
+						a.openPlanEditor(s)
+						break
+					}
+				}
+			}
+		}
 		if a.planEditor != nil && a.planEditor.sess != nil &&
 			a.planEditor.sess.ID == msg.question.SessionID {
 			cmd := a.planEditor.AskQuestion(msg.question.Question, msg.question.AnswerCh)
@@ -646,6 +656,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return a, cmd
 		}
+		// Session not found — skip with empty answer rather than deadlocking.
 		select {
 		case msg.question.AnswerCh <- "":
 		default:
@@ -3059,8 +3070,6 @@ func (a *App) submitPromptModal(msg promptModalSubmitMsg) (tea.Model, tea.Cmd) {
 	sess.SetOriginalPrompt(prompt)
 	if err := mgr.StartDraft(sess.ID, prompt); err != nil {
 		a.setError("start draft: " + err.Error())
-		// Fall through and open the editor anyway so the user can edit by
-		// hand or abandon the session.
 	}
 	// sessionsCreatedCount is intentionally NOT incremented here. The user
 	// hasn't committed to this session yet — they could abandon it from the
@@ -3069,7 +3078,18 @@ func (a *App) submitPromptModal(msg promptModalSubmitMsg) (tea.Model, tea.Cmd) {
 	// createResultMsg with isNewSession=true), so each approved/skipped
 	// session is logged exactly once.
 	a.refreshAgentList()
-	a.openPlanEditor(sess)
+	// Stay on the dashboard while the draft runs in the background — the
+	// planning card shows the "drafting…" badge. The user can press
+	// enter/space on the card to open the editor when ready, or the editor
+	// auto-opens if the planner raises a clarifying question.
+	for idx, item := range a.dashboard.planningSessions() {
+		if item.session != nil && item.session.ID == sess.ID {
+			a.focusPlanningIdx = idx
+			a.focusCursorSection = focusSectionPlanning
+			a.syncFocusCursorToDashboard()
+			break
+		}
+	}
 	return a, nil
 }
 
