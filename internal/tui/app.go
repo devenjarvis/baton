@@ -3766,7 +3766,8 @@ func ensureGitignore(path string) {
 }
 
 // openURL opens the given URL in the system's default browser. Fire-and-forget.
-func openURL(url string) error {
+// Declared as a var so tests can swap in a no-op to avoid launching a real browser.
+var openURL = func(url string) error {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
