@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -15,6 +16,20 @@ import (
 	"github.com/devenjarvis/baton/internal/config"
 	"github.com/devenjarvis/baton/internal/github"
 )
+
+// blockingDrafter is a test PlanDrafter that blocks until its channel is
+// closed. Used to hold a session in LifecycleDrafting during assertions.
+type blockingDrafter struct{ block chan struct{} }
+
+func (b *blockingDrafter) Draft(_ context.Context, _ agent.DraftRequest) (string, error) {
+	<-b.block
+	return "", errors.New("test: blocking drafter released")
+}
+
+func (b *blockingDrafter) Revise(_ context.Context, _ agent.ReviseRequest) (string, error) {
+	<-b.block
+	return "", errors.New("test: blocking drafter released")
+}
 
 func requireClaude(t *testing.T) {
 	t.Helper()
@@ -2658,9 +2673,16 @@ func TestSubmitPromptModal_PlanningPath_StaysDashboard(t *testing.T) {
 		}
 	}
 
+	// Block the drafter so the session stays in LifecycleDrafting during
+	// assertions — otherwise the goroutine may complete and transition back
+	// to LifecyclePlanning before the checks run. Register Shutdown first
+	// so that LIFO defer ordering runs close(block) before Shutdown waits
+	// for the drafter goroutine (prevents deadlock).
 	mgr := agent.NewManager(dir, config.Resolve(nil, nil))
 	defer mgr.Shutdown()
-	mgr.SetPlanDrafter(nil) // disable real Sonnet subprocess
+	block := make(chan struct{})
+	defer close(block)
+	mgr.SetPlanDrafter(&blockingDrafter{block: block})
 
 	app := NewApp()
 	app.width = 120
@@ -2689,6 +2711,10 @@ func TestSubmitPromptModal_PlanningPath_StaysDashboard(t *testing.T) {
 	sessions := mgr.ListSessions()
 	if len(sessions) != 1 {
 		t.Fatalf("expected 1 session after planning path, got %d", len(sessions))
+	}
+	// StartDraft sets LifecycleDrafting synchronously before the goroutine runs.
+	if sessions[0].LifecyclePhase() != agent.LifecycleDrafting {
+		t.Errorf("session phase: got %v, want LifecycleDrafting", sessions[0].LifecyclePhase())
 	}
 	if app.focusCursorSection != focusSectionPlanning {
 		t.Errorf("cursor section: got %v, want focusSectionPlanning", app.focusCursorSection)
@@ -2777,6 +2803,56 @@ func TestPlannerQuestionMsg_AutoOpensPlanEditor(t *testing.T) {
 	}
 	if !app.planEditor.HasPendingQuestion() {
 		t.Error("expected editor to have a pending question after plannerQuestionMsg")
+	}
+}
+
+// TestPlannerQuestionMsg_DoesNotReplaceOpenEditor verifies that a question for
+// session B does not overwrite session A's focused editor. When session A's
+// editor is visible (panelFocus == focusPlanEditor), the handler must fall
+// through to the empty-answer skip rather than discarding unsaved edits.
+func TestPlannerQuestionMsg_DoesNotReplaceOpenEditor(t *testing.T) {
+	sessA := agent.NewSessionForTest("a", "sess-a")
+	sessB := agent.NewSessionForTest("b", "sess-b")
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+
+	editorA := newPlanEditor(sessA, 120, 39)
+	app.planEditor = &editorA
+	app.dashboard.panelFocus = focusPlanEditor
+
+	answerCh := make(chan string, 1)
+	msg := plannerQuestionMsg{
+		question: agent.PlannerQuestion{
+			SessionID: sessB.ID,
+			Question:  "When is the deadline?",
+			AnswerCh:  answerCh,
+		},
+		repoPath: "/fake",
+	}
+	model, _ := app.Update(msg)
+	if p, ok := model.(*App); ok {
+		app = *p
+	} else {
+		app = model.(App)
+	}
+
+	if app.planEditor == nil || app.planEditor.sess != sessA {
+		t.Error("session A's editor should remain open; got replaced or nil")
+	}
+	if app.dashboard.panelFocus != focusPlanEditor {
+		t.Errorf("panelFocus changed: got %v, want focusPlanEditor", app.dashboard.panelFocus)
+	}
+	select {
+	case answer := <-answerCh:
+		if answer != "" {
+			t.Errorf("expected empty skip answer, got %q", answer)
+		}
+	default:
+		t.Error("expected empty answer to be sent on answerCh (planner must not deadlock)")
 	}
 }
 

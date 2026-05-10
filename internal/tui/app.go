@@ -633,17 +633,21 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case plannerQuestionMsg:
-		// If the plan editor isn't open for this session, auto-open it now so
-		// the clarifying question is surfaced instead of silently skipped.
-		// This is the normal case when drafting runs in the background while
-		// the dashboard is focused.
+		// If the plan editor isn't open for this session, auto-open it — but
+		// only when the editor panel is not already visible. If session A's
+		// editor is focused (panelFocus == focusPlanEditor) and a question
+		// arrives for session B, opening session B's editor would silently
+		// discard session A's unsaved textarea edits. In that case fall through
+		// to the empty-answer skip below.
 		if a.planEditor == nil || a.planEditor.sess == nil ||
 			a.planEditor.sess.ID != msg.question.SessionID {
-			if mgr := a.managers[msg.repoPath]; mgr != nil {
-				for _, s := range mgr.ListSessions() {
-					if s.ID == msg.question.SessionID {
-						a.openPlanEditor(s)
-						break
+			if a.dashboard.panelFocus != focusPlanEditor {
+				if mgr := a.managers[msg.repoPath]; mgr != nil {
+					for _, s := range mgr.ListSessions() {
+						if s.ID == msg.question.SessionID {
+							a.openPlanEditor(s)
+							break
+						}
 					}
 				}
 			}
@@ -656,7 +660,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return a, cmd
 		}
-		// Session not found — skip with empty answer rather than deadlocking.
+		// No matching editor (session not found or different editor focused) —
+		// skip with empty answer rather than deadlocking the planner.
 		select {
 		case msg.question.AnswerCh <- "":
 		default:
@@ -3070,6 +3075,9 @@ func (a *App) submitPromptModal(msg promptModalSubmitMsg) (tea.Model, tea.Cmd) {
 	sess.SetOriginalPrompt(prompt)
 	if err := mgr.StartDraft(sess.ID, prompt); err != nil {
 		a.setError("start draft: " + err.Error())
+		// No fallback to openPlanEditor on error — the session stays on the
+		// dashboard in the planning card; the user can press enter to open the
+		// editor and edit or abandon the plan by hand.
 	}
 	// sessionsCreatedCount is intentionally NOT incremented here. The user
 	// hasn't committed to this session yet — they could abandon it from the
