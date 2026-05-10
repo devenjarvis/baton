@@ -800,7 +800,7 @@ func buildingProgressBadge(todos []agent.TodoItem, activeCount int) string {
 // active task's activeForm and line2 shows the next pending task. Otherwise
 // the text is word-wrapped into two lines by wrapTwoLines.
 func focusTaskDescription(sess *agent.Session, budget int) (line1, line2 string, pending bool) {
-	if sess.LifecyclePhase() == agent.LifecycleInProgress {
+	if sess.LifecyclePhase() == agent.LifecycleInProgress && !sess.IsReviewable() {
 		if ag := sess.PrimaryAgent(); ag != nil {
 			todos := ag.Todos()
 			if len(todos) > 0 {

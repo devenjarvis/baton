@@ -359,6 +359,31 @@ func TestFocusTaskDescription_WithoutTodos(t *testing.T) {
 	}
 }
 
+// TestFocusTaskDescription_ReviewableFallsThrough verifies that stale todos
+// do not surface on lines 2-3 when the session IsReviewable (all agents Idle).
+// The badge on line 1 already shows "✓ idle — press m to review" in that state,
+// so todo lines would be contradictory.
+func TestFocusTaskDescription_ReviewableFallsThrough(t *testing.T) {
+	sess := agent.NewSessionForTest("s", "my-session")
+	sess.SetLifecyclePhase(agent.LifecycleInProgress)
+	sess.SetTaskSummary("implement oauth flow")
+	// Agent is Idle → IsReviewable() == true.
+	ag := sess.AddTestAgent("a-1", false, agent.StatusIdle)
+	ag.SetTodos([]agent.TodoItem{
+		{Content: "stale task", Status: "in_progress", ActiveForm: "Stale active work"},
+	})
+
+	line1, line2, _ := focusTaskDescription(sess, 80)
+	// Must NOT show the in_progress todo text.
+	if strings.Contains(line1, "Stale active work") || strings.Contains(line2, "Stale active work") {
+		t.Errorf("expected todo description suppressed for reviewable session, got line1=%q line2=%q", line1, line2)
+	}
+	// Should fall back to the task summary.
+	if !strings.Contains(line1, "implement oauth flow") {
+		t.Errorf("expected task summary fallback when reviewable, got %q", line1)
+	}
+}
+
 // TestRenderQueueRow_RepoPrefix verifies the same cross-repo disambiguation
 // for the REVIEWING / SHIPPING sections. renderQueueRow has independent
 // rendering from renderFocusSessionCard, so it needs its own coverage to

@@ -424,12 +424,12 @@ func (a *Agent) writeLoop() {
 }
 
 // OnHookEvent applies a Claude Code hook event to the agent's state.
-// Returns true if the agent's status changed as a result (so the manager
-// can emit EventStatusChanged).
+// Returns true if any display-relevant state changed (status or todos), so
+// the manager can emit EventStatusChanged to trigger a TUI repaint.
 //
 // Status transitions driven here replace the old statusLoop heuristic —
 // Claude's SessionStart/Stop/SessionEnd events are the authoritative signal.
-func (a *Agent) OnHookEvent(e hook.Event) (statusChanged bool) {
+func (a *Agent) OnHookEvent(e hook.Event) (changed bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
