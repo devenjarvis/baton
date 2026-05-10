@@ -79,7 +79,13 @@ func wrapPlain(line string, width int) []string {
 				}
 			}
 			if !atEnd {
-				// Append the whitespace if it fits; otherwise wrap.
+				// Append the whitespace if it fits; otherwise wrap. Tabs are
+				// treated as 1 column here — terminals expand them to the next
+				// tab stop, but `ansi.StringWidth("\t")` reports 0, which would
+				// make the guard a no-op for tabs. Plan markdown is overwhelmingly
+				// space-indented; for tabbed prose the wrap will run wider than a
+				// terminal's rendered width by up to 7 cells per tab. Acceptable
+				// trade-off for the corpus we serve.
 				wsWidth := 1
 				if curWidth+wsWidth > width {
 					trimmed := strings.TrimRight(cur.String(), " \t")

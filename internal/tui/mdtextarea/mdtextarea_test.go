@@ -184,6 +184,41 @@ func TestView_FocusedCursorSplice(t *testing.T) {
 	}
 }
 
+// TestView_FocusedCursorOnWrappedLine pins the wrap-algorithm-alignment
+// contract surfaced in PR #156 review: when a source line is long enough to
+// soft-wrap, the cursor splice still lands on a single display row and that
+// row is not the first wrap segment when the cursor is past the wrap break.
+// If bubbles' internal wrap and mdrender's `wrapPlain` ever diverge on row
+// count for this fixture, the assertion that the splice lands beyond row 0
+// is what catches it.
+func TestView_FocusedCursorOnWrappedLine(t *testing.T) {
+	const long = "this is a long line that will need to wrap when the textarea is narrow"
+	m := configureForPlanEditor(t, long, 20, 6)
+	m.Focus()
+	m.SetMarkdownRenderer(mdrender.New("monokai"))
+	// Move cursor near the end of the source line — past where any reasonable
+	// 20-column wrap would have broken. Use SetCursorColumn so we don't
+	// depend on internal column<->row mapping.
+	m.SetCursorColumn(len(long) - 5)
+
+	got := m.View()
+	rows := strings.Split(got, "\n")
+	cursorRowsCount := 0
+	cursorRowIdx := -1
+	for i, row := range rows {
+		if strings.Contains(row, "\x1b[7") || strings.Contains(row, ";7") || strings.Contains(row, "\x1b[7m") {
+			cursorRowsCount++
+			cursorRowIdx = i
+		}
+	}
+	if cursorRowsCount != 1 {
+		t.Errorf("expected cursor splice on exactly one row; saw %d (rows=%d)\noutput:\n%s", cursorRowsCount, len(rows), got)
+	}
+	if cursorRowIdx == 0 {
+		t.Errorf("cursor near end of long source line landed on row 0; expected a later wrap row.\noutput:\n%s", got)
+	}
+}
+
 // TestView_FocusedCursorAtEndOfLine exercises the "cursor past end of line"
 // branch of spliceCursor — when the user is at column N of an N-char line,
 // we append a styled space cell so the cursor is visible.
