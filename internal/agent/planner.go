@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -10,6 +11,12 @@ import (
 	"strings"
 	"time"
 )
+
+// PlannerQuestionSocketEnv is the environment variable the planner Sonnet
+// subprocess inherits to point its MCP bridge at the right unix socket.
+// Exported so cmd/plannerquestion.go (and tests) can reference the same
+// name without hardcoding the string in two places.
+const PlannerQuestionSocketEnv = "BATON_PLANNER_QUESTION_SOCKET"
 
 const claudeSonnetModel = "claude-sonnet-4-6"
 
@@ -31,8 +38,14 @@ type PlanDrafter interface {
 }
 
 // DraftRequest is the input to PlanDrafter.Draft.
+//
+// QuestionSocket, when non-empty, points at a unix socket served by an
+// internal/planner.Server in the running baton process. The drafter wires
+// it into the Sonnet subprocess as an MCP server so the planner can pause
+// and call ask_user; an empty value disables the feature for this draft.
 type DraftRequest struct {
-	UserPrompt string
+	UserPrompt     string
+	QuestionSocket string
 }
 
 // ReviseRequest is the input to PlanDrafter.Revise.
@@ -47,7 +60,9 @@ type ReviseRequest struct {
 // would be a code-coupled change, not a silent drift.
 const planDraftPrompt = `You are helping a developer plan a coding task before they hand it to an AI coding agent. Your working directory is the developer's worktree root.
 
-You have a read-only toolset: Read, Grep, Glob, LS, LSP, WebFetch, WebSearch. Before writing the plan, USE THEM to ground your work in the real codebase — locate the files the task touches, scan the conventions in that area, and check related code or imports. A plan that names actual files, functions, and constraints is far more useful than one written from the prompt alone. You cannot write, edit, run shell commands, or call MCP servers; this is a research-then-draft pass, not an implementation.
+You have a read-only toolset: Read, Grep, Glob, LS, LSP, WebFetch, WebSearch. Before writing the plan, USE THEM to ground your work in the real codebase — locate the files the task touches, scan the conventions in that area, and check related code or imports. A plan that names actual files, functions, and constraints is far more useful than one written from the prompt alone. You cannot write, edit, or run shell commands; this is a research-then-draft pass, not an implementation.
+
+If the task description is genuinely ambiguous or missing information you can't infer from the codebase, you may call the ask_user tool with one focused clarifying question and wait for the developer's reply. Use it sparingly: prefer reading the code, and only ask when an unanswered ambiguity would force you to fabricate a load-bearing assumption. Never ask for trivia you could grep for.
 
 Once you've researched enough, produce a concise markdown plan with these sections, in order:
 
@@ -112,7 +127,7 @@ func (d *defaultPlanDrafter) Draft(ctx context.Context, req DraftRequest) (strin
 	if err != nil {
 		return "", fmt.Errorf("%w: %v", ErrClaudeNotFound, err)
 	}
-	return runClaudePlanner(ctx, claudePath, planDraftPrompt+prompt)
+	return runClaudePlanner(ctx, claudePath, planDraftPrompt+prompt, req.QuestionSocket)
 }
 
 func (d *defaultPlanDrafter) Revise(ctx context.Context, req ReviseRequest) (string, error) {
@@ -129,16 +144,35 @@ func (d *defaultPlanDrafter) Revise(ctx context.Context, req ReviseRequest) (str
 		return "", fmt.Errorf("%w: %v", ErrClaudeNotFound, err)
 	}
 	instruction := planRevisePrompt + current + "\n\nCRITIQUE:\n" + critique + "\n"
-	return runClaudePlanner(ctx, claudePath, instruction)
+	// Revise does not surface ask_user — the user is already iterating on a
+	// concrete plan with the editor's revise input, so an interactive prompt
+	// would just compete for attention. Pass an empty socket path.
+	return runClaudePlanner(ctx, claudePath, instruction, "")
 }
+
+// plannerQuestionMCPName is the MCP-server key under which the planner
+// `ask_user` bridge is registered. Claude prefixes tool names with the
+// server key (`mcp__<name>__<tool>`), so this constant determines the
+// concrete tool name that ends up on the --tools allowlist below.
+const plannerQuestionMCPName = "baton_planner_question"
+
+// plannerQuestionToolName is the fully-qualified tool name Claude exposes
+// for the ask_user bridge after MCP namespacing. Kept as a derived constant
+// so the allowlist string and the server name can't drift.
+const plannerQuestionToolName = "mcp__" + plannerQuestionMCPName + "__ask_user"
 
 // buildClaudePlannerArgs returns the argv (excluding the binary path) for a
 // one-shot planning subprocess. Mirrors buildClaudeHaikuArgs but uses Sonnet.
 // The drafter is given a read-only tool allowlist so it can research the
 // codebase (Read/Grep/Glob/LS/LSP) and pull external docs (WebFetch/WebSearch)
-// before producing the plan markdown. Writes, Bash, and MCP servers stay
-// blocked — the planner is a thinker, not an editor. Setting sources include
-// project so worktree-local CLAUDE.md guidance reaches the drafter.
+// before producing the plan markdown. Writes and Bash stay blocked — the
+// planner is a thinker, not an editor. Setting sources include project so
+// worktree-local CLAUDE.md guidance reaches the drafter.
+//
+// When questionSocket is non-empty, the argv is augmented to register the
+// `baton planner-question-server` MCP bridge so the planner can pause and
+// ask the user for clarification mid-draft. When empty (e.g. revise calls
+// or tests that don't care), the planner runs with zero MCP servers.
 //
 // Under --bare (API-key path) the harness skips LSP and CLAUDE.md
 // auto-discovery regardless of these flags; that's accepted as a known
@@ -150,31 +184,79 @@ func (d *defaultPlanDrafter) Revise(ctx context.Context, req ReviseRequest) (str
 // `mcpServers: Invalid input: expected record, received undefined`, which
 // makes every planner subprocess exit 1 and surfaces as
 // `claude planner: exit status 1`. Do not simplify this back to "{}".
-func buildClaudePlannerArgs() []string {
+func buildClaudePlannerArgs(questionSocket string) []string {
 	args := []string{"-p", "--model", claudeSonnetModel}
 	if os.Getenv("ANTHROPIC_API_KEY") != "" {
 		args = append(args, "--bare")
 	}
+
+	mcpConfig := plannerMCPConfigJSON(questionSocket)
+	tools := "Read,Grep,Glob,LS,LSP,WebFetch,WebSearch"
+	if questionSocket != "" {
+		tools += "," + plannerQuestionToolName
+	}
+
 	args = append(
 		args,
-		"--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`,
+		"--strict-mcp-config", "--mcp-config", mcpConfig,
 		"--disable-slash-commands",
 		"--no-session-persistence",
-		"--tools", "Read,Grep,Glob,LS,LSP,WebFetch,WebSearch",
+		"--tools", tools,
 		"--setting-sources", "user,project",
 		"--exclude-dynamic-system-prompt-sections",
 	)
 	return args
 }
 
+// plannerMCPConfigJSON renders the --mcp-config payload. With an empty
+// socket path it returns the canonical `{"mcpServers":{}}` shape required
+// by claude's strict validator. With a socket path it adds a single server
+// entry that re-execs the running baton binary as the question bridge; the
+// socket itself is passed via env on the parent so the child inherits it.
+func plannerMCPConfigJSON(questionSocket string) string {
+	if questionSocket == "" {
+		return `{"mcpServers":{}}`
+	}
+	bin, err := os.Executable()
+	if err != nil || bin == "" {
+		// Best effort: fall back to looking up `baton` on PATH. If that also
+		// fails, omit the server — better to plan without ask_user than to
+		// hand claude a config it can't spawn.
+		if p, lookErr := exec.LookPath("baton"); lookErr == nil {
+			bin = p
+		} else {
+			return `{"mcpServers":{}}`
+		}
+	}
+	payload := map[string]any{
+		"mcpServers": map[string]any{
+			plannerQuestionMCPName: map[string]any{
+				"command": bin,
+				"args":    []string{"planner-question-server"},
+			},
+		},
+	}
+	out, err := json.Marshal(payload)
+	if err != nil {
+		return `{"mcpServers":{}}`
+	}
+	return string(out)
+}
+
 // runClaudePlanner runs `claude -p --model claude-sonnet-4-6` with instruction
 // on stdin and returns the trimmed raw stdout (markdown). Strips baton's hook
 // env so the subprocess does not register against the running TUI's hook
-// socket as the parent agent.
-func runClaudePlanner(ctx context.Context, claudePath, instruction string) (string, error) {
-	cmd := exec.CommandContext(ctx, claudePath, buildClaudePlannerArgs()...)
+// socket as the parent agent. When questionSocket is non-empty, the
+// BATON_PLANNER_QUESTION_SOCKET env is added so the spawned MCP bridge
+// (registered via buildClaudePlannerArgs) can dial back into baton.
+func runClaudePlanner(ctx context.Context, claudePath, instruction, questionSocket string) (string, error) {
+	cmd := exec.CommandContext(ctx, claudePath, buildClaudePlannerArgs(questionSocket)...)
 	cmd.Stdin = strings.NewReader(instruction)
-	cmd.Env = sanitizedHaikuEnv(os.Environ())
+	env := sanitizedHaikuEnv(os.Environ())
+	if questionSocket != "" {
+		env = append(env, PlannerQuestionSocketEnv+"="+questionSocket)
+	}
+	cmd.Env = env
 	cmd.WaitDelay = 500 * time.Millisecond
 
 	var stdout, stderr bytes.Buffer

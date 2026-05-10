@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -228,7 +229,7 @@ func TestDefaultPlanDrafter_RevisePipesPlanAndCritique(t *testing.T) {
 
 func TestBuildClaudePlannerArgs_UsesSonnet(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "")
-	args := buildClaudePlannerArgs()
+	args := buildClaudePlannerArgs("")
 	if args[0] != "-p" {
 		t.Errorf("first arg = %q, want -p", args[0])
 	}
@@ -284,17 +285,100 @@ func TestBuildClaudePlannerArgs_UsesSonnet(t *testing.T) {
 	}
 }
 
+func TestBuildClaudePlannerArgs_WithQuestionSocketRegistersMCPServer(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	args := buildClaudePlannerArgs("/tmp/baton-q.sock")
+
+	mcpIdx := -1
+	for i, a := range args {
+		if a == "--mcp-config" {
+			mcpIdx = i
+			break
+		}
+	}
+	if mcpIdx < 0 || mcpIdx+1 >= len(args) {
+		t.Fatalf("argv missing --mcp-config value; got %v", args)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(args[mcpIdx+1]), &cfg); err != nil {
+		t.Fatalf("--mcp-config not JSON: %v", err)
+	}
+	servers, ok := cfg["mcpServers"].(map[string]any)
+	if !ok {
+		t.Fatalf("mcpServers missing or not an object: %v", cfg)
+	}
+	server, ok := servers[plannerQuestionMCPName].(map[string]any)
+	if !ok {
+		t.Fatalf("mcpServers.%s missing or wrong type: %v", plannerQuestionMCPName, servers)
+	}
+	if cmdStr, _ := server["command"].(string); cmdStr == "" {
+		t.Errorf("mcp server entry missing command: %v", server)
+	}
+	wantArgs := []any{"planner-question-server"}
+	gotArgs, _ := server["args"].([]any)
+	if !reflect.DeepEqual(gotArgs, wantArgs) {
+		t.Errorf("mcp server args = %v, want %v", gotArgs, wantArgs)
+	}
+
+	// The fully-qualified ask_user tool name must be on the --tools allowlist.
+	toolsIdx := -1
+	for i, a := range args {
+		if a == "--tools" {
+			toolsIdx = i
+			break
+		}
+	}
+	if toolsIdx < 0 || toolsIdx+1 >= len(args) {
+		t.Fatalf("argv missing --tools value")
+	}
+	if !strings.Contains(args[toolsIdx+1], plannerQuestionToolName) {
+		t.Errorf("--tools missing %q; got %q", plannerQuestionToolName, args[toolsIdx+1])
+	}
+}
+
+func TestBuildClaudePlannerArgs_EmptySocketKeepsZeroServers(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	args := buildClaudePlannerArgs("")
+	mcpIdx := -1
+	for i, a := range args {
+		if a == "--mcp-config" {
+			mcpIdx = i
+			break
+		}
+	}
+	if mcpIdx < 0 || mcpIdx+1 >= len(args) {
+		t.Fatalf("argv missing --mcp-config value; got %v", args)
+	}
+	if args[mcpIdx+1] != `{"mcpServers":{}}` {
+		t.Errorf("--mcp-config = %q, want canonical empty payload", args[mcpIdx+1])
+	}
+
+	toolsIdx := -1
+	for i, a := range args {
+		if a == "--tools" {
+			toolsIdx = i
+			break
+		}
+	}
+	if toolsIdx < 0 || toolsIdx+1 >= len(args) {
+		t.Fatalf("argv missing --tools value")
+	}
+	if strings.Contains(args[toolsIdx+1], "ask_user") {
+		t.Errorf("--tools should NOT include ask_user when socket is empty; got %q", args[toolsIdx+1])
+	}
+}
+
 func TestBuildClaudePlannerArgs_BareGatedByAPIKey(t *testing.T) {
 	t.Run("with API key", func(t *testing.T) {
 		t.Setenv("ANTHROPIC_API_KEY", "sk-test")
-		args := buildClaudePlannerArgs()
+		args := buildClaudePlannerArgs("")
 		if !contains(args, "--bare") {
 			t.Errorf("expected --bare with ANTHROPIC_API_KEY set; got %v", args)
 		}
 	})
 	t.Run("without API key", func(t *testing.T) {
 		t.Setenv("ANTHROPIC_API_KEY", "")
-		args := buildClaudePlannerArgs()
+		args := buildClaudePlannerArgs("")
 		if contains(args, "--bare") {
 			t.Errorf("did not expect --bare without ANTHROPIC_API_KEY; got %v", args)
 		}

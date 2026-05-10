@@ -16,6 +16,7 @@ import (
 	"github.com/devenjarvis/baton/internal/config"
 	"github.com/devenjarvis/baton/internal/git"
 	"github.com/devenjarvis/baton/internal/hook"
+	"github.com/devenjarvis/baton/internal/planner"
 	"github.com/devenjarvis/baton/internal/setlist"
 	"github.com/devenjarvis/baton/internal/songs"
 	"github.com/devenjarvis/baton/internal/state"
@@ -75,6 +76,21 @@ type Manager struct {
 	branchNamer    BranchNamer
 	taskSummarizer TaskSummarizer
 	planDrafter    PlanDrafter
+
+	// plannerQuestions aggregates ask_user calls from every in-flight draft's
+	// per-session question server. The TUI App reads from PlannerQuestions()
+	// and routes each event to the matching plan editor by SessionID.
+	plannerQuestions chan PlannerQuestion
+}
+
+// PlannerQuestion is a clarifying question raised by the planner Sonnet
+// subprocess for SessionID. The receiver MUST eventually send a single
+// answer (possibly empty) on AnswerCh; failing to do so leaves the planner
+// subprocess parked on the IPC connection until the manager cancels it.
+type PlannerQuestion struct {
+	SessionID string
+	Question  string
+	AnswerCh  chan<- string
 }
 
 // haikuNamePerAttemptTimeout bounds how long a single Haiku summarization
@@ -124,15 +140,16 @@ var (
 // out of Active.
 func NewManager(repoPath string, settings config.ResolvedSettings) *Manager {
 	m := &Manager{
-		repoPath:       repoPath,
-		settings:       settings,
-		sessions:       make(map[string]*Session),
-		pendingNames:   make(map[string]struct{}),
-		events:         make(chan Event, 64),
-		done:           make(chan struct{}),
-		branchNamer:    DefaultBranchNamer(),
-		taskSummarizer: DefaultTaskSummarizer(),
-		planDrafter:    DefaultPlanDrafter(),
+		repoPath:         repoPath,
+		settings:         settings,
+		sessions:         make(map[string]*Session),
+		pendingNames:     make(map[string]struct{}),
+		events:           make(chan Event, 64),
+		done:             make(chan struct{}),
+		branchNamer:      DefaultBranchNamer(),
+		taskSummarizer:   DefaultTaskSummarizer(),
+		planDrafter:      DefaultPlanDrafter(),
+		plannerQuestions: make(chan PlannerQuestion, 8),
 	}
 
 	batonDir := filepath.Join(repoPath, ".baton")
@@ -467,6 +484,13 @@ var ErrDraftInFlight = errors.New("draft already in flight for session")
 // manager has no plan drafter (e.g. a test set it to nil to disable).
 var ErrPlanDrafterNotConfigured = errors.New("plan drafter not configured")
 
+// PlannerQuestions returns a channel that emits one PlannerQuestion per
+// `ask_user` tool call raised by any in-flight draft. The channel stays
+// open across the manager's lifetime and is closed by Shutdown / Detach.
+// The TUI subscribes once at startup and routes each event to the matching
+// plan editor.
+func (m *Manager) PlannerQuestions() <-chan PlannerQuestion { return m.plannerQuestions }
+
 // StartDraft begins async drafting of a plan for sessionID with the given
 // user prompt. Transitions the session to LifecycleDrafting, then spawns a
 // goroutine that calls PlanDrafter.Draft, writes the result via
@@ -477,6 +501,14 @@ var ErrPlanDrafterNotConfigured = errors.New("plan drafter not configured")
 // called directly. Drafting subprocesses are NOT counted against
 // MaxConcurrentAgents — they are transient text-generation calls, not
 // long-lived agents.
+//
+// StartDraft also spawns a per-session planner.Server bound to a unix socket
+// under .baton/ so the planner Sonnet subprocess can call ask_user back into
+// baton. The server is created BEFORE the drafter runs and torn down by
+// runDraft after the subprocess exits, so a partially-started draft never
+// leaks a listener. If the server fails to bind (rare — typically the macOS
+// 104-byte sun_path limit), drafting still proceeds with ask_user disabled
+// rather than failing the whole flow.
 func (m *Manager) StartDraft(sessionID, prompt string) error {
 	m.mu.RLock()
 	sess := m.sessions[sessionID]
@@ -508,9 +540,64 @@ func (m *Manager) StartDraft(sessionID, prompt string) error {
 	sess.SetDraftError(nil)
 	m.emit(Event{Type: EventStatusChanged, SessionID: sessionID})
 
+	qServer, qSocket := m.startPlannerQuestionServer(sess.ID)
+
 	m.watchers.Add(1)
-	go m.runDraft(ctx, sess, drafter, prompt)
+	go m.runDraft(ctx, sess, drafter, prompt, qServer, qSocket)
 	return nil
+}
+
+// startPlannerQuestionServer brings up a fresh planner.Server for sessionID
+// and pumps its events onto m.plannerQuestions tagged with the session ID.
+// Returns (nil, "") if binding the socket fails; callers must accept that
+// the resulting draft will run without ask_user.
+func (m *Manager) startPlannerQuestionServer(sessionID string) (*planner.Server, string) {
+	socketPath := plannerQuestionSocketPath(m.repoPath, sessionID)
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
+		return nil, ""
+	}
+	srv, err := planner.NewServer(socketPath)
+	if err != nil {
+		return nil, ""
+	}
+	m.watchers.Add(1)
+	go m.pumpPlannerQuestions(srv, sessionID)
+	return srv, srv.SocketPath()
+}
+
+// pumpPlannerQuestions forwards PlannerQuestionEvent values from a
+// per-session planner.Server onto the manager-level aggregate channel,
+// tagging each one with sessionID. Exits when the server's Events channel
+// closes (Server.Close has run).
+func (m *Manager) pumpPlannerQuestions(srv *planner.Server, sessionID string) {
+	defer m.watchers.Done()
+	for ev := range srv.Events() {
+		select {
+		case m.plannerQuestions <- PlannerQuestion{
+			SessionID: sessionID,
+			Question:  ev.Question,
+			AnswerCh:  ev.AnswerCh,
+		}:
+		case <-m.done:
+			// Manager shutting down — answer empty so the planner subprocess
+			// unblocks rather than holding the connection until ctx fires.
+			ev.AnswerCh <- ""
+			return
+		}
+	}
+}
+
+// plannerQuestionSocketPath returns the unix socket path for a per-session
+// planner question server. Mirrors hookSocketPath: prefer .baton/ for
+// observability, fall back to a hashed name in os.TempDir when the path
+// would exceed the macOS 104-byte sun_path limit.
+func plannerQuestionSocketPath(repoPath, sessionID string) string {
+	preferred := filepath.Join(repoPath, ".baton", "planner-q-"+sessionID+".sock")
+	if len(preferred) < 100 {
+		return preferred
+	}
+	h := sha256.Sum256([]byte(repoPath + "|" + sessionID))
+	return filepath.Join(os.TempDir(), fmt.Sprintf("baton-pq-%x.sock", h[:8]))
 }
 
 // runDraft executes a Draft call against drafter and writes the resulting
@@ -520,9 +607,18 @@ func (m *Manager) StartDraft(sessionID, prompt string) error {
 // the user can then retry via the editor's revise flow or by pressing
 // `n` again. Always emits EventStatusChanged on transition so the UI
 // repaints.
-func (m *Manager) runDraft(ctx context.Context, sess *Session, drafter PlanDrafter, prompt string) {
+//
+// qServer is the per-draft planner.Server (may be nil if startup failed);
+// it is closed after the drafter returns so a wedged ask_user handler
+// drains promptly.
+func (m *Manager) runDraft(ctx context.Context, sess *Session, drafter PlanDrafter, prompt string, qServer *planner.Server, qSocket string) {
 	defer m.watchers.Done()
 	defer sess.finishDraft()
+	defer func() {
+		if qServer != nil {
+			_ = qServer.Close()
+		}
+	}()
 
 	// Cancel the drafting subprocess if the manager shuts down mid-call.
 	doneCh := make(chan struct{})
@@ -535,7 +631,7 @@ func (m *Manager) runDraft(ctx context.Context, sess *Session, drafter PlanDraft
 		}
 	}()
 
-	body, err := drafter.Draft(ctx, DraftRequest{UserPrompt: prompt})
+	body, err := drafter.Draft(ctx, DraftRequest{UserPrompt: prompt, QuestionSocket: qSocket})
 
 	// If the session has already been removed from the manager (e.g. by a
 	// completed KillSession), skip the post-draft writes — there is nothing
@@ -1335,6 +1431,7 @@ func (m *Manager) Shutdown() {
 	m.mu.Unlock()
 
 	close(m.events)
+	close(m.plannerQuestions)
 }
 
 // stopHookServer closes the hook server and waits for the dispatcher goroutine.
@@ -1430,6 +1527,7 @@ func (m *Manager) Detach() *state.BatonState {
 	m.mu.Unlock()
 
 	close(m.events)
+	close(m.plannerQuestions)
 
 	if len(sessionStates) == 0 {
 		return nil
