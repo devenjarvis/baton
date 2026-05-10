@@ -356,6 +356,29 @@ func (c *Client) GetReviews(ctx context.Context, owner, repo string, number int)
 	return status, nil
 }
 
+// CreatePR opens a new pull request on GitHub. head is the branch to merge,
+// base is the target branch. If draft is true the PR is created as a draft.
+// Returns the newly created PRState on success.
+func (c *Client) CreatePR(ctx context.Context, owner, repo, head, base, title, body string, draft bool) (*PRState, error) {
+	var pr *gh.PullRequest
+	err := c.doWithRetry(ctx, func() (*gh.Response, error) {
+		var resp *gh.Response
+		var err error
+		pr, resp, err = c.gh.PullRequests.Create(ctx, owner, repo, &gh.NewPullRequest{
+			Title: gh.Ptr(title),
+			Body:  gh.Ptr(body),
+			Head:  gh.Ptr(head),
+			Base:  gh.Ptr(base),
+			Draft: gh.Ptr(draft),
+		})
+		return resp, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("creating PR: %w", err)
+	}
+	return prToState(pr), nil
+}
+
 // prToState converts a GitHub API PullRequest to our PRState type.
 func prToState(pr *gh.PullRequest) *PRState {
 	state := pr.GetState()

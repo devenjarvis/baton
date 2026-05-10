@@ -278,6 +278,45 @@ func TestGetPRBySHA_AllClosedReturnsNil(t *testing.T) {
 	}
 }
 
+func TestCreatePR_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/repos/o/r/pulls" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = fmt.Fprintln(w, `{"number":42,"title":"my title","html_url":"https://github.com/o/r/pull/42","state":"open","draft":true,"head":{"ref":"feat","repo":{"full_name":"o/r"}},"base":{"ref":"main"}}`)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	pr, err := c.CreatePR(context.Background(), "o", "r", "feat", "main", "my title", "my body", true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if pr == nil || pr.Number != 42 {
+		t.Fatalf("expected PR #42, got %+v", pr)
+	}
+	if pr.Title != "my title" {
+		t.Fatalf("expected title 'my title', got %q", pr.Title)
+	}
+	if !pr.Draft {
+		t.Fatal("expected draft=true")
+	}
+}
+
+func TestCreatePR_422ReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"message":"Validation Failed"}`, http.StatusUnprocessableEntity)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	_, err := c.CreatePR(context.Background(), "o", "r", "feat", "main", "t", "b", false)
+	if err == nil {
+		t.Fatal("expected error for 422, got nil")
+	}
+}
+
 func TestGetChecks_RetryThenSuccess(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
