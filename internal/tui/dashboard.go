@@ -539,7 +539,7 @@ func (d dashboardModel) sessionFocusStripeColor(sess *agent.Session) lipgloss.Co
 // Line 2: <stripe>   <description line 1 (muted; italic if pending)>
 // Line 3: <stripe>   <description line 2 or empty>  (always reserved)
 // Line 4: <stripe>   <branch [· detail]>        ... right-aligned <elapsed>
-func (d dashboardModel) renderFocusSessionCard(sess *agent.Session, selected bool, width int) []string {
+func (d dashboardModel) renderFocusSessionCard(sess *agent.Session, repoName string, selected bool, width int) []string {
 	stripeColor := d.sessionFocusStripeColor(sess)
 	if selected {
 		stripeColor = ColorSecondary
@@ -548,14 +548,18 @@ func (d dashboardModel) renderFocusSessionCard(sess *agent.Session, selected boo
 	const indent = "   "
 	const stripeIndentWidth = 4 // stripe (1) + 3 spaces
 
-	// --- Line 1: stripe + name, right-aligned status badge ---
-	// A "> " prefix on the name marks the selected card unambiguously even
-	// when stdout strips ANSI (e2e screenshots, terminal recordings).
-	name := sess.GetDisplayName()
-	if selected {
-		name = "> " + name
+	// --- Line 1: stripe + repo prefix + name, right-aligned status badge ---
+	// A "> " prefix marks the selected card unambiguously even when stdout
+	// strips ANSI (e2e screenshots, terminal recordings). The "> " stays
+	// leftmost so the muted repo prefix never gets between the cursor and the
+	// stripe.
+	nameStyled := lipgloss.NewStyle().Foreground(ColorText).Bold(true).Render(sess.GetDisplayName())
+	if repoName != "" {
+		nameStyled = StyleSubtle.Render(repoName+" › ") + nameStyled
 	}
-	nameStyled := lipgloss.NewStyle().Foreground(ColorText).Bold(true).Render(name)
+	if selected {
+		nameStyled = "> " + nameStyled
+	}
 	// Planning + Drafting phases get a dedicated badge + description because
 	// they have no agent yet — the regular sessionFocusStatus path is keyed
 	// off agent.Status and would render "0 active, 0 idle" for these rows.
@@ -1366,7 +1370,7 @@ func (d dashboardModel) renderFullscreenFocus(width, height int) string {
 		lines = append(lines, StyleSubtle.Render("PLANNING"))
 		for i, item := range planningItems {
 			selected := d.focusCursorSection == focusSectionPlanning && i == d.focusPlanningIdx
-			card := d.renderFocusSessionCard(item.session, selected, width)
+			card := d.renderFocusSessionCard(item.session, item.repoName, selected, width)
 			lines = append(lines, card...)
 			if i < len(planningItems)-1 {
 				lines = append(lines, "")
@@ -1380,7 +1384,7 @@ func (d dashboardModel) renderFullscreenFocus(width, height int) string {
 		lines = append(lines, StyleSubtle.Render("BUILDING"))
 		for i, item := range buildingItems {
 			selected := d.focusCursorSection == focusSectionBuilding && i == d.focusBuildingIdx
-			card := d.renderFocusSessionCard(item.session, selected, width)
+			card := d.renderFocusSessionCard(item.session, item.repoName, selected, width)
 			lines = append(lines, card...)
 			if i < len(buildingItems)-1 {
 				lines = append(lines, "")
@@ -1394,7 +1398,7 @@ func (d dashboardModel) renderFullscreenFocus(width, height int) string {
 		lines = append(lines, StyleSubtle.Render("REVIEWING"))
 		for i, item := range reviewSessions {
 			selected := d.focusCursorSection == focusSectionReview && i == d.focusReviewIdx
-			row := d.renderQueueRow(item.session, selected, ColorWarning, width)
+			row := d.renderQueueRow(item.session, item.repoName, selected, ColorWarning, width)
 			lines = append(lines, row...)
 			if i < len(reviewSessions)-1 {
 				lines = append(lines, "")
@@ -1408,7 +1412,7 @@ func (d dashboardModel) renderFullscreenFocus(width, height int) string {
 		lines = append(lines, StyleSubtle.Render("SHIPPING"))
 		for i, item := range shippingItems {
 			selected := d.focusCursorSection == focusSectionShipping && i == d.focusShippingIdx
-			row := d.renderQueueRow(item.session, selected, lipgloss.Color("#5ab58a"), width)
+			row := d.renderQueueRow(item.session, item.repoName, selected, lipgloss.Color("#5ab58a"), width)
 			lines = append(lines, row...)
 			if i < len(shippingItems)-1 {
 				lines = append(lines, "")
@@ -1424,7 +1428,7 @@ func (d dashboardModel) renderFullscreenFocus(width, height int) string {
 // accent for the cursor stripe and prefix when selected (warning for review,
 // success for shipping). Used by both the REVIEWING and SHIPPING sections so
 // they share layout/age/prIndicator handling.
-func (d dashboardModel) renderQueueRow(sess *agent.Session, selected bool, selectedColor lipgloss.Color, width int) []string {
+func (d dashboardModel) renderQueueRow(sess *agent.Session, repoName string, selected bool, selectedColor lipgloss.Color, width int) []string {
 	name := sess.GetDisplayName()
 	age := ""
 	if !sess.DoneAt().IsZero() {
@@ -1443,6 +1447,9 @@ func (d dashboardModel) renderQueueRow(sess *agent.Session, selected bool, selec
 	}
 
 	nameRendered := cardStyle.Render(name)
+	if repoName != "" {
+		nameRendered = StyleSubtle.Render(repoName+" › ") + nameRendered
+	}
 	// The (reviewing) tag distinguishes InReview rows in the merged Reviewing
 	// section so the user can tell which session is open in the panel.
 	if sess.LifecyclePhase() == agent.LifecycleInReview {
