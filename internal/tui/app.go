@@ -1419,6 +1419,32 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.reviewTaskCursor--
 				}
 				return a, nil
+			case "enter", "space":
+				// Drill into the selected task's diff. Opens the diff browser
+				// filtered to the commits for that task; esc returns to the
+				// task list (handled by diffCloseMsg).
+				entry := a.reviewDiffCache[a.reviewSession.ID]
+				if entry == nil || len(entry.groups) == 0 {
+					return a, nil
+				}
+				group := reviewTaskGroupAtCursor(entry, a.reviewTaskCursor)
+				if group == nil || group.rawDiff == "" {
+					return a, nil
+				}
+				m, err := diffmodel.Parse(group.rawDiff)
+				if err != nil {
+					a.setError(err.Error())
+					return a, nil
+				}
+				taskLabel := a.reviewSession.GetDisplayName()
+				if group.taskIndex > 0 {
+					taskLabel += fmt.Sprintf(" · task %d", group.taskIndex)
+				} else {
+					taskLabel += " · other changes"
+				}
+				a.view = ViewDiff
+				a.diff = newDiffModel(taskLabel, m, a.width, a.height-1)
+				return a, nil
 			}
 			// All other keys are no-ops in review panel.
 			return a, nil
@@ -3448,6 +3474,35 @@ func (a *App) repoPathForSession(sessionID string) string {
 		}
 	}
 	return ""
+}
+
+// reviewTaskGroupAtCursor returns the taskReviewGroup at position cursor in the
+// review task list, following the same row ordering as renderTaskList: plan
+// tasks in index order, then the "Other changes" group (taskIndex == 0) last.
+// Returns nil if cursor is out of range or no groups exist.
+func reviewTaskGroupAtCursor(entry *reviewDiffEntry, cursor int) *taskReviewGroup {
+	if entry == nil {
+		return nil
+	}
+	groupByIdx := make(map[int]*taskReviewGroup, len(entry.groups))
+	for i := range entry.groups {
+		g := &entry.groups[i]
+		groupByIdx[g.taskIndex] = g
+	}
+	row := 0
+	for _, t := range entry.tasks {
+		if row == cursor {
+			return groupByIdx[t.Index]
+		}
+		row++
+	}
+	// Check "Other changes" row.
+	if g, ok := groupByIdx[0]; ok {
+		if row == cursor {
+			return g
+		}
+	}
+	return nil
 }
 
 // reviewTaskCount returns the number of task rows in a review entry (plan tasks
