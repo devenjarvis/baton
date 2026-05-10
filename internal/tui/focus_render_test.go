@@ -13,7 +13,9 @@ import (
 // TestRenderFocusActiveCursor verifies that the selected session card in focus
 // mode is visually distinct: the leading stripe glyph is rendered in
 // ColorSecondary (cyan) for the selected session and a different color for
-// unselected sessions. Selection is no longer signalled by a "> " chevron.
+// unselected sessions. The "> " chevron is also present on the selected row
+// (an ANSI-stripped fallback signal for screenshots / terminal recordings),
+// but the cyan stripe is the assertion this test owns.
 func TestRenderFocusActiveCursor(t *testing.T) {
 	// Force TrueColor so the rendered ANSI escapes carry the foreground color
 	// we want to assert against. Without this, lipgloss strips colors when
@@ -201,6 +203,44 @@ func TestRenderFocusSessionCard_RepoPrefix(t *testing.T) {
 	// Empty repoName must not render the separator (defensive — the prefix is
 	// optional even though every real call passes a non-empty value).
 	bare := d.renderFocusSessionCard(sessA, "", false, 120)
+	if strings.Contains(ansi.Strip(bare[0]), "›") {
+		t.Errorf("empty repoName should not emit › separator, got %q", ansi.Strip(bare[0]))
+	}
+}
+
+// TestRenderQueueRow_RepoPrefix verifies the same cross-repo disambiguation
+// for the REVIEWING / SHIPPING sections. renderQueueRow has independent
+// rendering from renderFocusSessionCard, so it needs its own coverage to
+// catch a silent regression in either path.
+func TestRenderQueueRow_RepoPrefix(t *testing.T) {
+	sess := agent.NewSessionForTest("s-a", "add-dark-mode")
+	sess.SetLifecyclePhase(agent.LifecycleReadyForReview)
+
+	d := newDashboardModel()
+	d.width = 120
+	d.items = []listItem{
+		{kind: listItemSession, repoPath: "/a", repoName: "repoA", session: sess},
+	}
+
+	row := d.renderQueueRow(sess, "repoA", false, ColorWarning, 120)
+	if len(row) == 0 {
+		t.Fatalf("expected at least one rendered line")
+	}
+	line1 := ansi.Strip(row[0])
+	if !strings.Contains(line1, "repoA › ") {
+		t.Errorf("expected repo prefix \"repoA › \" on line 1, got %q", line1)
+	}
+	if !strings.Contains(line1, "add-dark-mode") {
+		t.Errorf("expected session name on line 1, got %q", line1)
+	}
+	if idx := strings.Index(line1, "repoA › "); idx >= 0 {
+		nameIdx := strings.Index(line1, "add-dark-mode")
+		if nameIdx < idx {
+			t.Errorf("expected repo prefix to precede session name, got %q", line1)
+		}
+	}
+
+	bare := d.renderQueueRow(sess, "", false, ColorWarning, 120)
 	if strings.Contains(ansi.Strip(bare[0]), "›") {
 		t.Errorf("empty repoName should not emit › separator, got %q", ansi.Strip(bare[0]))
 	}
