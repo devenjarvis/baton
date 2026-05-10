@@ -251,7 +251,7 @@ func TestBuildClaudePlannerArgs_UsesSonnet(t *testing.T) {
 		"--disable-slash-commands",
 		"--no-session-persistence",
 		"--tools Read,Grep,Glob,LS,LSP,WebFetch,WebSearch",
-		"--allowed-tools Read,Grep,Glob,LS,LSP,WebFetch,WebSearch",
+		"--allowedTools Read,Grep,Glob,LS,LSP,WebFetch,WebSearch",
 		"--setting-sources user,project",
 	} {
 		if !strings.Contains(joined, want) {
@@ -337,8 +337,8 @@ func TestBuildClaudePlannerArgs_WithQuestionSocketRegistersMCPServer(t *testing.
 	}
 
 	// The fully-qualified ask_user tool name must appear on both --tools and
-	// --allowed-tools so it is both exposed and auto-approved.
-	for _, flag := range []string{"--tools", "--allowed-tools"} {
+	// --allowedTools so it is both exposed and auto-approved.
+	for _, flag := range []string{"--tools", "--allowedTools"} {
 		idx := -1
 		for i, a := range args {
 			if a == flag {
@@ -372,7 +372,7 @@ func TestBuildClaudePlannerArgs_EmptySocketKeepsZeroServers(t *testing.T) {
 		t.Errorf("--mcp-config = %q, want canonical empty payload", args[mcpIdx+1])
 	}
 
-	for _, flag := range []string{"--tools", "--allowed-tools"} {
+	for _, flag := range []string{"--tools", "--allowedTools"} {
 		idx := -1
 		for i, a := range args {
 			if a == flag {
