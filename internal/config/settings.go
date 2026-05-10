@@ -63,7 +63,7 @@ const (
 
 Make exactly one git commit per completed step.
 
-If a file at .claude/plan.md exists in the worktree, the commit subject MUST start with "[task N] " where N is the 1-based index of the corresponding "- [ ]" line in that file (counting only task list lines, top-to-bottom, ignoring section headers). If no .claude/plan.md exists, prefix the subject with "task: " instead. The rest of the subject is a normal short description. Example: "[task 3] add --append-system-prompt flag plumbing".
+If a file at .claude/plan.md exists in the worktree, the commit subject MUST start with "[task N] " where N is the 1-based index of the task line (counting ALL task list lines — both "- [ ]" and "- [x]" — top-to-bottom, ignoring non-task lines such as section headers). If no .claude/plan.md exists, prefix the subject with "task: " instead. The rest of the subject is a normal short description. Example: "[task 3] add --append-system-prompt flag plumbing".
 
 Do not squash unrelated work into a single commit, and do not amend a previous commit to add new task work — each task is its own commit so the work can be reviewed task-by-task.`
 )
