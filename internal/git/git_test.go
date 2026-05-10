@@ -269,6 +269,73 @@ func initTestRepoWithRemote(t *testing.T) (string, string) {
 	return work, bare
 }
 
+func TestFindPRTemplate_GithubDir(t *testing.T) {
+	dir := t.TempDir()
+	ghDir := filepath.Join(dir, ".github")
+	if err := os.MkdirAll(ghDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ghDir, "PULL_REQUEST_TEMPLATE.md"), []byte("## Summary\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := git.FindPRTemplate(dir)
+	if got != "## Summary\n" {
+		t.Errorf("FindPRTemplate = %q, want %q", got, "## Summary\n")
+	}
+}
+
+func TestFindPRTemplate_DocsDir(t *testing.T) {
+	dir := t.TempDir()
+	docsDir := filepath.Join(dir, "docs")
+	if err := os.MkdirAll(docsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(docsDir, "PULL_REQUEST_TEMPLATE.md"), []byte("## Changes\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := git.FindPRTemplate(dir)
+	if got != "## Changes\n" {
+		t.Errorf("FindPRTemplate = %q, want %q", got, "## Changes\n")
+	}
+}
+
+func TestFindPRTemplate_RootLevel(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "PULL_REQUEST_TEMPLATE.md"), []byte("## Root\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := git.FindPRTemplate(dir)
+	if got != "## Root\n" {
+		t.Errorf("FindPRTemplate = %q, want %q", got, "## Root\n")
+	}
+}
+
+func TestFindPRTemplate_NotFound(t *testing.T) {
+	dir := t.TempDir()
+	got := git.FindPRTemplate(dir)
+	if got != "" {
+		t.Errorf("FindPRTemplate with no template = %q, want empty string", got)
+	}
+}
+
+func TestFindPRTemplate_PrefersGithubDir(t *testing.T) {
+	dir := t.TempDir()
+	ghDir := filepath.Join(dir, ".github")
+	if err := os.MkdirAll(ghDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ghDir, "PULL_REQUEST_TEMPLATE.md"), []byte("github\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "PULL_REQUEST_TEMPLATE.md"), []byte("root\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := git.FindPRTemplate(dir)
+	if got != "github\n" {
+		t.Errorf("FindPRTemplate should prefer .github/ dir, got %q", got)
+	}
+}
+
 func TestUpdateBaseBranch(t *testing.T) {
 	work, bare := initTestRepoWithRemote(t)
 
