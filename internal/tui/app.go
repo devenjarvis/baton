@@ -646,11 +646,16 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		editorAlreadyOpen := a.planEditor != nil && a.planEditor.sess != nil &&
 			a.planEditor.sess.ID == sessionID
 
+		// Compute the skip disposition eagerly during the auto-open attempt so
+		// the skip path never needs a second ListSessions() call.
+		skipDisp := "skipped-no-editor" // default: panelFocus==focusPlanEditor (different session)
 		if !editorAlreadyOpen && a.dashboard.panelFocus != focusPlanEditor {
 			if mgr := a.managers[msg.repoPath]; mgr != nil {
+				skipDisp = "skipped-session-missing" // manager found; refined below if session found
 				for _, s := range mgr.ListSessions() {
 					if s.ID == sessionID {
 						a.openPlanEditor(s)
+						skipDisp = "" // happy path will log instead
 						break
 					}
 				}
@@ -658,11 +663,17 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if a.planEditor != nil && a.planEditor.sess != nil &&
 			a.planEditor.sess.ID == sessionID {
-			disp := "routed-to-existing"
-			if !editorAlreadyOpen {
-				disp = "auto-opened"
+			disp := "auto-opened"
+			if editorAlreadyOpen {
+				if a.dashboard.panelFocus == focusPlanEditor {
+					disp = "routed-to-existing"
+				} else {
+					// Editor for this session exists but user navigated away
+					// (e.g. focusLaunch); question is queued but not immediately visible.
+					disp = "routed-to-background-editor"
+				}
 			}
-			writePlannerLog(msg.repoPath, plannerLogEntry{
+			a.writePlannerLog(msg.repoPath, plannerLogEntry{
 				Time:        time.Now().UTC().Format(time.RFC3339),
 				SessionID:   sessionID,
 				Disposition: disp,
@@ -675,22 +686,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, cmd
 		}
 		// Skip path: either a different editor is focused (can't discard its
-		// edits) or the session isn't found in the manager. Log the disposition
-		// and surface a status-bar error so the skip is never silent.
-		skipDisp := "skipped-no-editor"
-		if mgr := a.managers[msg.repoPath]; mgr != nil {
-			sessionInManager := false
-			for _, s := range mgr.ListSessions() {
-				if s.ID == sessionID {
-					sessionInManager = true
-					break
-				}
-			}
-			if !sessionInManager {
-				skipDisp = "skipped-session-missing"
-			}
-		}
-		writePlannerLog(msg.repoPath, plannerLogEntry{
+		// edits) or the session isn't found in the manager. Log and surface
+		// a status-bar error so the skip is never silent.
+		a.writePlannerLog(msg.repoPath, plannerLogEntry{
 			Time:        time.Now().UTC().Format(time.RFC3339),
 			SessionID:   sessionID,
 			Disposition: skipDisp,
@@ -3942,7 +3940,9 @@ type plannerLogEntry struct {
 
 // writePlannerLog appends a single JSON line to <repoPath>/.baton/logs/planner.log.
 // Best-effort: any error is silently dropped so it never blocks the UI loop.
-func writePlannerLog(repoPath string, entry plannerLogEntry) {
+// repoPath is passed explicitly (rather than read from a.activeRepo) because
+// the caller has the exact repo path from the message in multi-repo configs.
+func (a *App) writePlannerLog(repoPath string, entry plannerLogEntry) {
 	if repoPath == "" {
 		return
 	}
