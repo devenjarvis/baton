@@ -154,6 +154,7 @@ type App struct {
 	focusBreakAnimFrame    int
 	reviewDiffCache        map[string]*reviewDiffEntry // keyed by session ID
 	reviewSession          *agent.Session              // session currently open in review panel
+	reviewTaskCursor       int                         // selected task row in the review task list
 	planEditor             *planEditorModel            // non-nil while panelFocus == focusPlanEditor
 	promptModal            promptModalModel            // overlay for plan-first new-session prompt
 
@@ -1403,6 +1404,21 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}()
 				}
 				return a, nil
+			case "j", "down":
+				// Move cursor down in the task list.
+				if entry := a.reviewDiffCache[a.reviewSession.ID]; entry != nil {
+					max := reviewTaskCount(entry) - 1
+					if a.reviewTaskCursor < max {
+						a.reviewTaskCursor++
+					}
+				}
+				return a, nil
+			case "k", "up":
+				// Move cursor up in the task list.
+				if a.reviewTaskCursor > 0 {
+					a.reviewTaskCursor--
+				}
+				return a, nil
 			}
 			// All other keys are no-ops in review panel.
 			return a, nil
@@ -1519,6 +1535,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				sess := reviewItems[idx].session
 				sess.SetLifecyclePhase(agent.LifecycleInReview)
 				a.reviewSession = sess
+				a.reviewTaskCursor = 0
 				a.dashboard.panelFocus = focusReview
 				// Fetch diff stats if not already cached.
 				if _, ok := a.reviewDiffCache[sess.ID]; !ok {
@@ -2980,6 +2997,7 @@ func (a *App) activateFocusCursor() (tea.Cmd, bool) {
 	case focusSectionReview:
 		sess.SetLifecyclePhase(agent.LifecycleInReview)
 		a.reviewSession = sess
+		a.reviewTaskCursor = 0
 		a.dashboard.panelFocus = focusReview
 		if _, ok := a.reviewDiffCache[sess.ID]; !ok {
 			return a.fetchReviewDiffCmd(sess), true
@@ -3215,7 +3233,7 @@ func (a App) View() tea.View {
 	case ViewDashboard:
 		if a.dashboard.panelFocus == focusReview && a.reviewSession != nil {
 			entry := a.reviewDiffCache[a.reviewSession.ID]
-			v := tea.NewView(renderReviewPanel(a.reviewSession, entry, a.width))
+			v := tea.NewView(renderReviewPanel(a.reviewSession, entry, a.width, a.height, a.reviewTaskCursor))
 			v.AltScreen = true
 			return v
 		}
@@ -3430,6 +3448,22 @@ func (a *App) repoPathForSession(sessionID string) string {
 		}
 	}
 	return ""
+}
+
+// reviewTaskCount returns the number of task rows in a review entry (plan tasks
+// plus the "other" group if present).
+func reviewTaskCount(entry *reviewDiffEntry) int {
+	if entry == nil {
+		return 0
+	}
+	n := len(entry.tasks)
+	for _, g := range entry.groups {
+		if g.taskIndex == 0 {
+			n++ // "Other changes" row
+			break
+		}
+	}
+	return n
 }
 
 // sessionByID returns the Session with the given ID across all managed repos,
