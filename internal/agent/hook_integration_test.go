@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -380,6 +381,131 @@ func TestNotificationIgnoredWhenIdle(t *testing.T) {
 	if got := ag.Status(); got != StatusIdle {
 		t.Errorf("expected Idle to be preserved after stray Notification, got %s", got)
 	}
+}
+
+// TestPreToolUseTodoWritePopulatesTodos is the primary regression test for the
+// TodoWrite progress-badge feature. It feeds the exact JSON shape Claude emits
+// through the full hook path (SendEvent → Manager → OnHookEvent) and asserts
+// that Todos() is populated with the expected items.
+func TestPreToolUseTodoWritePopulatesTodos(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	cfg := Config{Name: "todo-write", Task: "test", Rows: 24, Cols: 80}
+	_, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-mgr.Events():
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for EventCreated")
+	}
+
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindSessionStart,
+		AgentID: ag.ID,
+	}); err != nil {
+		t.Fatalf("SendEvent SessionStart: %v", err)
+	}
+	if !waitForStatus(t, ag, StatusActive) {
+		t.Fatalf("expected Active after SessionStart, got %s", ag.Status())
+	}
+
+	// Exact JSON shape Claude emits for a TodoWrite PreToolUse event.
+	todoInput := json.RawMessage(`{"todos":[` +
+		`{"content":"write unit tests","status":"in_progress","activeForm":"writing unit tests"},` +
+		`{"content":"run tests","status":"pending"}` +
+		`]}`)
+
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:      hook.KindPreToolUse,
+		AgentID:   ag.ID,
+		ToolName:  "TodoWrite",
+		ToolInput: todoInput,
+	}); err != nil {
+		t.Fatalf("SendEvent PreToolUse TodoWrite: %v", err)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		todos := ag.Todos()
+		if len(todos) >= 2 {
+			if todos[0].Status != "in_progress" {
+				t.Errorf("todos[0].Status = %q, want %q", todos[0].Status, "in_progress")
+			}
+			if todos[0].ActiveForm != "writing unit tests" {
+				t.Errorf("todos[0].ActiveForm = %q, want %q", todos[0].ActiveForm, "writing unit tests")
+			}
+			if todos[1].Status != "pending" {
+				t.Errorf("todos[1].Status = %q, want %q", todos[1].Status, "pending")
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out: Todos() never populated (len=%d)", len(ag.Todos()))
+}
+
+// TestPreToolUseTodoWrite_SnakeCaseActiveForm verifies that TodoItem correctly
+// accepts the snake_case "active_form" key as a fallback for "activeForm".
+func TestPreToolUseTodoWrite_SnakeCaseActiveForm(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	cfg := Config{Name: "todo-snake", Task: "test", Rows: 24, Cols: 80}
+	_, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-mgr.Events():
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for EventCreated")
+	}
+
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindSessionStart,
+		AgentID: ag.ID,
+	}); err != nil {
+		t.Fatalf("SendEvent SessionStart: %v", err)
+	}
+	if !waitForStatus(t, ag, StatusActive) {
+		t.Fatalf("expected Active after SessionStart, got %s", ag.Status())
+	}
+
+	// Use snake_case active_form key to exercise the fallback path.
+	todoInput := json.RawMessage(`{"todos":[` +
+		`{"content":"refactor auth","status":"in_progress","active_form":"refactoring auth"}` +
+		`]}`)
+
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:      hook.KindPreToolUse,
+		AgentID:   ag.ID,
+		ToolName:  "TodoWrite",
+		ToolInput: todoInput,
+	}); err != nil {
+		t.Fatalf("SendEvent PreToolUse TodoWrite: %v", err)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		todos := ag.Todos()
+		if len(todos) >= 1 {
+			if todos[0].ActiveForm != "refactoring auth" {
+				t.Errorf("ActiveForm = %q, want %q", todos[0].ActiveForm, "refactoring auth")
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out: Todos() never populated with snake_case active_form")
 }
 
 // TestDoneAgentIgnoresLateNotification verifies a Done agent stays Done
