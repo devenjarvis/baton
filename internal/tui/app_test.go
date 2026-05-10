@@ -2193,6 +2193,10 @@ func TestPrimaryAgent_PrefersActiveOverIdle(t *testing.T) {
 // double-click that opens the review panel. The fix is to reset
 // lastPipelineClick after the PR-activation early return.
 func TestPipelinePRClickResetsDoubleClick(t *testing.T) {
+	origOpenURL := openURL
+	openURL = func(string) error { return nil }
+	defer func() { openURL = origOpenURL }()
+
 	sessR := agent.NewSessionForTest("r", "review-r")
 	sessR.SetLifecyclePhase(agent.LifecycleReadyForReview)
 
@@ -2443,10 +2447,12 @@ func TestBKey_OutsidePlanning_FallsThroughToBreak(t *testing.T) {
 // enter (or double-clicking) a Shipping row with a cached PR URL takes the
 // PR-open branch: it returns ok=true without dropping the user into
 // focusLaunch, so they end up in the browser rather than back-to-back agent
-// terminal + browser tab. openURL itself fires fire-and-forget and may launch
-// a real browser in the test environment — the existing review-queue PR-click
-// tests rely on the same pattern, so we stay consistent.
+// terminal + browser tab.
 func TestActivateFocusCursor_Shipping_OpensPRWhenURLCached(t *testing.T) {
+	origOpenURL := openURL
+	openURL = func(string) error { return nil }
+	defer func() { openURL = origOpenURL }()
+
 	sessS := agent.NewSessionForTest("s", "ship-s")
 	sessS.SetLifecyclePhase(agent.LifecycleShipping)
 
