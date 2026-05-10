@@ -2579,10 +2579,12 @@ func (a *App) refreshAgentList() {
 			sort.Slice(sessions, func(i, j int) bool {
 				return sessions[i].CreatedAt.Before(sessions[j].CreatedAt)
 			})
+			repoName := a.activeRepoDisplayName()
 			for _, sess := range sessions {
 				items = append(items, listItem{
 					kind:     listItemSession,
 					repoPath: a.activeRepo,
+					repoName: repoName,
 					session:  sess,
 				})
 				for _, ag := range sess.Agents() {
@@ -2624,6 +2626,7 @@ func (a *App) refreshAgentList() {
 				items = append(items, listItem{
 					kind:     listItemSession,
 					repoPath: repo.Path,
+					repoName: repo.DisplayName(),
 					session:  sess,
 				})
 				for _, ag := range sess.Agents() {
