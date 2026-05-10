@@ -426,6 +426,54 @@ func TestReviewQueueSessions_IncludesInReview(t *testing.T) {
 	}
 }
 
+// TestRenderPipelineWidget_CountsDraftingAsPlanning verifies that a session in
+// LifecycleDrafting is counted toward the PLANNING cell of the pipeline widget,
+// matching planningSessions() which includes Drafting alongside Planning. Without
+// this, a session whose plan is still being drafted appears in the PLANNING
+// list but reads as 0 in the widget — the same structural mismatch fixed for
+// LifecycleInReview / reviewQueueSessions.
+func TestRenderPipelineWidget_CountsDraftingAsPlanning(t *testing.T) {
+	sessDrafting := &agent.Session{ID: "sd", Name: "drafting"}
+	sessDrafting.SetLifecyclePhase(agent.LifecycleDrafting)
+
+	d := newDashboardModel()
+	d.prCache = make(map[string]*prCacheEntry)
+	d.items = []listItem{
+		{kind: listItemSession, session: sessDrafting},
+	}
+
+	out := ansi.Strip(d.renderPipelineWidget(120))
+	// Cells are joined horizontally so the labels share a row and the counts
+	// share the row below. Find the count row by locating the line that holds
+	// the BUILDING/REVIEWING/SHIPPING zeros, then slice out the leading
+	// PLANNING-cell column and confirm it shows 1, not 0.
+	lines := strings.Split(out, "\n")
+	var labelLine, countLine string
+	for i, line := range lines {
+		if strings.Contains(line, "PLANNING") && strings.Contains(line, "BUILDING") {
+			labelLine = line
+			if i+1 < len(lines) {
+				countLine = lines[i+1]
+			}
+			break
+		}
+	}
+	if labelLine == "" || countLine == "" {
+		t.Fatalf("expected PLANNING/BUILDING label row with a following count row in widget output, got:\n%s", out)
+	}
+	buildingCol := strings.Index(labelLine, "BUILDING")
+	if buildingCol <= 0 || buildingCol > len(countLine) {
+		t.Fatalf("BUILDING column %d out of range for count line of length %d", buildingCol, len(countLine))
+	}
+	planningCountCell := countLine[:buildingCol]
+	if !strings.Contains(planningCountCell, "1") {
+		t.Errorf("expected PLANNING count cell to contain 1 for a Drafting session, got %q (full count line %q)", planningCountCell, countLine)
+	}
+	if strings.Contains(planningCountCell, "0") {
+		t.Errorf("PLANNING count cell should not show 0 when a Drafting session is present, got %q", planningCountCell)
+	}
+}
+
 // TestPlanningSessions_OnlyPlanningPhase pins the planning section to
 // LifecyclePlanning so a session that has advanced to Building doesn't
 // double-show on the dashboard.
