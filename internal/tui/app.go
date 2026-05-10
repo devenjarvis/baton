@@ -640,30 +640,63 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// editor is focused (panelFocus == focusPlanEditor) and a question
 		// arrives for session B, opening session B's editor would silently
 		// discard session A's unsaved textarea edits. In that case fall through
-		// to the empty-answer skip below.
-		if a.planEditor == nil || a.planEditor.sess == nil ||
-			a.planEditor.sess.ID != msg.question.SessionID {
-			if a.dashboard.panelFocus != focusPlanEditor {
-				if mgr := a.managers[msg.repoPath]; mgr != nil {
-					for _, s := range mgr.ListSessions() {
-						if s.ID == msg.question.SessionID {
-							a.openPlanEditor(s)
-							break
-						}
+		// to the skip path below.
+		sessionID := msg.question.SessionID
+		focusAtArrival := int(a.dashboard.panelFocus)
+		editorAlreadyOpen := a.planEditor != nil && a.planEditor.sess != nil &&
+			a.planEditor.sess.ID == sessionID
+
+		if !editorAlreadyOpen && a.dashboard.panelFocus != focusPlanEditor {
+			if mgr := a.managers[msg.repoPath]; mgr != nil {
+				for _, s := range mgr.ListSessions() {
+					if s.ID == sessionID {
+						a.openPlanEditor(s)
+						break
 					}
 				}
 			}
 		}
 		if a.planEditor != nil && a.planEditor.sess != nil &&
-			a.planEditor.sess.ID == msg.question.SessionID {
+			a.planEditor.sess.ID == sessionID {
+			disp := "routed-to-existing"
+			if !editorAlreadyOpen {
+				disp = "auto-opened"
+			}
+			writePlannerLog(msg.repoPath, plannerLogEntry{
+				Time:        time.Now().UTC().Format(time.RFC3339),
+				SessionID:   sessionID,
+				Disposition: disp,
+				PanelFocus:  focusAtArrival,
+			})
 			cmd := a.planEditor.AskQuestion(msg.question.Question, msg.question.AnswerCh)
 			if mgr := a.managers[msg.repoPath]; mgr != nil {
 				return a, tea.Batch(cmd, listenPlannerQuestions(mgr))
 			}
 			return a, cmd
 		}
-		// No matching editor (session not found or different editor focused) —
-		// skip with empty answer rather than deadlocking the planner.
+		// Skip path: either a different editor is focused (can't discard its
+		// edits) or the session isn't found in the manager. Log the disposition
+		// and surface a status-bar error so the skip is never silent.
+		skipDisp := "skipped-no-editor"
+		if mgr := a.managers[msg.repoPath]; mgr != nil {
+			sessionInManager := false
+			for _, s := range mgr.ListSessions() {
+				if s.ID == sessionID {
+					sessionInManager = true
+					break
+				}
+			}
+			if !sessionInManager {
+				skipDisp = "skipped-session-missing"
+			}
+		}
+		writePlannerLog(msg.repoPath, plannerLogEntry{
+			Time:        time.Now().UTC().Format(time.RFC3339),
+			SessionID:   sessionID,
+			Disposition: skipDisp,
+			PanelFocus:  focusAtArrival,
+		})
+		a.setError("planner question skipped — plan editor could not open for session " + sessionID)
 		select {
 		case msg.question.AnswerCh <- "":
 		default:
@@ -3891,6 +3924,36 @@ func (a *App) writeWellnessLog() {
 		return
 	}
 
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer func() { _ = f.Close() }()
+	_, _ = f.WriteString(string(data) + "\n")
+}
+
+// plannerLogEntry is the JSON structure written on each planner question event.
+type plannerLogEntry struct {
+	Time        string `json:"time"`
+	SessionID   string `json:"session_id"`
+	Disposition string `json:"disposition"`
+	PanelFocus  int    `json:"panel_focus"`
+}
+
+// writePlannerLog appends a single JSON line to <repoPath>/.baton/logs/planner.log.
+// Best-effort: any error is silently dropped so it never blocks the UI loop.
+func writePlannerLog(repoPath string, entry plannerLogEntry) {
+	if repoPath == "" {
+		return
+	}
+	logPath := filepath.Join(repoPath, ".baton", "logs", "planner.log")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		return
+	}
+	data, err := json.Marshal(entry)
+	if err != nil {
+		return
+	}
 	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return

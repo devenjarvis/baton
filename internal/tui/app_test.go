@@ -2965,3 +2965,67 @@ func TestSubmitPromptModalRoutesToActiveRepo(t *testing.T) {
 			sessionsBefore2, got)
 	}
 }
+
+// TestPlannerQuestionOpensEditor verifies that a plannerQuestionMsg arriving
+// while the dashboard is visible (panelFocus==focusList, planEditor==nil)
+// auto-opens the plan editor and routes the question to AskQuestion rather
+// than silently skipping with an empty answer on the channel.
+func TestPlannerQuestionOpensEditor(t *testing.T) {
+	dir, err := os.MkdirTemp("", "baton-planner-q-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+
+	sess := agent.NewSessionForTest("plan-sess-1", "my-plan")
+	sess.SetLifecyclePhase(agent.LifecyclePlanning)
+
+	mgr := agent.NewManager(dir, config.Resolve(nil, nil))
+	defer mgr.Shutdown()
+	mgr.AddSessionForTest(sess)
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.managers[dir] = mgr
+	app.activeRepo = dir
+	app.dashboard.items = []listItem{
+		{kind: listItemRepo, repoPath: dir, repoName: "repo"},
+		{kind: listItemSession, repoPath: dir, session: sess},
+	}
+	// Start at the dashboard with no editor open.
+	app.dashboard.panelFocus = focusList
+
+	answerCh := make(chan string, 1)
+	msg := plannerQuestionMsg{
+		repoPath: dir,
+		question: agent.PlannerQuestion{
+			SessionID: "plan-sess-1",
+			Question:  "What should the output format be?",
+			AnswerCh:  answerCh,
+		},
+	}
+
+	model, _ := app.Update(msg)
+	app = model.(App)
+
+	// The editor should have been auto-opened by the handler.
+	if app.dashboard.panelFocus != focusPlanEditor {
+		t.Fatalf("expected focusPlanEditor after question arrived, got %v", app.dashboard.panelFocus)
+	}
+	if app.planEditor == nil {
+		t.Fatal("expected planEditor to be non-nil after question arrived")
+	}
+	if !app.planEditor.HasPendingQuestion() {
+		t.Fatal("expected planEditor to have a pending question after AskQuestion was called")
+	}
+	// The skip path sends "" to answerCh; the happy path does not. Verify we
+	// took the happy path by asserting the channel is still empty.
+	select {
+	case got := <-answerCh:
+		t.Fatalf("question was silently skipped — empty answer %q sent instead of routing to editor", got)
+	default:
+	}
+}
