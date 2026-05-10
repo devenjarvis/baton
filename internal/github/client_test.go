@@ -259,7 +259,7 @@ func TestGetPRBySHA_EmptySHAReturnsNil(t *testing.T) {
 	}
 }
 
-func TestGetPRBySHA_AllClosedReturnsMostRecent(t *testing.T) {
+func TestGetPRBySHA_AllClosedReturnsNil(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprintln(w, `[
 			{"number":1,"state":"closed","updated_at":"2024-01-01T00:00:00Z","head":{"ref":"a","repo":{"full_name":"o/r"}}},
@@ -273,8 +273,8 @@ func TestGetPRBySHA_AllClosedReturnsMostRecent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if pr == nil || pr.Number != 2 {
-		t.Fatalf("expected most-recent PR #2, got %+v", pr)
+	if pr != nil {
+		t.Fatalf("expected nil PR for all-closed SHAs, got #%d (%s)", pr.Number, pr.State)
 	}
 }
 
