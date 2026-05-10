@@ -21,6 +21,7 @@ type prPollMsg struct {
 	pr        *github.PRState
 	checks    *github.CheckStatus
 	reviews   *github.ReviewStatus
+	threads   []github.ReviewThread
 	// stack holds base PRs for stacked-branch workflows, ordered from
 	// immediate parent (index 0) to root. Empty for non-stacked sessions.
 	stack []*prCacheEntry
@@ -32,6 +33,7 @@ type prCacheEntry struct {
 	pr      *github.PRState
 	checks  *github.CheckStatus
 	reviews *github.ReviewStatus
+	threads []github.ReviewThread
 	// stack holds base PRs for stacked-branch workflows, ordered from
 	// immediate parent (index 0) to root. Nil for non-stacked sessions.
 	// All code checking entry.pr != nil continues to work unchanged.

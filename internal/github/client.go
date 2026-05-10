@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"net/http"
+	"sort"
 	"strconv"
 	"time"
 
@@ -272,6 +273,7 @@ func (c *Client) GetChecks(ctx context.Context, owner, repo, ref string) (*Check
 			Name:       run.GetName(),
 			Status:     run.GetStatus(),
 			Conclusion: conclusion,
+			URL:        run.GetHTMLURL(),
 		}
 		if run.StartedAt != nil {
 			cr.StartedAt = run.StartedAt.Time
@@ -296,10 +298,9 @@ func (c *Client) GetChecks(ctx context.Context, owner, repo, ref string) (*Check
 	return status, nil
 }
 
-// GetReviews returns the aggregated review status for a pull request.
-// It deduplicates by user, keeping only the latest review per reviewer.
-func (c *Client) GetReviews(ctx context.Context, owner, repo string, number int) (*ReviewStatus, error) {
-	var allReviews []*gh.PullRequestReview
+// listAllReviews fetches all reviews for a pull request, handling pagination.
+func (c *Client) listAllReviews(ctx context.Context, owner, repo string, number int) ([]*gh.PullRequestReview, error) {
+	var all []*gh.PullRequestReview
 	opts := &gh.ListOptions{PerPage: 100}
 	for {
 		var reviews []*gh.PullRequestReview
@@ -312,11 +313,21 @@ func (c *Client) GetReviews(ctx context.Context, owner, repo string, number int)
 		if err != nil {
 			return nil, fmt.Errorf("listing reviews: %w", err)
 		}
-		allReviews = append(allReviews, reviews...)
+		all = append(all, reviews...)
 		if resp.NextPage == 0 {
 			break
 		}
 		opts.Page = resp.NextPage
+	}
+	return all, nil
+}
+
+// GetReviews returns the aggregated review status for a pull request.
+// It deduplicates by user, keeping only the latest review per reviewer.
+func (c *Client) GetReviews(ctx context.Context, owner, repo string, number int) (*ReviewStatus, error) {
+	allReviews, err := c.listAllReviews(ctx, owner, repo, number)
+	if err != nil {
+		return nil, err
 	}
 
 	// Deduplicate: latest review per user wins.
@@ -377,6 +388,121 @@ func (c *Client) CreatePR(ctx context.Context, owner, repo, head, base, title, b
 		return nil, fmt.Errorf("creating PR: %w", err)
 	}
 	return prToState(pr), nil
+}
+
+// GetReviewThreads returns review threads for a PR grouped by reviewer.
+// Each thread combines the reviewer's overall state (APPROVED /
+// CHANGES_REQUESTED / COMMENTED) with their inline file-level comments.
+func (c *Client) GetReviewThreads(ctx context.Context, owner, repo string, number int) ([]ReviewThread, error) {
+	allReviews, err := c.listAllReviews(ctx, owner, repo, number)
+	if err != nil {
+		return nil, err
+	}
+
+	// Determine the latest actionable review per user, keeping COMMENTED only
+	// as a fallback for users who haven't formally reviewed.
+	latestByUID := make(map[int64]*gh.PullRequestReview)
+	for _, r := range allReviews {
+		uid := r.GetUser().GetID()
+		state := r.GetState()
+		existing, ok := latestByUID[uid]
+		if !ok {
+			latestByUID[uid] = r
+			continue
+		}
+		// Prefer non-COMMENTED states; within the same class keep the latest.
+		existingCommented := existing.GetState() == "COMMENTED"
+		thisCommented := state == "COMMENTED"
+		if existingCommented && !thisCommented {
+			latestByUID[uid] = r
+			continue
+		}
+		if !existingCommented && thisCommented {
+			continue
+		}
+		if r.GetSubmittedAt().After(existing.GetSubmittedAt().Time) {
+			latestByUID[uid] = r
+		}
+	}
+
+	// Fetch inline review comments.
+	var allComments []*gh.PullRequestComment
+	commentOpts := &gh.PullRequestListCommentsOptions{
+		ListOptions: gh.ListOptions{PerPage: 100},
+	}
+	for {
+		var comments []*gh.PullRequestComment
+		var resp *gh.Response
+		err := c.doWithRetry(ctx, func() (*gh.Response, error) {
+			var err error
+			comments, resp, err = c.gh.PullRequests.ListComments(ctx, owner, repo, number, commentOpts)
+			return resp, err
+		})
+		if err != nil {
+			return nil, fmt.Errorf("listing review comments: %w", err)
+		}
+		allComments = append(allComments, comments...)
+		if resp.NextPage == 0 {
+			break
+		}
+		commentOpts.Page = resp.NextPage
+	}
+
+	// Group inline comments by reviewer login.
+	commentsByLogin := make(map[string][]ReviewComment)
+	for _, c := range allComments {
+		login := c.GetUser().GetLogin()
+		rc := ReviewComment{
+			Path: c.GetPath(),
+			Body: c.GetBody(),
+			Line: c.GetLine(),
+		}
+		commentsByLogin[login] = append(commentsByLogin[login], rc)
+	}
+
+	// Build threads — one per reviewer.
+	seen := make(map[string]bool)
+	var threads []ReviewThread
+	for _, r := range latestByUID {
+		login := r.GetUser().GetLogin()
+		seen[login] = true
+		threads = append(threads, ReviewThread{
+			Reviewer: login,
+			State:    r.GetState(),
+			Body:     r.GetBody(),
+			Comments: commentsByLogin[login],
+		})
+	}
+	// Include comment-only reviewers not captured via the review list.
+	for login, comments := range commentsByLogin {
+		if !seen[login] {
+			threads = append(threads, ReviewThread{
+				Reviewer: login,
+				State:    "COMMENTED",
+				Comments: comments,
+			})
+		}
+	}
+	sort.Slice(threads, func(i, j int) bool {
+		return threads[i].Reviewer < threads[j].Reviewer
+	})
+	return threads, nil
+}
+
+// MergePR merges the given pull request using the specified method.
+// method must be one of "merge", "squash", or "rebase". Defaults to "squash".
+// Merge is not idempotent so this bypasses doWithRetry to avoid a false-failure
+// when a transport error after a successful merge triggers a retry that gets 405.
+func (c *Client) MergePR(ctx context.Context, owner, repo string, number int, method string) error {
+	switch method {
+	case "merge", "squash", "rebase":
+	default:
+		method = "squash"
+	}
+	_, _, err := c.gh.PullRequests.Merge(ctx, owner, repo, number, "", &gh.PullRequestOptions{
+		MergeMethod: method,
+	})
+	return err
 }
 
 // prToState converts a GitHub API PullRequest to our PRState type.

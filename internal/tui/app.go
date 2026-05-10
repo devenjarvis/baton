@@ -1074,6 +1074,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			pr:      msg.pr,
 			checks:  msg.checks,
 			reviews: msg.reviews,
+			threads: msg.threads,
 			stack:   msg.stack,
 		}
 		// Detect PR merge/close and transition to Complete lifecycle phase.
@@ -3988,6 +3989,7 @@ func (a *App) refreshPRStatusForSession(sessionID, branch, repoPath, worktreePat
 		}
 		var checks *github.CheckStatus
 		var reviews *github.ReviewStatus
+		var threads []github.ReviewThread
 		var stack []*prCacheEntry
 		if pr != nil {
 			var err error
@@ -4004,6 +4006,8 @@ func (a *App) refreshPRStatusForSession(sessionID, branch, repoPath, worktreePat
 			if err != nil {
 				return prPollMsg{sessionID: sessionID, err: err}
 			}
+			// Threads are best-effort: missing threads degrade gracefully.
+			threads, _ = ghClient.GetReviewThreads(ctx, owner, repo, pr.Number)
 
 			// Walk up the base-branch chain for stacked PR support (best-effort,
 			// max 3 levels). Stop when the base targets a trunk branch, no PR is
@@ -4039,6 +4043,7 @@ func (a *App) refreshPRStatusForSession(sessionID, branch, repoPath, worktreePat
 			pr:        pr,
 			checks:    checks,
 			reviews:   reviews,
+			threads:   threads,
 			stack:     stack,
 		}
 	}

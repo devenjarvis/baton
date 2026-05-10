@@ -29,6 +29,7 @@ type CheckRun struct {
 	Name       string
 	Status     string // "queued", "in_progress", "completed"
 	Conclusion string // "success", "failure", "cancelled", "skipped", etc.
+	URL        string // GitHub URL for the check run detail page
 	StartedAt  time.Time
 	Duration   time.Duration
 }
@@ -39,4 +40,20 @@ type ReviewStatus struct {
 	Approved         int
 	Pending          int
 	ChangesRequested int
+}
+
+// ReviewComment is a single inline comment on a pull request.
+type ReviewComment struct {
+	Path string
+	Body string
+	Line int
+}
+
+// ReviewThread groups a reviewer's overall state and their inline comments.
+// State is one of "APPROVED", "CHANGES_REQUESTED", "COMMENTED", "PENDING".
+type ReviewThread struct {
+	Reviewer string
+	State    string
+	Body     string          // review-level comment body (may be empty)
+	Comments []ReviewComment // inline file-level comments
 }

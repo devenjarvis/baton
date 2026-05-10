@@ -397,3 +397,102 @@ func TestClassifyRetry(t *testing.T) {
 		}
 	})
 }
+
+func TestGetReviewThreads_GroupsByReviewer(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/o/r/pulls/1/reviews":
+			_, _ = fmt.Fprintln(w, `[
+				{"id":1,"user":{"id":10,"login":"alice"},"state":"APPROVED","body":"LGTM","submitted_at":"2024-01-01T00:00:00Z"},
+				{"id":2,"user":{"id":20,"login":"bob"},"state":"CHANGES_REQUESTED","body":"needs work","submitted_at":"2024-01-01T00:00:00Z"}
+			]`)
+		case "/repos/o/r/pulls/1/comments":
+			_, _ = fmt.Fprintln(w, `[
+				{"id":1,"user":{"login":"bob"},"path":"main.go","body":"please fix this","line":42},
+				{"id":2,"user":{"login":"alice"},"path":"utils.go","body":"nit","line":10}
+			]`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	threads, err := c.GetReviewThreads(context.Background(), "o", "r", 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(threads) != 2 {
+		t.Fatalf("expected 2 threads, got %d: %+v", len(threads), threads)
+	}
+	// Sorted by login: alice, bob.
+	if threads[0].Reviewer != "alice" {
+		t.Errorf("thread[0] reviewer = %q, want alice", threads[0].Reviewer)
+	}
+	if threads[0].State != "APPROVED" {
+		t.Errorf("thread[0] state = %q, want APPROVED", threads[0].State)
+	}
+	if len(threads[0].Comments) != 1 || threads[0].Comments[0].Path != "utils.go" {
+		t.Errorf("thread[0] comments = %+v, want 1 comment on utils.go", threads[0].Comments)
+	}
+	if threads[1].Reviewer != "bob" {
+		t.Errorf("thread[1] reviewer = %q, want bob", threads[1].Reviewer)
+	}
+	if threads[1].State != "CHANGES_REQUESTED" {
+		t.Errorf("thread[1] state = %q, want CHANGES_REQUESTED", threads[1].State)
+	}
+	if len(threads[1].Comments) != 1 || threads[1].Comments[0].Path != "main.go" {
+		t.Errorf("thread[1] comments = %+v, want 1 comment on main.go", threads[1].Comments)
+	}
+}
+
+func TestGetReviewThreads_CommentOnlyReviewer(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/o/r/pulls/2/reviews":
+			_, _ = fmt.Fprintln(w, `[]`)
+		case "/repos/o/r/pulls/2/comments":
+			_, _ = fmt.Fprintln(w, `[
+				{"id":1,"user":{"login":"charlie"},"path":"foo.go","body":"question","line":5}
+			]`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	threads, err := c.GetReviewThreads(context.Background(), "o", "r", 2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(threads) != 1 {
+		t.Fatalf("expected 1 thread, got %d", len(threads))
+	}
+	if threads[0].Reviewer != "charlie" || threads[0].State != "COMMENTED" {
+		t.Errorf("unexpected thread: %+v", threads[0])
+	}
+}
+
+func TestMergePR_DefaultsToSquash(t *testing.T) {
+	var called bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/o/r/pulls/5/merge" {
+			called = true
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprintln(w, `{"sha":"abc","merged":true,"message":"merged"}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	err := c.MergePR(context.Background(), "o", "r", 5, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Error("merge endpoint was not called")
+	}
+}
