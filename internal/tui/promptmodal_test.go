@@ -105,6 +105,31 @@ func TestPromptModal_EscCancels(t *testing.T) {
 	}
 }
 
+func TestPromptModal_ShiftEnterInsertsNewline(t *testing.T) {
+	m := newPromptModal()
+	m.SetSize(120, 40)
+	m.Open()
+	m.textarea.SetValue("first line")
+
+	cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModShift, Text: "shift+enter"})
+	if cmd != nil {
+		// shift+enter must not produce a submit/cancel cmd; running it
+		// would surface that mistake.
+		if msg := cmd(); msg != nil {
+			if _, ok := msg.(promptModalSubmitMsg); ok {
+				t.Fatalf("shift+enter triggered submit; want newline insertion")
+			}
+		}
+	}
+	if !m.Active() {
+		t.Fatal("shift+enter must not close the modal")
+	}
+	m.textarea.InsertString("second line")
+	if got := m.textarea.Value(); !strings.Contains(got, "\n") {
+		t.Errorf("textarea value = %q, want a newline between the two lines", got)
+	}
+}
+
 func TestPromptModal_KeysDeferToTextareaWhenNotControl(t *testing.T) {
 	m := newPromptModal()
 	m.SetSize(120, 40)
