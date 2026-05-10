@@ -283,6 +283,19 @@ func ListWorktrees(repoPath, branchPrefix string) ([]*WorktreeInfo, error) {
 	return worktrees, nil
 }
 
+// Push pushes branch to origin from the given worktreePath, setting the remote
+// tracking ref on the first push (--set-upstream). Force-with-lease is NOT
+// used so the push is safe for first-time publishing of a feature branch.
+// Callers must ensure any commits on the branch are ready to share before
+// calling — there is no additional safety gate inside this function.
+func Push(worktreePath, branch string) error {
+	_, err := runGit(worktreePath, "push", "--set-upstream", "origin", branch)
+	if err != nil {
+		return fmt.Errorf("push %q: %w", branch, err)
+	}
+	return nil
+}
+
 // GetRemoteURL returns the URL for the "origin" remote of the repo at repoPath.
 func GetRemoteURL(repoPath string) (string, error) {
 	return runGit(repoPath, "remote", "get-url", "origin")

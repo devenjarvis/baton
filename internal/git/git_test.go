@@ -653,6 +653,60 @@ func TestRenameBranch_Idempotent(t *testing.T) {
 	}
 }
 
+func TestPush(t *testing.T) {
+	work, bare := initTestRepoWithRemote(t)
+
+	// Create a worktree on a new branch.
+	wt, err := git.CreateWorktree(work, "push-agent", "", "", "")
+	if err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+
+	// Commit something in the worktree.
+	if err := os.WriteFile(filepath.Join(wt.Path, "pushed.txt"), []byte("pushed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"git", "add", "pushed.txt"},
+		{"git", "commit", "-m", "add pushed.txt"},
+	} {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = wt.Path
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=Test", "GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=Test", "GIT_COMMITTER_EMAIL=test@test.com")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v failed: %v\n%s", args, err, out)
+		}
+	}
+
+	// Push the branch to origin.
+	if err := git.Push(wt.Path, wt.Branch); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+
+	// Verify the branch now exists on the bare remote.
+	cmd := exec.Command("git", "branch", "--list", wt.Branch)
+	cmd.Dir = bare
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git branch list on bare: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), wt.Branch) {
+		t.Errorf("expected branch %q on origin, branch list: %s", wt.Branch, out)
+	}
+
+	// Verify the upstream tracking was set (--set-upstream-to).
+	cmd = exec.Command("git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+	cmd.Dir = wt.Path
+	out, err = cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("upstream check failed: %v\n%s", err, out)
+	}
+	if got := strings.TrimSpace(string(out)); got != "origin/"+wt.Branch {
+		t.Errorf("expected upstream origin/%s, got %q", wt.Branch, got)
+	}
+}
+
 func TestCreateWorktreeWithStartPoint(t *testing.T) {
 	work, bare := initTestRepoWithRemote(t)
 
