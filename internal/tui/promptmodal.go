@@ -93,6 +93,12 @@ func newPromptModal() promptModalModel {
 	// will fail to compile — fix at that point with a v2-typed constant.
 	styles.Cursor.Color = ColorPrimary
 	ta.SetStyles(styles)
+	// Bubbles' default InsertNewline binding only lists "enter"/"ctrl+m",
+	// and the modal's Update intercepts plain "enter" as submit — so
+	// without extending the binding, shift+enter falls through to the
+	// textarea's text-input path and the literal modifier name gets
+	// typed. The footer advertises shift+enter for newline; honor that.
+	ta.KeyMap.InsertNewline.SetKeys("enter", "ctrl+m", "shift+enter")
 	return promptModalModel{textarea: ta}
 }
 
@@ -147,9 +153,9 @@ func (m *promptModalModel) Update(msg tea.Msg) tea.Cmd {
 				return promptModalSubmitMsg{prompt: val, skipPlanning: true}
 			}
 		case "enter":
-			// Plain enter submits via the planning path. Note: this means
-			// the textarea cannot insert newlines via enter — users wanting
-			// multi-line prompts use shift+enter (textarea default).
+			// Plain enter submits via the planning path. Multi-line
+			// prompts use shift+enter, which is wired into the textarea's
+			// InsertNewline binding in newPromptModal.
 			val := strings.TrimSpace(m.textarea.Value())
 			if val == "" {
 				return nil
