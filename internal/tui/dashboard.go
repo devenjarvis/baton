@@ -852,7 +852,7 @@ func (d dashboardModel) renderPipelineWidget(width int) string {
 			continue
 		}
 		switch item.session.LifecyclePhase() {
-		case agent.LifecyclePlanning:
+		case agent.LifecyclePlanning, agent.LifecycleDrafting:
 			planning++
 		case agent.LifecycleInProgress:
 			building++
