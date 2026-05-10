@@ -3648,24 +3648,14 @@ func (a *App) refreshPRStatusForSession(sessionID, branch, repoPath, worktreePat
 }
 
 // activeAgentCount returns the count of live non-shell agents across all repos.
-// Used to enforce the soft concurrent-agent limit in focus mode. Excludes
-// agents that have already exited (Done/Error) so the limit reflects work in
-// flight, not historical sessions left visible for review.
+// Used to enforce the soft concurrent-agent limit in focus mode. Defers to
+// Manager.AgentCount, which already excludes shells and exited (Done/Error)
+// agents — keeping the "live" definition in one place so all three call sites
+// (quit guard, soft cap, repo-picker counts) can't drift apart.
 func (a *App) activeAgentCount() int {
 	count := 0
 	for _, mgr := range a.managers {
-		for _, sess := range mgr.ListSessions() {
-			for _, ag := range sess.Agents() {
-				if ag.IsShell {
-					continue
-				}
-				switch ag.Status() {
-				case agent.StatusDone, agent.StatusError:
-					continue
-				}
-				count++
-			}
-		}
+		count += mgr.AgentCount()
 	}
 	return count
 }
