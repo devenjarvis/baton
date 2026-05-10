@@ -7,6 +7,56 @@ import (
 	"strings"
 )
 
+// Commit holds metadata for a single git commit.
+type Commit struct {
+	Hash    string
+	Subject string
+	Body    string
+}
+
+// LogCommitsAgainstBase returns commits reachable from HEAD but not from
+// BaseBranch, ordered oldest-first (natural review order). The worktree path
+// is used as the working directory so the command runs in the right context
+// even when the repo root is elsewhere.
+func LogCommitsAgainstBase(wt *WorktreeInfo) ([]Commit, error) {
+	// %x1f separates fields within one record; %x1e terminates each record.
+	// This avoids ambiguity with newlines in commit bodies.
+	out, err := runGit(wt.Path, "log",
+		"--format=format:%H%x1f%s%x1f%b%x1e",
+		"--reverse",
+		wt.BaseBranch+"..HEAD",
+	)
+	if err != nil {
+		return nil, fmt.Errorf("log commits: %w", err)
+	}
+	if strings.TrimSpace(out) == "" {
+		return nil, nil
+	}
+	var commits []Commit
+	for _, record := range strings.Split(out, "\x1e") {
+		record = strings.TrimSpace(record)
+		if record == "" {
+			continue
+		}
+		parts := strings.SplitN(record, "\x1f", 3)
+		c := Commit{}
+		if len(parts) > 0 {
+			c.Hash = strings.TrimSpace(parts[0])
+		}
+		if len(parts) > 1 {
+			c.Subject = strings.TrimSpace(parts[1])
+		}
+		if len(parts) > 2 {
+			c.Body = strings.TrimSpace(parts[2])
+		}
+		if c.Hash == "" {
+			continue
+		}
+		commits = append(commits, c)
+	}
+	return commits, nil
+}
+
 // DiffStats holds summary statistics for a diff.
 type DiffStats struct {
 	Files      int
