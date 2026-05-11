@@ -207,11 +207,12 @@ type App struct {
 	diffStatsCache      map[string]*diffStatsEntry // keyed by session ID
 	diffRefreshInFlight bool
 
-	ghClient        *github.Client
-	prCache         map[string]*prCacheEntry   // keyed by session ID
-	prPollStates    map[string]*prSessionState // keyed by session ID
-	prPollsInFlight int                        // count of concurrent in-flight polls
-	prDraftInFlight bool                       // true while startPRDraftCmd is running; prevents double-trigger
+	ghClient         *github.Client
+	prCache          map[string]*prCacheEntry   // keyed by session ID
+	prPollStates     map[string]*prSessionState // keyed by session ID
+	prPollsInFlight  int                        // count of concurrent in-flight polls
+	prDraftInFlight  bool                       // true while startPRDraftCmd is running; prevents double-trigger
+	prDraftSessionID string                     // ID of the session whose PR draft is in flight; "" when idle
 
 	// PR compose modal and its associated session context.
 	prComposeModal   prComposeModal
@@ -977,6 +978,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case prDraftReadyMsg:
 		a.prDraftInFlight = false
+		a.prDraftSessionID = ""
 		if msg.err != nil {
 			a.setError("PR draft failed: " + msg.err.Error())
 			return a, nil
@@ -1576,6 +1578,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return a, nil
 					}
 					a.prDraftInFlight = true
+					a.prDraftSessionID = sess.ID
 					repoPath := a.repoPathForSession(sess.ID)
 					a.setError("Pushing branch and drafting PR…")
 					return a, a.startPRDraftCmd(sess, repoPath, true)
@@ -2197,6 +2200,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return a, nil
 					}
 					a.prDraftInFlight = true
+					a.prDraftSessionID = sess.ID
 					repoPath := a.cursorSelectedRepoPath()
 					a.setError("Pushing branch and drafting PR…")
 					return a, a.startPRDraftCmd(sess, repoPath, false)
@@ -2942,6 +2946,7 @@ func (a *App) refreshAgentList() {
 	a.dashboard.focusReviewIdx = a.focusReviewIdx
 	a.dashboard.focusShippingIdx = a.focusShippingIdx
 	a.dashboard.focusCursorSection = a.focusCursorSection
+	a.dashboard.prDraftSessionID = a.prDraftSessionID
 	a.dashboard.activeRepoName = a.activeRepoDisplayName()
 	a.dashboard.activeRepoPath = a.activeRepo
 	a.dashboard.focusLaunchAgent = a.focusLaunchAgent
@@ -3279,6 +3284,7 @@ func (a *App) syncFocusCursorToDashboard() {
 	a.dashboard.focusReviewIdx = a.focusReviewIdx
 	a.dashboard.focusShippingIdx = a.focusShippingIdx
 	a.dashboard.focusCursorSection = a.focusCursorSection
+	a.dashboard.prDraftSessionID = a.prDraftSessionID
 }
 
 // activateFocusCursor opens the row currently under the fullscreen-focus
@@ -3561,7 +3567,7 @@ func (a App) View() tea.View {
 	case ViewDashboard:
 		if a.dashboard.panelFocus == focusReview && a.reviewSession != nil {
 			entry := a.reviewDiffCache[a.reviewSession.ID]
-			v := tea.NewView(renderReviewPanel(a.reviewSession, entry, a.width, a.height, a.reviewTaskCursor))
+			v := tea.NewView(renderReviewPanel(a.reviewSession, entry, a.width, a.height, a.reviewTaskCursor, a.prDraftInFlight && a.prDraftSessionID == a.reviewSession.ID))
 			v.AltScreen = true
 			return v
 		}

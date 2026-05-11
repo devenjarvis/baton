@@ -21,7 +21,7 @@ func TestRenderReviewPanel_ShowsOriginalPrompt(t *testing.T) {
 		aggregate: &git.DiffStats{Files: 2, Insertions: 213, Deletions: 34},
 	}
 
-	output := renderReviewPanel(sess, entry, 120, 40, 0)
+	output := renderReviewPanel(sess, entry, 120, 40, 0, false)
 
 	if !strings.Contains(output, "Fix the auth bug") {
 		t.Error("review panel must show the original prompt")
@@ -36,7 +36,7 @@ func TestRenderReviewPanel_NilDiffEntry(t *testing.T) {
 	sess.SetOriginalPrompt("Fix the auth bug")
 
 	// nil entry — should not panic
-	output := renderReviewPanel(sess, nil, 120, 40, 0)
+	output := renderReviewPanel(sess, nil, 120, 40, 0, false)
 	if !strings.Contains(output, "Fix the auth bug") {
 		t.Error("must still show prompt even with nil diff entry")
 	}
@@ -82,7 +82,7 @@ func TestRenderReviewPanel_FooterAdvertisesAllActions(t *testing.T) {
 	sess.SetOriginalPrompt("Fix the auth bug")
 	sess.MarkDone()
 
-	output := renderReviewPanel(sess, nil, 120, 40, 0)
+	output := renderReviewPanel(sess, nil, 120, 40, 0, false)
 
 	for _, want := range []string{
 		"open PR",
@@ -125,7 +125,7 @@ func TestRenderReviewPanel_TaskListShown(t *testing.T) {
 		},
 	}
 
-	output := renderReviewPanel(sess, entry, 120, 40, 0)
+	output := renderReviewPanel(sess, entry, 120, 40, 0, false)
 
 	if !strings.Contains(output, "PLAN TASKS") {
 		t.Error("task list view must show PLAN TASKS header")
@@ -283,7 +283,7 @@ func TestRenderTaskList_NoDiffFoundBadge(t *testing.T) {
 	sess.SetOriginalPrompt("Fix the auth bug")
 	sess.MarkDone()
 
-	output := renderReviewPanel(sess, entry, 120, 40, 0)
+	output := renderReviewPanel(sess, entry, 120, 40, 0, false)
 
 	if !strings.Contains(output, "Write tests") {
 		t.Error("must render a row for task 2 even though it has no commits")
@@ -327,5 +327,25 @@ func TestReviewTaskCount(t *testing.T) {
 				t.Errorf("reviewTaskCount = %d, want %d", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestRenderReviewPanel_PRDraftInFlight verifies that the spinner status line
+// and disabled p hint appear when prDraftInFlight is true.
+func TestRenderReviewPanel_PRDraftInFlight(t *testing.T) {
+	sess := agent.NewSessionForTest("sess-1", "fix-auth")
+	sess.SetOriginalPrompt("Fix the auth bug")
+	sess.MarkDone()
+
+	output := renderReviewPanel(sess, nil, 120, 40, 0, true)
+
+	if !strings.Contains(output, "Pushing branch and drafting PR") {
+		t.Error("in-flight state must show draft spinner line")
+	}
+	if !strings.Contains(output, "in progress") {
+		t.Error("in-flight state must show disabled p hint")
+	}
+	if strings.Contains(output, "create or open PR") {
+		t.Error("in-flight state must not show normal p hint")
 	}
 }
