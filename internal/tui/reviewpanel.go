@@ -60,7 +60,7 @@ func renderReviewHeader(sess *agent.Session, width int) []string {
 		mins := int(time.Since(sess.DoneAt()).Minutes())
 		age = fmt.Sprintf("done %dm ago", mins)
 	}
-	headerLeft := lipgloss.NewStyle().Foreground(lipgloss.Color("#9b7fdb")).Bold(true).Render("REVIEW") +
+	headerLeft := lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true).Render("REVIEW") +
 		"  " + StyleSubtle.Render("›") +
 		"  " + lipgloss.NewStyle().Render(sess.GetDisplayName())
 	headerRight := StyleSubtle.Render(age)
@@ -265,8 +265,8 @@ func renderTaskListPane(entry *reviewDiffEntry, width, height, cursor int) []str
 	}
 
 	cursorStyle := lipgloss.NewStyle().Background(lipgloss.Color("#2a2a3a")).Bold(true)
-	subtleGreen := lipgloss.NewStyle().Foreground(lipgloss.Color("#7ed321"))
-	subtleRed := lipgloss.NewStyle().Foreground(lipgloss.Color("#e74c3c"))
+	subtleGreen := StyleSuccess
+	subtleRed := StyleError
 
 	end := offset + rowsH
 	if end > len(rows) {
@@ -362,8 +362,8 @@ func renderTaskDetailPane(entry *reviewDiffEntry, cursor, width, height int) []s
 		var lines []string
 		if entry.aggregate != nil {
 			agg := entry.aggregate
-			subtleGreen := lipgloss.NewStyle().Foreground(lipgloss.Color("#7ed321"))
-			subtleRed := lipgloss.NewStyle().Foreground(lipgloss.Color("#e74c3c"))
+			subtleGreen := StyleSuccess
+			subtleRed := StyleError
 			summary := fmt.Sprintf("%d files · ", agg.Files) +
 				subtleGreen.Render(fmt.Sprintf("+%d", agg.Insertions)) +
 				" " + subtleRed.Render(fmt.Sprintf("-%d", agg.Deletions))
@@ -459,8 +459,8 @@ func renderTaskDetailPane(entry *reviewDiffEntry, cursor, width, height int) []s
 		sorted := make([]git.FileStat, len(group.files))
 		copy(sorted, group.files)
 		sortFileStatsByChurn(sorted)
-		subtleGreen := lipgloss.NewStyle().Foreground(lipgloss.Color("#7ed321"))
-		subtleRed := lipgloss.NewStyle().Foreground(lipgloss.Color("#e74c3c"))
+		subtleGreen := StyleSuccess
+		subtleRed := StyleError
 		const maxFiles = 8
 		top := sorted
 		if len(top) > maxFiles {
@@ -560,12 +560,12 @@ func renderTaskList(entry *reviewDiffEntry, width, availHeight, cursor int) []st
 	cursorStyle := lipgloss.NewStyle().
 		Background(lipgloss.Color("#2a2a3a")).
 		Bold(true)
-	checkStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#5ab58a"))
-	concernStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#f0c060"))
-	failStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#e74c3c"))
-	spinStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#9b7fdb"))
-	subtleGreen := lipgloss.NewStyle().Foreground(lipgloss.Color("#7ed321"))
-	subtleRed := lipgloss.NewStyle().Foreground(lipgloss.Color("#e74c3c"))
+	checkStyle := StyleSuccess
+	concernStyle := StyleWarning
+	failStyle := StyleError
+	spinStyle := lipgloss.NewStyle().Foreground(ColorPrimary)
+	subtleGreen := StyleSuccess
+	subtleRed := StyleError
 
 	end := offset + rowsH
 	if end > len(rows) {

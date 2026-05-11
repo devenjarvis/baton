@@ -337,6 +337,33 @@ func TestRenderReviewPanel_NilDiffEntry(t *testing.T) {
 	}
 }
 
+// TestRenderReviewPanel_UsesThemeColors verifies that the panel uses the theme's
+// ColorSuccess ANSI escape rather than a hard-coded hex green for a pass verdict.
+func TestRenderReviewPanel_UsesThemeColors(t *testing.T) {
+	sess := agent.NewSessionForTest("sess-1", "fix-auth")
+	sess.SetOriginalPrompt("Fix auth")
+	sess.MarkDone()
+	entry := &reviewDiffEntry{
+		tasks: []agent.PlanTask{{Index: 1, Text: "Add auth middleware"}},
+		groups: []taskReviewGroup{{
+			taskIndex: 1,
+			commits:   []git.Commit{{Hash: "abc1234", Subject: "add middleware"}},
+			stats:     &git.DiffStats{Files: 1, Insertions: 10, Deletions: 2},
+		}},
+		verdicts: map[int]*taskVerdictRecord{
+			1: {state: verdictDone, verdict: agent.ReviewVerdict{Kind: agent.VerdictPass}},
+		},
+	}
+
+	output := renderReviewPanel(sess, entry, 120, 30, 0, false)
+
+	// The pass verdict icon should carry the ColorSuccess ANSI escape.
+	expectedPrefix := StyleSuccess.Render("✓")
+	if !strings.Contains(output, expectedPrefix) {
+		t.Errorf("pass verdict must use StyleSuccess ANSI color; styled icon %q not found in output", expectedPrefix)
+	}
+}
+
 // TestRenderReviewPanel_NoPlanShowsOverview verifies the no-plan (overview) path.
 func TestRenderReviewPanel_NoPlanShowsOverview(t *testing.T) {
 	sess := agent.NewSessionForTest("sess-1", "fix-auth")
