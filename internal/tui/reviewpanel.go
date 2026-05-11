@@ -261,6 +261,7 @@ func renderTaskList(entry *reviewDiffEntry, width, availHeight, cursor int) []st
 					verdictPart = failStyle.Render("✗ " + errStr)
 				case verdictNoDiff:
 					verdictPart = StyleSubtle.Render("no diff found")
+					statPart = "" // "no diff found" already conveys this; avoid the duplicate "no commits" label
 				}
 			}
 		}

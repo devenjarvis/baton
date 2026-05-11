@@ -182,6 +182,78 @@ func TestReviewTaskGroupAtCursor(t *testing.T) {
 	}
 }
 
+// TestPopulateNoDiffVerdicts verifies the detection logic that stamps verdictNoDiff
+// on plan tasks with no matching commit group, leaving matched tasks untouched.
+func TestPopulateNoDiffVerdicts(t *testing.T) {
+	tests := []struct {
+		name          string
+		tasks         []agent.PlanTask
+		verdicts      map[int]*taskVerdictRecord // pre-populated (matched tasks)
+		wantNoDiff    []int                      // task indices that should get verdictNoDiff
+		wantUntouched []int                      // task indices that must keep their original state
+	}{
+		{
+			name: "one matched one unmatched",
+			tasks: []agent.PlanTask{
+				{Index: 1, Text: "task one"},
+				{Index: 2, Text: "task two"},
+			},
+			verdicts:      map[int]*taskVerdictRecord{1: {state: verdictPending}},
+			wantNoDiff:    []int{2},
+			wantUntouched: []int{1},
+		},
+		{
+			name: "all matched — nothing stamped",
+			tasks: []agent.PlanTask{
+				{Index: 1, Text: "task one"},
+			},
+			verdicts:      map[int]*taskVerdictRecord{1: {state: verdictPending}},
+			wantNoDiff:    nil,
+			wantUntouched: []int{1},
+		},
+		{
+			name: "all unmatched",
+			tasks: []agent.PlanTask{
+				{Index: 1, Text: "task one"},
+				{Index: 2, Text: "task two"},
+			},
+			verdicts:      map[int]*taskVerdictRecord{},
+			wantNoDiff:    []int{1, 2},
+			wantUntouched: nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			entry := &reviewDiffEntry{
+				tasks:    tt.tasks,
+				verdicts: tt.verdicts,
+			}
+			populateNoDiffVerdicts(entry)
+
+			for _, idx := range tt.wantNoDiff {
+				v, ok := entry.verdicts[idx]
+				if !ok {
+					t.Errorf("task %d: expected verdictNoDiff entry, got nothing", idx)
+					continue
+				}
+				if v.state != verdictNoDiff {
+					t.Errorf("task %d: want verdictNoDiff, got state %d", idx, v.state)
+				}
+			}
+			for _, idx := range tt.wantUntouched {
+				v, ok := entry.verdicts[idx]
+				if !ok {
+					t.Errorf("task %d: entry disappeared after populate", idx)
+					continue
+				}
+				if v.state == verdictNoDiff {
+					t.Errorf("task %d: should not have been stamped verdictNoDiff", idx)
+				}
+			}
+		})
+	}
+}
+
 // TestRenderTaskList_NoDiffFoundBadge verifies that a plan task with no matching
 // commit group renders a "no diff found" verdict badge instead of being silent,
 // when other tasks do have commit groups (i.e. verdicts map is initialised).
@@ -218,6 +290,9 @@ func TestRenderTaskList_NoDiffFoundBadge(t *testing.T) {
 	}
 	if !strings.Contains(output, "no diff found") {
 		t.Error("task with no commit group must show 'no diff found' badge")
+	}
+	if strings.Contains(output, "no commits") {
+		t.Error("'no diff found' badge must replace 'no commits' label, not appear alongside it")
 	}
 }
 

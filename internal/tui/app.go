@@ -4529,15 +4529,29 @@ func (a App) fetchReviewDiffCmd(sess *agent.Session) tea.Cmd {
 				}
 				// Mark plan tasks that have no matching commit group so the review
 				// panel can surface the gap instead of silently omitting the row.
-				for _, t := range entry.tasks {
-					if _, matched := entry.verdicts[t.Index]; !matched {
-						entry.verdicts[t.Index] = &taskVerdictRecord{state: verdictNoDiff}
-					}
-				}
+				// This intentionally only runs when len(commits) > 0: a session
+				// with no commits at all leaves entry.verdicts nil, which the
+				// render loop treats as "not yet reviewed" rather than "missing
+				// diff". Moving this loop outside the len(commits) guard would
+				// also require initialising entry.verdicts in the outer block
+				// and would change that loading-state semantics.
+				populateNoDiffVerdicts(entry)
 			}
 		}
 
 		return reviewDiffMsg{sessionID: sessID, entry: entry}
+	}
+}
+
+// populateNoDiffVerdicts stamps verdictNoDiff on every plan task in entry that
+// has no matching commit group. It must only be called when entry.verdicts is
+// already initialised (i.e. the session has at least one commit), so that the
+// nil-verdicts "not yet reviewed" state remains distinct from verdictNoDiff.
+func populateNoDiffVerdicts(entry *reviewDiffEntry) {
+	for _, t := range entry.tasks {
+		if _, matched := entry.verdicts[t.Index]; !matched {
+			entry.verdicts[t.Index] = &taskVerdictRecord{state: verdictNoDiff}
+		}
 	}
 }
 
