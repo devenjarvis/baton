@@ -82,7 +82,7 @@ One sentence: what is the developer trying to accomplish?
 2-3 sentences of background. What part of the system does this touch, and what constraints matter? Cite real file paths or symbols where relevant.
 
 ## Tasks
-A short checklist of the steps to ship this. Each task should be small and independently verifiable. Use markdown task syntax: - [ ] description.
+A short checklist of the steps to ship this. Each task should be small and independently verifiable. Use markdown task syntax: - [ ] description. IMPORTANT: the build agent counts ALL "- [ ]" and "- [x]" lines in the plan file top-to-bottom (across every section) to derive the [task N] commit prefix. Do NOT place task-syntax lines anywhere outside this section — stray checkbox lines in Goal, Context, Verification, or Not in scope shift all task indices and break the review panel's commit-to-task mapping.
 
 ## Verification
 How will the developer know the change works? Tests, manual checks, or both.

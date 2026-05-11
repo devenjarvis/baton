@@ -78,9 +78,15 @@ const (
 
 Make exactly one git commit per completed step.
 
-If a file at .claude/plan.md exists in the worktree, the commit subject MUST start with "[task N] " where N is the 1-based index of the task line (counting ALL task list lines — both "- [ ]" and "- [x]" — top-to-bottom, ignoring non-task lines such as section headers). If no .claude/plan.md exists, prefix the subject with "task: " instead. The rest of the subject is a normal short description. Example: "[task 3] add --append-system-prompt flag plumbing".
+If a file at .claude/plan.md exists in the worktree, re-read .claude/plan.md immediately before each commit. The commit subject MUST start with "[task N] " where N is the 1-based index of the task line (counting ALL task list lines — both "- [ ]" and "- [x]" — top-to-bottom, ignoring non-task lines such as section headers). N is counted across the ENTIRE file, including any task lines that appear outside the ## Tasks section. If no .claude/plan.md exists, prefix the subject with "task: " instead. The rest of the subject is a normal short description.
 
-Do not squash unrelated work into a single commit, and do not amend a previous commit to add new task work — each task is its own commit so the work can be reviewed task-by-task.`
+Worked example — given a plan whose full task list (all sections) is:
+  line 1: - [ ] write tests        → [task 1]
+  line 2: - [ ] implement feature  → [task 2]
+  line 3: - [x] update docs        → [task 3]
+the third commit subject is "[task 3] update documentation".
+
+NEVER squash commits, NEVER amend a previous commit to add new task work, and NEVER use git commit --amend. Each task MUST be its own commit so the review panel can map commits back to plan tasks one-to-one. Violating this breaks the per-task diff view.`
 )
 
 // KnownModels is the list of Claude model IDs offered in the config form
