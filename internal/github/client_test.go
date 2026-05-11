@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -479,6 +480,14 @@ func TestMergePR_DefaultsToSquash(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/repos/o/r/pulls/5/merge" {
 			called = true
+			var body struct {
+				MergeMethod string `json:"merge_method"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decoding request body: %v", err)
+			} else if body.MergeMethod != "squash" {
+				t.Errorf("merge_method = %q, want squash", body.MergeMethod)
+			}
 			w.WriteHeader(http.StatusOK)
 			_, _ = fmt.Fprintln(w, `{"sha":"abc","merged":true,"message":"merged"}`)
 			return

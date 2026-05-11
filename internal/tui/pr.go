@@ -88,6 +88,8 @@ type prSessionState struct {
 }
 
 // isMergeReady returns true when all conditions for merge readiness are met.
+// Requires at least one approved review — repos with no required reviewers will
+// never show "Ready" and must use force-merge (M) instead of gated merge (m).
 func isMergeReady(entry *prCacheEntry) bool {
 	if entry == nil || entry.pr == nil {
 		return false

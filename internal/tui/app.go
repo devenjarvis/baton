@@ -3941,7 +3941,8 @@ outer:
 			ps.lastPoll = now
 			ps.inFlight = true
 			a.prPollsInFlight++
-			cmds = append(cmds, a.refreshPRStatusForSession(sess.ID, sess.Branch(), repo.Path, sess.Worktree.Path))
+			fetchThreads := sess.LifecyclePhase() == agent.LifecycleShipping
+			cmds = append(cmds, a.refreshPRStatusForSession(sess.ID, sess.Branch(), repo.Path, sess.Worktree.Path, fetchThreads))
 		}
 	}
 	return cmds
@@ -4013,7 +4014,7 @@ func getLocalHeadSHA(worktreePath string) string {
 
 // refreshPRStatusForSession returns a Cmd that polls PR, check, and review status for a single session.
 // worktreePath is used as a fallback SHA source when the branch hasn't been pushed under its current name.
-func (a *App) refreshPRStatusForSession(sessionID, branch, repoPath, worktreePath string) tea.Cmd {
+func (a *App) refreshPRStatusForSession(sessionID, branch, repoPath, worktreePath string, fetchThreads bool) tea.Cmd {
 	// Guard: ensure the caller passed the repo that actually owns this session.
 	// This catches programming errors (e.g. passing cfg.Repos[0].Path for a
 	// session that belongs to a different repo) before the poll fires.
@@ -4078,8 +4079,11 @@ func (a *App) refreshPRStatusForSession(sessionID, branch, repoPath, worktreePat
 			if err != nil {
 				return prPollMsg{sessionID: sessionID, err: err}
 			}
-			// Threads are best-effort: missing threads degrade gracefully.
-			threads, _ = ghClient.GetReviewThreads(ctx, owner, repo, pr.Number)
+			// Threads are only needed for the shipping panel — skip the fetch for
+			// building/reviewing sessions to avoid doubling review API calls.
+			if fetchThreads {
+				threads, _ = ghClient.GetReviewThreads(ctx, owner, repo, pr.Number)
+			}
 
 			// Walk up the base-branch chain for stacked PR support (best-effort,
 			// max 3 levels). Stop when the base targets a trunk branch, no PR is
@@ -4182,26 +4186,33 @@ func buildFeedbackPrompt(entry *prCacheEntry) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("The following issues need to be addressed on this PR:\n\n")
 	wrote := false
 
-	if entry.checks != nil && entry.checks.Failed > 0 {
-		b.WriteString("## Failing CI Checks\n\n")
+	if entry.checks != nil {
+		var failingRuns []github.CheckRun
 		for _, run := range entry.checks.Runs {
-			if run.Conclusion != "failure" && run.Conclusion != "cancelled" && run.Conclusion != "timed_out" {
-				continue
+			if run.Status == "completed" &&
+				run.Conclusion != "success" &&
+				run.Conclusion != "skipped" &&
+				run.Conclusion != "neutral" {
+				failingRuns = append(failingRuns, run)
 			}
-			b.WriteString("- ")
-			b.WriteString(run.Name)
-			if run.URL != "" {
-				b.WriteString(" (see ")
-				b.WriteString(run.URL)
-				b.WriteString(")")
+		}
+		if len(failingRuns) > 0 {
+			b.WriteString("## Failing CI Checks\n\n")
+			for _, run := range failingRuns {
+				b.WriteString("- ")
+				b.WriteString(run.Name)
+				if run.URL != "" {
+					b.WriteString(" (see ")
+					b.WriteString(run.URL)
+					b.WriteString(")")
+				}
+				b.WriteByte('\n')
 			}
 			b.WriteByte('\n')
+			wrote = true
 		}
-		b.WriteByte('\n')
-		wrote = true
 	}
 
 	hasActionableThreads := false
@@ -4246,8 +4257,7 @@ func buildFeedbackPrompt(entry *prCacheEntry) string {
 	if !wrote {
 		return ""
 	}
-	b.WriteString("Please fix each issue, commit your changes, and push.")
-	return b.String()
+	return "The following issues need to be addressed on this PR:\n\n" + b.String() + "Please fix each issue, commit your changes, and push."
 }
 
 // mergePRCmd returns a Cmd that merges the PR for the given session using the
@@ -4255,6 +4265,11 @@ func buildFeedbackPrompt(entry *prCacheEntry) string {
 // any merge-readiness gating before invoking this.
 func (a *App) mergePRCmd(sessionID string) tea.Cmd {
 	ghClient := a.ghClient
+	if ghClient == nil {
+		return func() tea.Msg {
+			return mergePRMsg{sessionID: sessionID, err: fmt.Errorf("GitHub client not available")}
+		}
+	}
 	entry := a.prCache[sessionID]
 	if entry == nil || entry.pr == nil {
 		return func() tea.Msg { return mergePRMsg{sessionID: sessionID, err: fmt.Errorf("no PR cached")} }
@@ -4264,8 +4279,14 @@ func (a *App) mergePRCmd(sessionID string) tea.Cmd {
 		return func() tea.Msg { return mergePRMsg{sessionID: sessionID, err: fmt.Errorf("session repo not found")} }
 	}
 	method := a.resolvedCache[repoPath].MergeMethod
-	if method == "" {
+	switch method {
+	case "merge", "squash", "rebase":
+	case "":
 		method = "squash"
+	default:
+		return func() tea.Msg {
+			return mergePRMsg{sessionID: sessionID, err: fmt.Errorf("invalid merge_method %q: must be merge, squash, or rebase", method)}
+		}
 	}
 	prNum := entry.pr.Number
 	return func() tea.Msg {

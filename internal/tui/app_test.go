@@ -2527,14 +2527,21 @@ func TestActivateFocusCursor_Shipping_NoPREntry(t *testing.T) {
 }
 
 // TestMergePRMsg_ClosesPanel verifies that a successful mergePRMsg closes the
-// shipping panel and clears shippingSession.
+// shipping panel, clears shippingSession, and transitions the session to Complete.
 func TestMergePRMsg_ClosesPanel(t *testing.T) {
+	dir := t.TempDir()
 	sess := agent.NewSessionForTest("sess-1", "ship")
 	sess.SetLifecyclePhase(agent.LifecycleShipping)
+
+	mgr := agent.NewManager(dir, config.Resolve(nil, nil))
+	defer mgr.Shutdown()
+	mgr.AddSessionForTest(sess)
 
 	app := NewApp()
 	app.shippingSession = sess
 	app.dashboard.panelFocus = focusShipping
+	app.managers[dir] = mgr
+	app.cfg = &config.Config{Repos: []config.Repo{{Path: dir}}}
 
 	model, _ := app.Update(mergePRMsg{sessionID: "sess-1"})
 	got := model.(App)
@@ -2544,6 +2551,9 @@ func TestMergePRMsg_ClosesPanel(t *testing.T) {
 	}
 	if got.shippingSession != nil {
 		t.Error("shippingSession should be nil after merge")
+	}
+	if sess.LifecyclePhase() != agent.LifecycleComplete {
+		t.Errorf("session lifecycle = %v, want LifecycleComplete", sess.LifecyclePhase())
 	}
 }
 
@@ -2596,8 +2606,8 @@ func TestBuildFeedbackPrompt_FailingChecksAndComments(t *testing.T) {
 		checks: &github.CheckStatus{
 			Failed: 1,
 			Runs: []github.CheckRun{
-				{Name: "lint", Conclusion: "failure", URL: "https://ci/run/1"},
-				{Name: "tests", Conclusion: "success"},
+				{Name: "lint", Status: "completed", Conclusion: "failure", URL: "https://ci/run/1"},
+				{Name: "tests", Status: "completed", Conclusion: "success"},
 			},
 		},
 		threads: []github.ReviewThread{
@@ -3227,7 +3237,7 @@ func TestRefreshPRStatus_WrongRepoReturnsError(t *testing.T) {
 	app.cfg = &config.Config{Repos: []config.Repo{{Path: dir}}}
 
 	wrongRepoPath := "/nonexistent/wrong-repo"
-	cmd := app.refreshPRStatusForSession(sess.ID, sess.Branch(), wrongRepoPath, "")
+	cmd := app.refreshPRStatusForSession(sess.ID, sess.Branch(), wrongRepoPath, "", false)
 	if cmd == nil {
 		t.Fatal("expected non-nil Cmd from refreshPRStatusForSession with wrong repo")
 	}
