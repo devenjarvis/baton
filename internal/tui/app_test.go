@@ -2463,16 +2463,11 @@ func TestBKey_OutsidePlanning_FallsThroughToBreak(t *testing.T) {
 	}
 }
 
-// TestActivateFocusCursor_Shipping_OpensPRWhenURLCached verifies that pressing
-// enter (or double-clicking) a Shipping row with a cached PR URL takes the
-// PR-open branch: it returns ok=true without dropping the user into
-// focusLaunch, so they end up in the browser rather than back-to-back agent
-// terminal + browser tab.
-func TestActivateFocusCursor_Shipping_OpensPRWhenURLCached(t *testing.T) {
-	origOpenURL := openURL
-	openURL = func(string) error { return nil }
-	defer func() { openURL = origOpenURL }()
-
+// TestActivateFocusCursor_Shipping_OpensShippingPanel verifies that pressing
+// enter on a Shipping row opens the shipping panel (focusShipping) regardless
+// of whether a PR URL is cached. The browser is reached via the 'p' key inside
+// the panel rather than being opened directly on activation.
+func TestActivateFocusCursor_Shipping_OpensShippingPanel(t *testing.T) {
 	sessS := agent.NewSessionForTest("s", "ship-s")
 	sessS.SetLifecyclePhase(agent.LifecycleShipping)
 
@@ -2493,23 +2488,20 @@ func TestActivateFocusCursor_Shipping_OpensPRWhenURLCached(t *testing.T) {
 
 	_, ok := app.activateFocusCursor()
 	if !ok {
-		t.Fatal("expected activateFocusCursor on Shipping with cached URL to return ok=true")
+		t.Fatal("expected activateFocusCursor on Shipping to return ok=true")
 	}
-	if app.dashboard.panelFocus == focusLaunch {
-		t.Fatalf("expected panelFocus to stay out of focusLaunch when PR URL was opened, got %v", app.dashboard.panelFocus)
+	if app.dashboard.panelFocus != focusShipping {
+		t.Fatalf("expected panelFocus=focusShipping, got %v", app.dashboard.panelFocus)
+	}
+	if app.shippingSession != sessS {
+		t.Fatalf("expected shippingSession to be set to the selected session")
 	}
 }
 
-// TestActivateFocusCursor_Shipping_FallsBackToTerminalWithoutURL verifies that
-// activating a Shipping row whose PR isn't cached yet (or has no URL) falls
-// through to openSessionInFocusLaunch instead of silently no-op'ing — so the
-// user can still drive the agent (e.g. run gh pr create manually). With a test
-// session that has zero agents, openSessionInFocusLaunch returns false; we
-// only need to assert that the PR-open early return is NOT taken (panelFocus
-// would stay out of focusLaunch in either case, but ok=false distinguishes
-// "no agents to open" from the URL-present "ok=true and skipped focusLaunch"
-// path above).
-func TestActivateFocusCursor_Shipping_FallsBackToTerminalWithoutURL(t *testing.T) {
+// TestActivateFocusCursor_Shipping_NoPREntry verifies that activating a
+// Shipping row with no cached PR entry still opens the shipping panel so the
+// user can see the "fetching PR status" placeholder instead of a no-op.
+func TestActivateFocusCursor_Shipping_NoPREntry(t *testing.T) {
 	sessS := agent.NewSessionForTest("s", "ship-s")
 	sessS.SetLifecyclePhase(agent.LifecycleShipping)
 
@@ -2522,15 +2514,231 @@ func TestActivateFocusCursor_Shipping_FallsBackToTerminalWithoutURL(t *testing.T
 		{kind: listItemRepo, repoPath: "/r", repoName: "repo"},
 		{kind: listItemSession, repoPath: "/r", session: sessS},
 	}
-	// No prCache entry: the URL branch is unreachable so activate falls
-	// through to openSessionInFocusLaunch, which returns false because the
-	// test session has no agents — exactly the dispatch we want to pin.
 	app.focusCursorSection = focusSectionShipping
 	app.focusShippingIdx = 0
 
 	_, ok := app.activateFocusCursor()
-	if ok {
-		t.Fatalf("expected ok=false from openSessionInFocusLaunch fallback (no agents), got ok=true")
+	if !ok {
+		t.Fatal("expected ok=true even without a cached PR")
+	}
+	if app.dashboard.panelFocus != focusShipping {
+		t.Fatalf("expected focusShipping, got %v", app.dashboard.panelFocus)
+	}
+}
+
+// TestMergePRMsg_ClosesPanel verifies that a successful mergePRMsg closes the
+// shipping panel, clears shippingSession, and transitions the session to Complete.
+func TestMergePRMsg_ClosesPanel(t *testing.T) {
+	dir := t.TempDir()
+	sess := agent.NewSessionForTest("sess-1", "ship")
+	sess.SetLifecyclePhase(agent.LifecycleShipping)
+
+	mgr := agent.NewManager(dir, config.Resolve(nil, nil))
+	defer mgr.Shutdown()
+	mgr.AddSessionForTest(sess)
+
+	app := NewApp()
+	app.shippingSession = sess
+	app.dashboard.panelFocus = focusShipping
+	app.managers[dir] = mgr
+	app.cfg = &config.Config{Repos: []config.Repo{{Path: dir}}}
+
+	model, _ := app.Update(mergePRMsg{sessionID: "sess-1"})
+	got := model.(App)
+
+	if got.dashboard.panelFocus == focusShipping {
+		t.Error("shipping panel should close after successful merge")
+	}
+	if got.shippingSession != nil {
+		t.Error("shippingSession should be nil after merge")
+	}
+	if sess.LifecyclePhase() != agent.LifecycleComplete {
+		t.Errorf("session lifecycle = %v, want LifecycleComplete", sess.LifecyclePhase())
+	}
+}
+
+// TestPRPollMsg_ExternalMergeClosesPanelAndTransitions verifies that when the
+// PR poller detects an external merge while the shipping panel is open, the
+// panel closes and the session transitions to LifecycleComplete.
+func TestPRPollMsg_ExternalMergeClosesPanelAndTransitions(t *testing.T) {
+	dir := t.TempDir()
+	sess := agent.NewSessionForTest("sess-ext", "ship")
+	sess.SetLifecyclePhase(agent.LifecycleShipping)
+
+	mgr := agent.NewManager(dir, config.Resolve(nil, nil))
+	defer mgr.Shutdown()
+	mgr.AddSessionForTest(sess)
+
+	app := NewApp()
+	app.shippingSession = sess
+	app.dashboard.panelFocus = focusShipping
+	app.managers[dir] = mgr
+	app.cfg = &config.Config{Repos: []config.Repo{{Path: dir}}}
+
+	msg := prPollMsg{
+		sessionID: "sess-ext",
+		pr:        &github.PRState{State: "merged"},
+	}
+	model, _ := app.Update(msg)
+	got := model.(App)
+
+	if got.dashboard.panelFocus == focusShipping {
+		t.Error("shipping panel should close when external merge is detected")
+	}
+	if got.shippingSession != nil {
+		t.Error("shippingSession should be nil after external merge")
+	}
+	if sess.LifecyclePhase() != agent.LifecycleComplete {
+		t.Errorf("session lifecycle = %v, want LifecycleComplete", sess.LifecyclePhase())
+	}
+}
+
+// TestMergePRMsg_ErrorSetsError verifies that a mergePRMsg error is surfaced.
+func TestMergePRMsg_ErrorSetsError(t *testing.T) {
+	app := NewApp()
+	app.dashboard.panelFocus = focusShipping
+	app.shippingSession = agent.NewSessionForTest("s", "ship")
+
+	model, _ := app.Update(mergePRMsg{sessionID: "s", err: errors.New("403 forbidden")})
+	got := model.(App)
+
+	if got.dashboard.panelFocus != focusShipping {
+		t.Error("panel should stay open on merge error")
+	}
+	if got.err == "" {
+		t.Error("error message should be set after merge failure")
+	}
+}
+
+// TestShippingPanel_MKeyGatedOnReady verifies that 'm' is rejected when the PR
+// is not merge-ready, and 'M' bypasses the gate.
+func TestShippingPanel_MKeyGatedOnReady(t *testing.T) {
+	sess := agent.NewSessionForTest("s", "ship")
+	sess.SetLifecyclePhase(agent.LifecycleShipping)
+
+	app := NewApp()
+	app.shippingSession = sess
+	app.dashboard.panelFocus = focusShipping
+	app.prCache = map[string]*prCacheEntry{
+		sess.ID: {pr: &github.PRState{Number: 1, Mergeable: false}},
+	}
+
+	model, _ := app.Update(tea.KeyPressMsg{Code: 'm', Text: "m"})
+	got := model.(App)
+
+	// Panel stays open, error is shown.
+	if got.dashboard.panelFocus != focusShipping {
+		t.Errorf("panel should stay open; got %v", got.dashboard.panelFocus)
+	}
+	if got.err == "" {
+		t.Error("expected error message for not-ready merge")
+	}
+}
+
+// TestBuildFeedbackPrompt_FailingChecksAndComments verifies that the synthesized
+// prompt includes failing check names and reviewer feedback.
+func TestBuildFeedbackPrompt_FailingChecksAndComments(t *testing.T) {
+	entry := &prCacheEntry{
+		checks: &github.CheckStatus{
+			Failed: 1,
+			Runs: []github.CheckRun{
+				{Name: "lint", Status: "completed", Conclusion: "failure", URL: "https://ci/run/1"},
+				{Name: "tests", Status: "completed", Conclusion: "success"},
+			},
+		},
+		threads: []github.ReviewThread{
+			{
+				Reviewer: "alice",
+				State:    "CHANGES_REQUESTED",
+				Body:     "Needs refactor.",
+				Comments: []github.ReviewComment{
+					{Path: "main.go", Body: "rename this", Line: 5},
+				},
+			},
+		},
+	}
+	prompt := buildFeedbackPrompt(entry)
+
+	if !strings.Contains(prompt, "lint") {
+		t.Errorf("prompt missing failing check name: %q", prompt)
+	}
+	if !strings.Contains(prompt, "https://ci/run/1") {
+		t.Errorf("prompt missing check URL: %q", prompt)
+	}
+	if !strings.Contains(prompt, "alice") {
+		t.Errorf("prompt missing reviewer: %q", prompt)
+	}
+	if !strings.Contains(prompt, "Needs refactor") {
+		t.Errorf("prompt missing review body: %q", prompt)
+	}
+	if !strings.Contains(prompt, "main.go:5") {
+		t.Errorf("prompt missing inline comment location: %q", prompt)
+	}
+}
+
+// TestBuildFeedbackPrompt_NilEntry verifies that a nil entry returns "".
+func TestBuildFeedbackPrompt_NilEntry(t *testing.T) {
+	if got := buildFeedbackPrompt(nil); got != "" {
+		t.Errorf("expected empty prompt for nil entry, got: %q", got)
+	}
+}
+
+// TestBuildFeedbackPrompt_ApprovedOnly verifies no prompt for approved PRs.
+func TestBuildFeedbackPrompt_ApprovedOnly(t *testing.T) {
+	entry := &prCacheEntry{
+		checks:  &github.CheckStatus{State: "success"},
+		reviews: &github.ReviewStatus{State: "approved"},
+		threads: []github.ReviewThread{
+			{Reviewer: "bob", State: "APPROVED", Body: "LGTM"},
+		},
+	}
+	if got := buildFeedbackPrompt(entry); got != "" {
+		t.Errorf("expected empty prompt when no actionable feedback, got: %q", got)
+	}
+}
+
+// TestBuildFeedbackPrompt_CommentedOnlyWithInlineComments verifies that
+// COMMENTED-only threads with inline comments are included in the prompt.
+func TestBuildFeedbackPrompt_CommentedOnlyWithInlineComments(t *testing.T) {
+	entry := &prCacheEntry{
+		threads: []github.ReviewThread{
+			{
+				Reviewer: "carol",
+				State:    "COMMENTED",
+				Body:     "",
+				Comments: []github.ReviewComment{
+					{Path: "server.go", Body: "nit: rename variable", Line: 42},
+				},
+			},
+		},
+	}
+	prompt := buildFeedbackPrompt(entry)
+	if prompt == "" {
+		t.Error("expected non-empty prompt for COMMENTED thread with inline comments")
+	}
+	if !strings.Contains(prompt, "carol") {
+		t.Errorf("prompt missing COMMENTED reviewer: %q", prompt)
+	}
+	if !strings.Contains(prompt, "server.go:42") {
+		t.Errorf("prompt missing inline comment location: %q", prompt)
+	}
+}
+
+// TestBuildFeedbackPrompt_CommentedOnlyWithoutInlineComments verifies that
+// COMMENTED threads with no inline comments are not included in the prompt.
+func TestBuildFeedbackPrompt_CommentedOnlyWithoutInlineComments(t *testing.T) {
+	entry := &prCacheEntry{
+		threads: []github.ReviewThread{
+			{
+				Reviewer: "dave",
+				State:    "COMMENTED",
+				Body:     "Nice work!",
+				Comments: nil,
+			},
+		},
+	}
+	if got := buildFeedbackPrompt(entry); got != "" {
+		t.Errorf("expected empty prompt for COMMENTED thread with no inline comments, got: %q", got)
 	}
 }
 
@@ -3065,7 +3273,7 @@ func TestRefreshPRStatus_WrongRepoReturnsError(t *testing.T) {
 	app.cfg = &config.Config{Repos: []config.Repo{{Path: dir}}}
 
 	wrongRepoPath := "/nonexistent/wrong-repo"
-	cmd := app.refreshPRStatusForSession(sess.ID, sess.Branch(), wrongRepoPath, "")
+	cmd := app.refreshPRStatusForSession(sess.ID, sess.Branch(), wrongRepoPath, "", false)
 	if cmd == nil {
 		t.Fatal("expected non-nil Cmd from refreshPRStatusForSession with wrong repo")
 	}

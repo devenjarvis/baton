@@ -116,6 +116,12 @@ type prCreatedMsg struct {
 	err                error
 }
 
+// mergePRMsg carries the result of an async PR merge attempt.
+type mergePRMsg struct {
+	sessionID string
+	err       error
+}
+
 // diffStatsEntry holds cached diff stats for a single session.
 type diffStatsEntry struct {
 	stats       *diffSummaryData
@@ -179,6 +185,7 @@ type App struct {
 	reviewDiffCache        map[string]*reviewDiffEntry // keyed by session ID
 	reviewSession          *agent.Session              // session currently open in review panel
 	reviewTaskCursor       int                         // selected task row in the review task list
+	shippingSession        *agent.Session              // session currently open in shipping panel
 	planEditor             *planEditorModel            // non-nil while panelFocus == focusPlanEditor
 	promptModal            promptModalModel            // overlay for plan-first new-session prompt
 
@@ -1074,6 +1081,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			pr:      msg.pr,
 			checks:  msg.checks,
 			reviews: msg.reviews,
+			threads: msg.threads,
 			stack:   msg.stack,
 		}
 		// Detect PR merge/close and transition to Complete lifecycle phase.
@@ -1084,6 +1092,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if sess := mgr.GetSession(msg.sessionID); sess != nil {
 						if sess.LifecyclePhase() == agent.LifecycleShipping {
 							sess.SetLifecyclePhase(agent.LifecycleComplete)
+							// Close the shipping panel if this session is currently open in it.
+							if a.shippingSession != nil && a.shippingSession.ID == msg.sessionID {
+								a.shippingSession = nil
+								a.dashboard.panelFocus = focusList
+							}
 						}
 					}
 				}
@@ -1113,6 +1126,25 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			ps.lastCheckState = newState
 		}
 		a.updateDashboardPRCache()
+		return a, nil
+
+	case mergePRMsg:
+		if msg.err != nil {
+			a.setError("merge failed: " + msg.err.Error())
+			return a, nil
+		}
+		// Transition the session to Complete immediately rather than waiting for
+		// the next PR poll to detect the merged state.
+		repoPath := a.repoPathForSession(msg.sessionID)
+		if repoPath != "" {
+			if mgr := a.managers[repoPath]; mgr != nil {
+				if sess := mgr.GetSession(msg.sessionID); sess != nil {
+					sess.SetLifecyclePhase(agent.LifecycleComplete)
+				}
+			}
+		}
+		a.shippingSession = nil
+		a.dashboard.panelFocus = focusList
 		return a, nil
 
 	case resumeDoneMsg:
@@ -1645,8 +1677,52 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 
+		// Shipping panel key handling.
+		if a.dashboard.panelFocus == focusShipping && a.shippingSession != nil {
+			switch msg.String() {
+			case "esc":
+				a.dashboard.panelFocus = focusList
+				a.shippingSession = nil
+			case "t":
+				sess := a.shippingSession
+				a.shippingSession = nil
+				a.dashboard.panelFocus = focusList
+				if !a.openSessionInFocusLaunch(sess) {
+					a.setError("session has no agents to open")
+				}
+			case "p":
+				if entry := a.prCache[a.shippingSession.ID]; entry != nil && entry.pr != nil && entry.pr.URL != "" {
+					if err := openURL(entry.pr.URL); err != nil {
+						a.setError(err.Error())
+					}
+				} else {
+					a.setError("no PR URL available")
+				}
+			case "m":
+				// Merge: gated on isMergeReady.
+				entry := a.prCache[a.shippingSession.ID]
+				if !isMergeReady(entry) {
+					a.setError("not ready to merge — use M to force")
+					return a, nil
+				}
+				return a, a.mergePRCmd(a.shippingSession.ID)
+			case "M":
+				// Force merge: bypasses isMergeReady check.
+				entry := a.prCache[a.shippingSession.ID]
+				if entry == nil || entry.pr == nil {
+					a.setError("no PR found")
+					return a, nil
+				}
+				return a, a.mergePRCmd(a.shippingSession.ID)
+			case "r":
+				// Address feedback: synthesize a prompt and spawn a new agent.
+				return a.addressFeedback(a.shippingSession)
+			}
+			return a, nil
+		}
+
 		// Pipeline view key handling (the only dashboard mode).
-		if a.dashboard.panelFocus != focusReview {
+		if a.dashboard.panelFocus != focusReview && a.dashboard.panelFocus != focusShipping {
 			switch msg.String() {
 			case "up", "k":
 				a.moveFocusCursorUp()
@@ -3242,13 +3318,9 @@ func (a *App) activateFocusCursor() (tea.Cmd, bool) {
 		}
 		return nil, true
 	case focusSectionShipping:
-		if entry := a.prCache[sess.ID]; entry != nil && entry.pr != nil && entry.pr.URL != "" {
-			if err := openURL(entry.pr.URL); err != nil {
-				a.setError(err.Error())
-			}
-			return nil, true
-		}
-		return nil, a.openSessionInFocusLaunch(sess)
+		a.shippingSession = sess
+		a.dashboard.panelFocus = focusShipping
+		return nil, true
 	}
 	return nil, false
 }
@@ -3490,6 +3562,12 @@ func (a App) View() tea.View {
 		if a.dashboard.panelFocus == focusReview && a.reviewSession != nil {
 			entry := a.reviewDiffCache[a.reviewSession.ID]
 			v := tea.NewView(renderReviewPanel(a.reviewSession, entry, a.width, a.height, a.reviewTaskCursor))
+			v.AltScreen = true
+			return v
+		}
+		if a.dashboard.panelFocus == focusShipping && a.shippingSession != nil {
+			entry := a.prCache[a.shippingSession.ID]
+			v := tea.NewView(renderShippingPanel(a.shippingSession, entry, a.width, a.height))
 			v.AltScreen = true
 			return v
 		}
@@ -3868,7 +3946,8 @@ outer:
 			ps.lastPoll = now
 			ps.inFlight = true
 			a.prPollsInFlight++
-			cmds = append(cmds, a.refreshPRStatusForSession(sess.ID, sess.Branch(), repo.Path, sess.Worktree.Path))
+			fetchThreads := sess.LifecyclePhase() == agent.LifecycleShipping
+			cmds = append(cmds, a.refreshPRStatusForSession(sess.ID, sess.Branch(), repo.Path, sess.Worktree.Path, fetchThreads))
 		}
 	}
 	return cmds
@@ -3940,7 +4019,7 @@ func getLocalHeadSHA(worktreePath string) string {
 
 // refreshPRStatusForSession returns a Cmd that polls PR, check, and review status for a single session.
 // worktreePath is used as a fallback SHA source when the branch hasn't been pushed under its current name.
-func (a *App) refreshPRStatusForSession(sessionID, branch, repoPath, worktreePath string) tea.Cmd {
+func (a *App) refreshPRStatusForSession(sessionID, branch, repoPath, worktreePath string, fetchThreads bool) tea.Cmd {
 	// Guard: ensure the caller passed the repo that actually owns this session.
 	// This catches programming errors (e.g. passing cfg.Repos[0].Path for a
 	// session that belongs to a different repo) before the poll fires.
@@ -3988,6 +4067,7 @@ func (a *App) refreshPRStatusForSession(sessionID, branch, repoPath, worktreePat
 		}
 		var checks *github.CheckStatus
 		var reviews *github.ReviewStatus
+		var threads []github.ReviewThread
 		var stack []*prCacheEntry
 		if pr != nil {
 			var err error
@@ -4003,6 +4083,11 @@ func (a *App) refreshPRStatusForSession(sessionID, branch, repoPath, worktreePat
 			reviews, err = ghClient.GetReviews(ctx, owner, repo, pr.Number)
 			if err != nil {
 				return prPollMsg{sessionID: sessionID, err: err}
+			}
+			// Threads are only needed for the shipping panel — skip the fetch for
+			// building/reviewing sessions to avoid doubling review API calls.
+			if fetchThreads {
+				threads, _ = ghClient.GetReviewThreads(ctx, owner, repo, pr.Number)
 			}
 
 			// Walk up the base-branch chain for stacked PR support (best-effort,
@@ -4039,8 +4124,191 @@ func (a *App) refreshPRStatusForSession(sessionID, branch, repoPath, worktreePat
 			pr:        pr,
 			checks:    checks,
 			reviews:   reviews,
+			threads:   threads,
 			stack:     stack,
 		}
+	}
+}
+
+// addressFeedback synthesizes a prompt from failing CI checks and unresolved
+// review comments, spawns a new agent in the session's existing worktree, and
+// transitions the session back to LifecycleInProgress. The PR stays open.
+func (a *App) addressFeedback(sess *agent.Session) (tea.Model, tea.Cmd) {
+	if sess == nil {
+		return a, nil
+	}
+	repoPath := a.repoPathForSession(sess.ID)
+	if repoPath == "" {
+		a.setError("no repo found for session")
+		return a, nil
+	}
+	mgr := a.managers[repoPath]
+	if mgr == nil {
+		a.setError("session manager not found")
+		return a, nil
+	}
+
+	entry := a.prCache[sess.ID]
+	prompt := buildFeedbackPrompt(entry)
+	if prompt == "" {
+		prompt = "Address the CI failures and review feedback on this PR."
+	}
+
+	resolved := a.resolvedCache[repoPath]
+	fixedW := a.dashboard.fixedTermWidth()
+	fixedH := a.dashboard.fixedTermHeight()
+	if fixedW <= 0 || fixedH <= 0 {
+		a.setError("terminal size not yet known; try again")
+		return a, nil
+	}
+	cfg := agent.Config{
+		Rows:              fixedH,
+		Cols:              fixedW,
+		BypassPermissions: resolved.BypassPermissions,
+		AgentProgram:      resolved.AgentProgram,
+		AgentModel:        resolved.AgentModel,
+		BuildSystemPrompt: resolved.BuildSystemPrompt,
+		Task:              prompt,
+	}
+
+	sessID := sess.ID
+	a.shippingSession = nil
+	a.dashboard.panelFocus = focusList
+	return a, func() tea.Msg {
+		ag, err := mgr.AddAgent(sessID, cfg)
+		if err != nil {
+			return createResultMsg{err: err}
+		}
+		sess.SetLifecyclePhase(agent.LifecycleInProgress)
+		return createResultMsg{sessionID: sessID, agentID: ag.ID}
+	}
+}
+
+// buildFeedbackPrompt synthesizes an agent prompt from the failing CI checks
+// and unresolved review comments in entry. Returns "" when nothing is actionable.
+func buildFeedbackPrompt(entry *prCacheEntry) string {
+	if entry == nil {
+		return ""
+	}
+	var b strings.Builder
+	wrote := false
+
+	if entry.checks != nil {
+		var failingRuns []github.CheckRun
+		for _, run := range entry.checks.Runs {
+			if run.Status == "completed" &&
+				run.Conclusion != "success" &&
+				run.Conclusion != "skipped" &&
+				run.Conclusion != "neutral" {
+				failingRuns = append(failingRuns, run)
+			}
+		}
+		if len(failingRuns) > 0 {
+			b.WriteString("## Failing CI Checks\n\n")
+			for _, run := range failingRuns {
+				b.WriteString("- ")
+				b.WriteString(run.Name)
+				if run.URL != "" {
+					b.WriteString(" (see ")
+					b.WriteString(run.URL)
+					b.WriteString(")")
+				}
+				b.WriteByte('\n')
+			}
+			b.WriteByte('\n')
+			wrote = true
+		}
+	}
+
+	hasActionableThreads := false
+	for _, thread := range entry.threads {
+		if thread.State == "CHANGES_REQUESTED" || (thread.State == "COMMENTED" && len(thread.Comments) > 0) {
+			hasActionableThreads = true
+			break
+		}
+	}
+	if hasActionableThreads {
+		b.WriteString("## Review Feedback\n\n")
+		for _, thread := range entry.threads {
+			if thread.State != "CHANGES_REQUESTED" && (thread.State != "COMMENTED" || len(thread.Comments) == 0) {
+				continue
+			}
+			b.WriteString("**")
+			b.WriteString(thread.Reviewer)
+			b.WriteString("**")
+			if thread.State == "CHANGES_REQUESTED" {
+				b.WriteString(" (changes requested)")
+			}
+			b.WriteString(":\n")
+			if thread.Body != "" {
+				b.WriteString(thread.Body)
+				b.WriteByte('\n')
+			}
+			for _, c := range thread.Comments {
+				b.WriteString("- ")
+				b.WriteString(c.Path)
+				if c.Line > 0 {
+					b.WriteString(fmt.Sprintf(":%d", c.Line))
+				}
+				b.WriteString(": ")
+				b.WriteString(c.Body)
+				b.WriteByte('\n')
+			}
+			b.WriteByte('\n')
+		}
+		wrote = true
+	}
+
+	if !wrote {
+		return ""
+	}
+	return "The following issues need to be addressed on this PR:\n\n" + b.String() + "Please fix each issue, commit your changes, and push."
+}
+
+// mergePRCmd returns a Cmd that merges the PR for the given session using the
+// repo-configured merge method (default squash). The caller is responsible for
+// any merge-readiness gating before invoking this.
+func (a *App) mergePRCmd(sessionID string) tea.Cmd {
+	ghClient := a.ghClient
+	if ghClient == nil {
+		return func() tea.Msg {
+			return mergePRMsg{sessionID: sessionID, err: fmt.Errorf("GitHub client not available")}
+		}
+	}
+	entry := a.prCache[sessionID]
+	if entry == nil || entry.pr == nil {
+		return func() tea.Msg { return mergePRMsg{sessionID: sessionID, err: fmt.Errorf("no PR cached")} }
+	}
+	repoPath := a.repoPathForSession(sessionID)
+	if repoPath == "" {
+		return func() tea.Msg { return mergePRMsg{sessionID: sessionID, err: fmt.Errorf("session repo not found")} }
+	}
+	method := a.resolvedCache[repoPath].MergeMethod
+	switch method {
+	case "merge", "squash", "rebase":
+	case "":
+		method = "squash"
+	default:
+		return func() tea.Msg {
+			return mergePRMsg{sessionID: sessionID, err: fmt.Errorf("invalid merge_method %q: must be merge, squash, or rebase", method)}
+		}
+	}
+	prNum := entry.pr.Number
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		rawURL, err := git.GetRemoteURL(repoPath)
+		if err != nil {
+			return mergePRMsg{sessionID: sessionID, err: err}
+		}
+		owner, repo, err := github.ParseRemoteURL(rawURL)
+		if err != nil {
+			return mergePRMsg{sessionID: sessionID, err: err}
+		}
+		if err := ghClient.MergePR(ctx, owner, repo, prNum, method); err != nil {
+			return mergePRMsg{sessionID: sessionID, err: err}
+		}
+		return mergePRMsg{sessionID: sessionID}
 	}
 }
 
