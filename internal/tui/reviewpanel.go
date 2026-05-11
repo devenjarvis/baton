@@ -52,6 +52,53 @@ func verdictBadge(rec *taskVerdictRecord) (icon string, label string, style lipg
 	return "⋯", "Pending", StyleSubtle
 }
 
+// renderReviewHeader returns the 4-line collapsed header:
+// [0] REVIEW › <name> [age], [1] prompt line 1, [2] prompt line 2 (with …), [3] divider.
+// For short prompts that fit in one line, returns 3 lines: [0] title, [1] prompt, [2] divider.
+func renderReviewHeader(sess *agent.Session, width int) []string {
+	age := ""
+	if !sess.DoneAt().IsZero() {
+		mins := int(time.Since(sess.DoneAt()).Minutes())
+		age = fmt.Sprintf("done %dm ago", mins)
+	}
+	headerLeft := lipgloss.NewStyle().Foreground(lipgloss.Color("#9b7fdb")).Bold(true).Render("REVIEW") +
+		"  " + StyleSubtle.Render("›") +
+		"  " + lipgloss.NewStyle().Render(sess.GetDisplayName())
+	headerRight := StyleSubtle.Render(age)
+	gap := width - ansi.StringWidth(headerLeft) - ansi.StringWidth(headerRight) - 4
+	if gap < 1 {
+		gap = 1
+	}
+	titleRow := headerLeft + strings.Repeat(" ", gap) + headerRight
+
+	prompt := sess.OriginalPrompt()
+	if prompt == "" {
+		prompt = "(no prompt recorded)"
+	}
+	intentLines := wrapText(prompt, width-10)
+	if len(intentLines) > 2 {
+		line2 := intentLines[1]
+		// Trim line2 to fit with the ellipsis appended.
+		maxLine2 := width - 10 - 2 // leave room for " …"
+		if maxLine2 < 4 {
+			maxLine2 = 4
+		}
+		if utf8.RuneCountInString(line2) > maxLine2 {
+			runes := []rune(line2)
+			line2 = string(runes[:maxLine2])
+		}
+		intentLines = []string{intentLines[0], line2 + " …"}
+	}
+
+	lines := make([]string, 0, 2+len(intentLines)+1)
+	lines = append(lines, titleRow)
+	for _, l := range intentLines {
+		lines = append(lines, "  "+l)
+	}
+	lines = append(lines, StyleSubtle.Render(strings.Repeat("─", width-2)))
+	return lines
+}
+
 // renderReviewPanel renders the fullscreen review panel for a session.
 // entry may be nil while diff stats are being fetched (shows loading placeholder).
 // cursor is the currently selected task row index (0-based among all task rows).

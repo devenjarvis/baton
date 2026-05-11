@@ -4,9 +4,52 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/devenjarvis/baton/internal/agent"
 	"github.com/devenjarvis/baton/internal/git"
 )
+
+// TestRenderReviewHeader_TwoLineIntentCap checks that a long prompt is capped to
+// two intent lines (with trailing …) giving title+2 intent+divider = 4 lines total,
+// and that every line fits within width-4 visible cells.
+func TestRenderReviewHeader_TwoLineIntentCap(t *testing.T) {
+	const width = 120
+	sess := agent.NewSessionForTest("sess-1", "fix-auth")
+	// 400-character prompt with spaces so wrapText can break lines.
+	longPrompt := strings.Repeat("Fix authentication tokens so they properly redirect to the login page when expired. ", 5)
+	sess.SetOriginalPrompt(longPrompt)
+	sess.MarkDone()
+
+	lines := renderReviewHeader(sess, width)
+
+	// Expect: title row + exactly 2 intent rows (2nd ending with …) + divider = 4 total.
+	if len(lines) != 4 {
+		t.Errorf("renderReviewHeader returned %d lines, want 4 (title+2 intent+divider); got:\n%s",
+			len(lines), strings.Join(lines, "\n"))
+	}
+	if len(lines) < 4 {
+		t.Fatal("too few lines to inspect")
+	}
+	// Title line must contain REVIEW.
+	if !strings.Contains(lines[0], "REVIEW") {
+		t.Errorf("first line must contain REVIEW, got: %q", lines[0])
+	}
+	// Intent lines (lines[1] and lines[2]) must fit within width-4 visible cells.
+	for i := 1; i <= 2; i++ {
+		if vw := ansi.StringWidth(lines[i]); vw > width-4 {
+			t.Errorf("intent line %d visible width %d exceeds %d: %q", i, vw, width-4, lines[i])
+		}
+	}
+	// Second intent line (lines[2]) must end with ellipsis.
+	if !strings.HasSuffix(strings.TrimRight(lines[2], " "), "…") {
+		t.Errorf("second intent line must end with '…', got: %q", lines[2])
+	}
+	// Last line must be the divider.
+	last := lines[len(lines)-1]
+	if !strings.Contains(ansi.Strip(last), "─") {
+		t.Errorf("last line must be the horizontal divider, got: %q", last)
+	}
+}
 
 func TestRenderReviewPanel_ShowsOriginalPrompt(t *testing.T) {
 	sess := agent.NewSessionForTest("sess-1", "fix-auth")
