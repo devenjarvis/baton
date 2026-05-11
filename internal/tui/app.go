@@ -96,17 +96,17 @@ type resumeDoneMsg struct {
 // prDraftReadyMsg carries the result of the async push+draft pipeline.
 // On success Title/Body are non-empty. On error Err is set.
 type prDraftReadyMsg struct {
-	sessionID         string
-	title             string
-	body              string
-	owner             string
-	repo              string
-	head              string
-	base              string
-	worktreePath      string
-	repoPath          string
+	sessionID          string
+	title              string
+	body               string
+	owner              string
+	repo               string
+	head               string
+	base               string
+	worktreePath       string
+	repoPath           string
 	transitionShipping bool
-	err               error
+	err                error
 }
 
 // prCreatedMsg carries the result of the async github.Client.CreatePR call.
@@ -234,8 +234,8 @@ func NewApp() App {
 		prPollStates:    make(map[string]*prSessionState),
 		closingAgents:   make(map[string]bool),
 		closingSessions: make(map[string]bool),
-		promptModal:    newPromptModal(),
-		prComposeModal: newPRComposeModal(),
+		promptModal:     newPromptModal(),
+		prComposeModal:  newPRComposeModal(),
 	}
 }
 

@@ -14,13 +14,13 @@ import (
 // PR title and body before creation. The user can tab between fields, toggle
 // draft mode, confirm, or cancel.
 type prComposeModal struct {
-	active     bool
-	titleArea  textarea.Model
-	bodyArea   textarea.Model
-	focused    int // 0 = title field, 1 = body field
-	draft      bool
-	width      int
-	height     int
+	active    bool
+	titleArea textarea.Model
+	bodyArea  textarea.Model
+	focused   int // 0 = title field, 1 = body field
+	draft     bool
+	width     int
+	height    int
 }
 
 // prComposeSubmitMsg fires when the user confirms the PR draft.
@@ -149,7 +149,7 @@ func (m *prComposeModal) View() string {
 		bodyLabel = StyleTitle.Render("Body")
 	}
 
-	draftLabel := StyleSubtle.Render("draft")
+	var draftLabel string
 	if m.draft {
 		draftLabel = lipgloss.NewStyle().Foreground(lipgloss.Color("#F59E0B")).Bold(true).Render("● draft")
 	} else {
@@ -192,7 +192,8 @@ func prComposeHeader(innerW int, draftLabel string) string {
 func prComposeFooter() string {
 	chip := func(key string) string { return StyleTitle.Render(key) }
 	desc := func(s string) string { return StyleSubtle.Render(s) }
-	line1 := fmt.Sprintf("%s %s   %s %s   %s %s   %s %s",
+	line1 := fmt.Sprintf(
+		"%s %s   %s %s   %s %s   %s %s",
 		chip("↵"), desc("create"),
 		chip("⇥"), desc("switch field"),
 		chip("d"), desc("toggle draft"),

@@ -137,10 +137,10 @@ type GlobalSettings struct {
 	BuildSystemPrompt   *string `json:"build_system_prompt,omitempty"`
 
 	// PR creation settings.
-	PRTitlePrompt      *string `json:"pr_title_prompt,omitempty"`
-	PRBodyPrompt       *string `json:"pr_body_prompt,omitempty"`
-	PRDraftByDefault   *bool   `json:"pr_draft_by_default,omitempty"`
-	AutoOpenPRInBrowser *bool  `json:"auto_open_pr_in_browser,omitempty"`
+	PRTitlePrompt       *string `json:"pr_title_prompt,omitempty"`
+	PRBodyPrompt        *string `json:"pr_body_prompt,omitempty"`
+	PRDraftByDefault    *bool   `json:"pr_draft_by_default,omitempty"`
+	AutoOpenPRInBrowser *bool   `json:"auto_open_pr_in_browser,omitempty"`
 }
 
 // RepoSettings holds per-repo overrides stored at <repo>/.baton/config.json.
