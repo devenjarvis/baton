@@ -546,16 +546,17 @@ func (d dashboardModel) sessionFocusStripeColor(sess *agent.Session) lipgloss.Co
 	}
 }
 
-// renderFocusSessionCard returns exactly 4 lines for a session card in focus
-// mode. Each line begins with a colored vertical stripe (▎) whose color encodes
-// the dominant session state via sessionFocusStripeColor; the selected card
-// brightens the stripe to ColorSecondary. The card has fixed height so the
-// list layout is predictable regardless of summary length.
+// renderFocusSessionCard returns 4 lines for a session card in focus mode, or
+// 5 lines when a Building session has unfinished plan tasks. Each line begins
+// with a colored vertical stripe (▎) whose color encodes the dominant session
+// state via sessionFocusStripeColor; the selected card brightens the stripe to
+// ColorSecondary.
 //
 // Line 1: <stripe> <name (bold, ColorText)>     ... right-aligned <status badge>
 // Line 2: <stripe>   <description line 1 (muted; italic if pending)>
 // Line 3: <stripe>   <description line 2 or empty>  (always reserved)
-// Line 4: <stripe>   <branch [· detail]>        ... right-aligned <elapsed>
+// Line 4: <stripe>   ▸ <first open task> [· next: <second open>]  (plan-backed building only)
+// Line 4/5: <stripe>   <branch [· detail]>      ... right-aligned <elapsed>
 func (d dashboardModel) renderFocusSessionCard(sess *agent.Session, repoName string, selected bool, width int) []string {
 	stripeColor := d.sessionFocusStripeColor(sess)
 	if selected {
@@ -667,6 +668,10 @@ func (d dashboardModel) renderFocusSessionCard(sess *agent.Session, repoName str
 	}
 	line4 := rightAlign(bottomLeft, StyleSubtle.Render(elapsedStr), width)
 
+	if progress := planProgressLine(sess, descBudget); progress != "" {
+		progressLine := stripe + indent + StyleSubtle.Render(progress)
+		return []string{line1, line2, line3, progressLine, line4}
+	}
 	return []string{line1, line2, line3, line4}
 }
 
@@ -804,6 +809,40 @@ func secondUncompletedTask(plan string) string {
 		}
 	}
 	return ""
+}
+
+// planProgressLine returns the text content for the optional task-progress
+// line on a Building session card ("▸ first open · next: second open"),
+// truncated to budget display cells. Returns "" when the line should be
+// omitted: session is not LifecycleInProgress, it is reviewable (all tasks
+// done), it has no plan, the plan has no task lines, or all tasks are already
+// done (firstUncompletedTask returns ""). The first-open-task approximation is
+// intentional — deriving the in-flight task from git commits would require
+// per-tick git I/O that the plan cache avoids.
+func planProgressLine(sess *agent.Session, budget int) string {
+	if sess.LifecyclePhase() != agent.LifecycleInProgress {
+		return ""
+	}
+	if sess.IsReviewable() {
+		return ""
+	}
+	plan, present := sess.CachedPlan()
+	if !present {
+		return ""
+	}
+	total, _ := planTaskCounts(plan)
+	if total == 0 {
+		return ""
+	}
+	first := firstUncompletedTask(plan)
+	if first == "" {
+		return ""
+	}
+	text := "▸ " + first
+	if second := secondUncompletedTask(plan); second != "" {
+		text += " · next: " + second
+	}
+	return truncateVisible(text, budget)
 }
 
 // buildingProgressBadge returns a styled "▸ done/total · N active" badge for

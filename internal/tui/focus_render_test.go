@@ -422,6 +422,116 @@ func TestRenderQueueRow_RepoPrefix(t *testing.T) {
 	}
 }
 
+// TestRenderFocusSessionCard_PlanBackedBuildingHasTaskProgressLine verifies
+// that a Building session with a plan and open tasks produces a 5-line card
+// where the description (lines 2–3) is preserved and the new line 4 shows
+// "▸ first open · next: second open", with the branch/elapsed row moved to
+// line 5.
+func TestRenderFocusSessionCard_PlanBackedBuildingHasTaskProgressLine(t *testing.T) {
+	dir := t.TempDir()
+	sess := agent.NewSessionForTestWithPath("s", "my-session", dir)
+	sess.SetLifecyclePhase(agent.LifecycleInProgress)
+	sess.SetTaskSummary("implement oauth flow")
+	if err := sess.WritePlan("- [x] done thing\n- [ ] write tests\n- [ ] open PR\n"); err != nil {
+		t.Fatal(err)
+	}
+	ag := sess.AddTestAgent("a-1", false, agent.StatusActive)
+
+	d := newDashboardModel()
+	d.items = []listItem{
+		{kind: listItemSession, repoPath: "/r", session: sess},
+		{kind: listItemAgent, repoPath: "/r", session: sess, agent: ag},
+	}
+
+	card := d.renderFocusSessionCard(sess, "", false, 100)
+	if len(card) != 5 {
+		t.Fatalf("expected 5-line card for plan-backed building session, got %d lines: %v", len(card), card)
+	}
+	if !strings.Contains(ansi.Strip(card[1]), "implement oauth flow") {
+		t.Errorf("line 2 should show description (task summary), got %q", ansi.Strip(card[1]))
+	}
+	line4 := ansi.Strip(card[3])
+	if !strings.Contains(line4, "write tests") {
+		t.Errorf("line 4 should contain first open task, got %q", line4)
+	}
+	if !strings.Contains(line4, "next: open PR") {
+		t.Errorf("line 4 should contain 'next: open PR', got %q", line4)
+	}
+}
+
+// TestRenderFocusSessionCard_PlanWithSingleOpenTaskDropsNextSuffix verifies
+// that when only one open task remains, the task-progress line shows "▸ task"
+// without a "next:" suffix.
+func TestRenderFocusSessionCard_PlanWithSingleOpenTaskDropsNextSuffix(t *testing.T) {
+	dir := t.TempDir()
+	sess := agent.NewSessionForTestWithPath("s", "my-session", dir)
+	sess.SetLifecyclePhase(agent.LifecycleInProgress)
+	if err := sess.WritePlan("- [x] done\n- [ ] last task\n"); err != nil {
+		t.Fatal(err)
+	}
+	ag := sess.AddTestAgent("a-1", false, agent.StatusActive)
+
+	d := newDashboardModel()
+	d.items = []listItem{
+		{kind: listItemSession, repoPath: "/r", session: sess},
+		{kind: listItemAgent, repoPath: "/r", session: sess, agent: ag},
+	}
+
+	card := d.renderFocusSessionCard(sess, "", false, 100)
+	if len(card) != 5 {
+		t.Fatalf("expected 5-line card with single open task, got %d lines", len(card))
+	}
+	line4 := ansi.Strip(card[3])
+	if !strings.Contains(line4, "last task") {
+		t.Errorf("line 4 should contain open task name, got %q", line4)
+	}
+	if strings.Contains(line4, "next:") {
+		t.Errorf("line 4 must not have 'next:' with single open task, got %q", line4)
+	}
+}
+
+// TestRenderFocusSessionCard_PlanWithNoOpenTasksStaysFourLines verifies that a
+// plan where all tasks are done produces a 4-line card (no task-progress line).
+func TestRenderFocusSessionCard_PlanWithNoOpenTasksStaysFourLines(t *testing.T) {
+	dir := t.TempDir()
+	sess := agent.NewSessionForTestWithPath("s", "my-session", dir)
+	sess.SetLifecyclePhase(agent.LifecycleInProgress)
+	if err := sess.WritePlan("- [x] one\n- [x] two\n"); err != nil {
+		t.Fatal(err)
+	}
+	ag := sess.AddTestAgent("a-1", false, agent.StatusIdle)
+
+	d := newDashboardModel()
+	d.items = []listItem{
+		{kind: listItemSession, repoPath: "/r", session: sess},
+		{kind: listItemAgent, repoPath: "/r", session: sess, agent: ag},
+	}
+
+	card := d.renderFocusSessionCard(sess, "", false, 100)
+	if len(card) != 4 {
+		t.Fatalf("expected 4-line card when all tasks done, got %d lines", len(card))
+	}
+}
+
+// TestRenderFocusSessionCard_NoPlanStaysFourLines verifies that a session with
+// no worktree path (and therefore no plan) produces the regular 4-line card.
+func TestRenderFocusSessionCard_NoPlanStaysFourLines(t *testing.T) {
+	sess := agent.NewSessionForTest("s", "my-session")
+	sess.SetLifecyclePhase(agent.LifecycleInProgress)
+	ag := sess.AddTestAgent("a-1", false, agent.StatusActive)
+
+	d := newDashboardModel()
+	d.items = []listItem{
+		{kind: listItemSession, repoPath: "/r", session: sess},
+		{kind: listItemAgent, repoPath: "/r", session: sess, agent: ag},
+	}
+
+	card := d.renderFocusSessionCard(sess, "", false, 100)
+	if len(card) != 4 {
+		t.Fatalf("expected 4-line card with no plan, got %d lines", len(card))
+	}
+}
+
 // TestSessionFocusStatus_BuildingWithPlanShowsProgressBadge verifies that a
 // Building session backed by a plan file shows "▸ done/total · N active" on
 // the badge, not the plain "N active, M idle" fallback.
