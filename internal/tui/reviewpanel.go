@@ -24,6 +24,34 @@ func reviewSpinnerFrame() string {
 	return spinnerFrames[frame]
 }
 
+// verdictBadge returns the icon, label, and lipgloss style for a task verdict record.
+// rec may be nil (treated as verdictPending).
+func verdictBadge(rec *taskVerdictRecord) (icon string, label string, style lipgloss.Style) {
+	if rec == nil {
+		return "⋯", "Pending", StyleSubtle
+	}
+	switch rec.state {
+	case verdictPending:
+		return "⋯", "Pending", StyleSubtle
+	case verdictRunning:
+		return reviewSpinnerFrame(), "Reviewing…", lipgloss.NewStyle().Foreground(ColorPrimary)
+	case verdictDone:
+		switch rec.verdict.Kind {
+		case agent.VerdictPass:
+			return "✓", "Pass", StyleSuccess
+		case agent.VerdictConcerns:
+			return "!", "Concerns", StyleWarning
+		case agent.VerdictFail:
+			return "✗", "Fail", StyleError
+		}
+	case verdictErr:
+		return "✗", "Error", StyleError
+	case verdictNoDiff:
+		return "⊘", "No matching diff", StyleSubtle
+	}
+	return "⋯", "Pending", StyleSubtle
+}
+
 // renderReviewPanel renders the fullscreen review panel for a session.
 // entry may be nil while diff stats are being fetched (shows loading placeholder).
 // cursor is the currently selected task row index (0-based among all task rows).

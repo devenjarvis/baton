@@ -330,6 +330,81 @@ func TestReviewTaskCount(t *testing.T) {
 	}
 }
 
+// TestVerdictBadge verifies the icon, label, and style returned for each verdict state.
+func TestVerdictBadge(t *testing.T) {
+	spinnerChars := map[string]bool{}
+	for _, f := range spinnerFrames {
+		spinnerChars[f] = true
+	}
+
+	tests := []struct {
+		name      string
+		rec       *taskVerdictRecord
+		wantIcon  func(string) bool
+		wantLabel string
+	}{
+		{
+			name:      "nil record",
+			rec:       nil,
+			wantIcon:  func(s string) bool { return s == "⋯" },
+			wantLabel: "Pending",
+		},
+		{
+			name:      "verdictPending",
+			rec:       &taskVerdictRecord{state: verdictPending},
+			wantIcon:  func(s string) bool { return s == "⋯" },
+			wantLabel: "Pending",
+		},
+		{
+			name:      "verdictRunning",
+			rec:       &taskVerdictRecord{state: verdictRunning},
+			wantIcon:  func(s string) bool { return spinnerChars[s] },
+			wantLabel: "Reviewing…",
+		},
+		{
+			name:      "verdictDone Pass",
+			rec:       &taskVerdictRecord{state: verdictDone, verdict: agent.ReviewVerdict{Kind: agent.VerdictPass}},
+			wantIcon:  func(s string) bool { return s == "✓" },
+			wantLabel: "Pass",
+		},
+		{
+			name:      "verdictDone Concerns",
+			rec:       &taskVerdictRecord{state: verdictDone, verdict: agent.ReviewVerdict{Kind: agent.VerdictConcerns}},
+			wantIcon:  func(s string) bool { return s == "!" },
+			wantLabel: "Concerns",
+		},
+		{
+			name:      "verdictDone Fail",
+			rec:       &taskVerdictRecord{state: verdictDone, verdict: agent.ReviewVerdict{Kind: agent.VerdictFail}},
+			wantIcon:  func(s string) bool { return s == "✗" },
+			wantLabel: "Fail",
+		},
+		{
+			name:      "verdictErr",
+			rec:       &taskVerdictRecord{state: verdictErr},
+			wantIcon:  func(s string) bool { return s == "✗" },
+			wantLabel: "Error",
+		},
+		{
+			name:      "verdictNoDiff",
+			rec:       &taskVerdictRecord{state: verdictNoDiff},
+			wantIcon:  func(s string) bool { return s == "⊘" },
+			wantLabel: "No matching diff",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			icon, label, _ := verdictBadge(tt.rec)
+			if !tt.wantIcon(icon) {
+				t.Errorf("verdictBadge icon = %q, unexpected for %s", icon, tt.name)
+			}
+			if label != tt.wantLabel {
+				t.Errorf("verdictBadge label = %q, want %q", label, tt.wantLabel)
+			}
+		})
+	}
+}
+
 // TestRenderReviewPanel_PRDraftInFlight verifies that the spinner status line
 // and disabled p hint appear when prDraftInFlight is true.
 func TestRenderReviewPanel_PRDraftInFlight(t *testing.T) {
