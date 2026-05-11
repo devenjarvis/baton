@@ -2965,3 +2965,59 @@ func TestSubmitPromptModalRoutesToActiveRepo(t *testing.T) {
 			sessionsBefore2, got)
 	}
 }
+
+// TestPlannerQuestionMsg_SkippedSessionMissing verifies that a plannerQuestionMsg
+// for a session that doesn't exist in the manager takes the skip path: the
+// answer channel receives "" (so the planner subprocess unblocks) and
+// app.err is set (so the skip is never silent in the UI).
+func TestPlannerQuestionMsg_SkippedSessionMissing(t *testing.T) {
+	dir, err := os.MkdirTemp("", "baton-planner-q-missing-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+
+	// Manager with no sessions — any question will be skipped.
+	mgr := agent.NewManager(dir, config.Resolve(nil, nil))
+	defer mgr.Shutdown()
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.managers[dir] = mgr
+	app.activeRepo = dir
+	// Dashboard visible, no editor open.
+	app.dashboard.panelFocus = focusList
+
+	answerCh := make(chan string, 1)
+	msg := plannerQuestionMsg{
+		repoPath: dir,
+		question: agent.PlannerQuestion{
+			SessionID: "nonexistent-session-id",
+			Question:  "What format?",
+			AnswerCh:  answerCh,
+		},
+	}
+
+	model, _ := app.Update(msg)
+	app = model.(App)
+
+	// Skip path must drain the channel so the planner subprocess unblocks.
+	select {
+	case got := <-answerCh:
+		if got != "" {
+			t.Errorf("expected empty skip answer, got %q", got)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("answerCh did not receive skip answer — planner would deadlock")
+	}
+	// Skip path must surface an error in the status bar, not be silent.
+	if app.err == "" {
+		t.Error("expected app.err to be set when planner question is skipped")
+	}
+	if app.planEditor != nil {
+		t.Error("expected planEditor to remain nil when session is not found")
+	}
+}

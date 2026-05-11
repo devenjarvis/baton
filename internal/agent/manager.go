@@ -1318,6 +1318,15 @@ func (m *Manager) ListSessions() []*Session {
 	return result
 }
 
+// AddSessionForTest injects a session directly into the manager's session map.
+// Intended for tests outside the agent package that need a manager with a
+// pre-populated session without spawning a real worktree or agent subprocess.
+func (m *Manager) AddSessionForTest(sess *Session) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sessions[sess.ID] = sess
+}
+
 // Get returns an agent by ID (searches all sessions).
 func (m *Manager) Get(id string) *Agent {
 	m.mu.RLock()
