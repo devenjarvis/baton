@@ -3824,10 +3824,15 @@ func reviewTaskGroupAtCursor(entry *reviewDiffEntry, cursor int) *taskReviewGrou
 }
 
 // reviewTaskCount returns the number of task rows in a review entry (plan tasks
-// plus the "other" group if present).
+// plus the "other" group if present). For no-plan sessions with aggregate data,
+// returns 1 for the synthetic "Overview" row.
 func reviewTaskCount(entry *reviewDiffEntry) int {
 	if entry == nil {
 		return 0
+	}
+	// No-plan session: synthetic Overview row.
+	if len(entry.tasks) == 0 && len(entry.groups) == 0 && entry.aggregate != nil {
+		return 1
 	}
 	n := len(entry.tasks)
 	for _, g := range entry.groups {

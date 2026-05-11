@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -678,124 +677,6 @@ func renderTaskList(entry *reviewDiffEntry, width, availHeight, cursor int) []st
 	}
 
 	return lines
-}
-
-// renderFocusList returns left-column lines: total + top files + also-changed.
-func renderFocusList(entry *reviewDiffEntry, width int) []string {
-	lines := make([]string, 0, len(entry.files)+6)
-	agg := entry.aggregate
-	lines = append(lines, StyleSubtle.Render("CHANGES"))
-	totalLine := fmt.Sprintf("%d files · ", agg.Files) +
-		lipgloss.NewStyle().Foreground(lipgloss.Color("#7ed321")).Render(fmt.Sprintf("+%d", agg.Insertions)) +
-		" " +
-		lipgloss.NewStyle().Foreground(lipgloss.Color("#e74c3c")).Render(fmt.Sprintf("-%d", agg.Deletions))
-	lines = append(lines, totalLine)
-	lines = append(lines, "")
-
-	sorted := make([]git.FileStat, len(entry.files))
-	copy(sorted, entry.files)
-	sortFileStatsByChurn(sorted)
-
-	lines = append(lines, StyleSubtle.Render("FOCUS HERE FIRST"))
-	top := sorted
-	if len(top) > 3 {
-		top = sorted[:3]
-	}
-	for _, f := range top {
-		cat := classifyFile(f.Path)
-		name := truncateVisible(f.Path, width-20)
-		stat := lipgloss.NewStyle().Foreground(lipgloss.Color("#7ed321")).Render(fmt.Sprintf("+%d", f.Insertions)) +
-			" " + lipgloss.NewStyle().Foreground(lipgloss.Color("#e74c3c")).Render(fmt.Sprintf("-%d", f.Deletions)) +
-			" · " + StyleSubtle.Render(cat)
-		lines = append(lines, "  "+name+"  "+stat)
-	}
-
-	if len(sorted) > 3 {
-		lines = append(lines, "")
-		lines = append(lines, StyleSubtle.Render("ALSO CHANGED"))
-		rest := sorted[3:]
-		if len(rest) > 5 {
-			rest = rest[:5]
-		}
-		for _, f := range rest {
-			lines = append(lines, StyleSubtle.Render("  "+truncateVisible(f.Path, width-4)))
-		}
-		if len(sorted)-3 > 5 {
-			lines = append(lines, StyleSubtle.Render(fmt.Sprintf("  … %d more files", len(sorted)-8)))
-		}
-	}
-	return lines
-}
-
-// renderReviewShape returns right-column lines: logic/test/config bars.
-func renderReviewShape(entry *reviewDiffEntry, width int) []string {
-	var logicLines, testLines, configLines int
-	for _, f := range entry.files {
-		churn := f.Insertions + f.Deletions
-		switch classifyFile(f.Path) {
-		case "tests":
-			testLines += churn
-		case "config":
-			configLines += churn
-		default:
-			logicLines += churn
-		}
-	}
-	total := logicLines + testLines + configLines
-	if total == 0 {
-		total = 1
-	}
-
-	logicPct := float64(logicLines) / float64(total)
-	testPct := float64(testLines) / float64(total)
-	configPct := float64(configLines) / float64(total)
-
-	barMax := width - 14
-	if barMax < 4 {
-		barMax = 4
-	}
-
-	bar := func(pct float64, color lipgloss.Color) string {
-		filled := int(pct * float64(barMax))
-		if filled > barMax {
-			filled = barMax
-		}
-		b := strings.Repeat("█", filled) + strings.Repeat("░", barMax-filled)
-		return lipgloss.NewStyle().Foreground(color).Render(b)
-	}
-
-	var lines []string
-	lines = append(lines, StyleSubtle.Render("REVIEW SHAPE"))
-	lines = append(lines, fmt.Sprintf("Logic   %3d%%  %s", int(logicPct*100), bar(logicPct, lipgloss.Color("#9b7fdb"))))
-	lines = append(lines, fmt.Sprintf("Tests   %3d%%  %s", int(testPct*100), bar(testPct, lipgloss.Color("#7ec8e3"))))
-	lines = append(lines, fmt.Sprintf("Config  %3d%%  %s", int(configPct*100), bar(configPct, lipgloss.Color("#555555"))))
-	return lines
-}
-
-// classifyFile returns "tests", "config", or "logic" based on file path/extension.
-func classifyFile(path string) string {
-	base := filepath.Base(path)
-	ext := filepath.Ext(path)
-
-	if strings.HasSuffix(base, "_test.go") ||
-		strings.Contains(path, "/test/") ||
-		strings.Contains(path, "/tests/") ||
-		strings.Contains(path, "/spec/") ||
-		strings.Contains(base, ".test.") ||
-		strings.Contains(base, ".spec.") {
-		return "tests"
-	}
-
-	switch ext {
-	case ".json", ".yaml", ".yml", ".toml", ".env", ".ini", ".cfg":
-		return "config"
-	}
-	switch base {
-	case "Makefile", "Dockerfile", "docker-compose.yml", "docker-compose.yaml", ".gitignore", ".gitattributes":
-		return "config"
-	}
-
-	return "logic"
 }
 
 // sortFileStatsByChurn sorts files by total insertions+deletions descending.

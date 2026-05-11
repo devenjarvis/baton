@@ -337,22 +337,36 @@ func TestRenderReviewPanel_NilDiffEntry(t *testing.T) {
 	}
 }
 
-func TestClassifyFile(t *testing.T) {
-	cases := []struct {
-		path string
-		want string
-	}{
-		{"middleware/auth_test.go", "tests"},
-		{"middleware/auth.go", "logic"},
-		{".github/workflows/ci.yml", "config"},
-		{"Makefile", "config"},
-		{"cmd/root.go", "logic"},
-		{"internal/config/settings.go", "logic"},
+// TestRenderReviewPanel_NoPlanShowsOverview verifies the no-plan (overview) path.
+func TestRenderReviewPanel_NoPlanShowsOverview(t *testing.T) {
+	sess := agent.NewSessionForTest("sess-1", "fix-auth")
+	sess.SetOriginalPrompt("Fix the auth bug")
+	sess.MarkDone()
+
+	entry := &reviewDiffEntry{
+		files: []git.FileStat{
+			{Path: "auth.go", Status: "M", Insertions: 10, Deletions: 2},
+			{Path: "auth_test.go", Status: "M", Insertions: 20, Deletions: 0},
+		},
+		aggregate: &git.DiffStats{Files: 2, Insertions: 30, Deletions: 2},
 	}
-	for _, tc := range cases {
-		if got := classifyFile(tc.path); got != tc.want {
-			t.Errorf("classifyFile(%q) = %q, want %q", tc.path, got, tc.want)
-		}
+
+	output := renderReviewPanel(sess, entry, 120, 30, 0, false)
+
+	if !strings.Contains(output, "Overview") {
+		t.Error("must show 'Overview' row in list pane for no-plan session")
+	}
+	if !strings.Contains(output, "auth.go") {
+		t.Error("must show auth.go in detail pane aggregate view")
+	}
+	if !strings.Contains(output, "+10") {
+		t.Error("must show +10 insertions for auth.go")
+	}
+	if strings.Contains(output, "REVIEW SHAPE") {
+		t.Error("must not show legacy 'REVIEW SHAPE' string")
+	}
+	if strings.Contains(output, "FOCUS HERE FIRST") {
+		t.Error("must not show legacy 'FOCUS HERE FIRST' string")
 	}
 }
 
@@ -614,6 +628,13 @@ func TestReviewTaskCount(t *testing.T) {
 				groups: []taskReviewGroup{{taskIndex: 0}},
 			},
 			3,
+		},
+		{
+			"no tasks no groups with aggregate (no-plan session)",
+			&reviewDiffEntry{
+				aggregate: &git.DiffStats{Files: 2, Insertions: 30, Deletions: 2},
+			},
+			1,
 		},
 	}
 	for _, tt := range tests {
