@@ -450,12 +450,12 @@ func (c *Client) GetReviewThreads(ctx context.Context, owner, repo string, numbe
 
 	// Group inline comments by reviewer login.
 	commentsByLogin := make(map[string][]ReviewComment)
-	for _, c := range allComments {
-		login := c.GetUser().GetLogin()
+	for _, comment := range allComments {
+		login := comment.GetUser().GetLogin()
 		rc := ReviewComment{
-			Path: c.GetPath(),
-			Body: c.GetBody(),
-			Line: c.GetLine(),
+			Path: comment.GetPath(),
+			Body: comment.GetBody(),
+			Line: comment.GetLine(),
 		}
 		commentsByLogin[login] = append(commentsByLogin[login], rc)
 	}

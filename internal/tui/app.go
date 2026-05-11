@@ -1700,7 +1700,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.setError("not ready to merge — use M to force")
 					return a, nil
 				}
-				return a, a.mergePRCmd(a.shippingSession.ID, false)
+				return a, a.mergePRCmd(a.shippingSession.ID)
 			case "M":
 				// Force merge: bypasses isMergeReady check.
 				entry := a.prCache[a.shippingSession.ID]
@@ -1708,7 +1708,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.setError("no PR found")
 					return a, nil
 				}
-				return a, a.mergePRCmd(a.shippingSession.ID, true)
+				return a, a.mergePRCmd(a.shippingSession.ID)
 			case "r":
 				// Address feedback: synthesize a prompt and spawn a new agent.
 				return a.addressFeedback(a.shippingSession)
@@ -4204,17 +4204,17 @@ func buildFeedbackPrompt(entry *prCacheEntry) string {
 		wrote = true
 	}
 
-	var changesRequested bool
+	hasActionableThreads := false
 	for _, thread := range entry.threads {
-		if thread.State == "CHANGES_REQUESTED" {
-			changesRequested = true
+		if thread.State == "CHANGES_REQUESTED" || (thread.State == "COMMENTED" && len(thread.Comments) > 0) {
+			hasActionableThreads = true
 			break
 		}
 	}
-	if len(entry.threads) > 0 && changesRequested {
+	if hasActionableThreads {
 		b.WriteString("## Review Feedback\n\n")
 		for _, thread := range entry.threads {
-			if thread.State != "CHANGES_REQUESTED" && thread.State != "COMMENTED" {
+			if thread.State != "CHANGES_REQUESTED" && !(thread.State == "COMMENTED" && len(thread.Comments) > 0) {
 				continue
 			}
 			b.WriteString("**")
@@ -4250,18 +4250,22 @@ func buildFeedbackPrompt(entry *prCacheEntry) string {
 	return b.String()
 }
 
-// mergePRCmd returns a Cmd that merges the PR for the given session.
-// force=true bypasses the isMergeReady gate (used by the M key).
-func (a *App) mergePRCmd(sessionID string, force bool) tea.Cmd {
+// mergePRCmd returns a Cmd that merges the PR for the given session using the
+// repo-configured merge method (default squash). The caller is responsible for
+// any merge-readiness gating before invoking this.
+func (a *App) mergePRCmd(sessionID string) tea.Cmd {
 	ghClient := a.ghClient
 	entry := a.prCache[sessionID]
 	if entry == nil || entry.pr == nil {
 		return func() tea.Msg { return mergePRMsg{sessionID: sessionID, err: fmt.Errorf("no PR cached")} }
 	}
 	repoPath := a.repoPathForSession(sessionID)
-	method := "squash"
-	if repoPath != "" {
-		method = a.resolvedCache[repoPath].MergeMethod
+	if repoPath == "" {
+		return func() tea.Msg { return mergePRMsg{sessionID: sessionID, err: fmt.Errorf("session repo not found")} }
+	}
+	method := a.resolvedCache[repoPath].MergeMethod
+	if method == "" {
+		method = "squash"
 	}
 	prNum := entry.pr.Number
 	return func() tea.Msg {

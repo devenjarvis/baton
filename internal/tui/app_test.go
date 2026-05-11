@@ -2651,6 +2651,51 @@ func TestBuildFeedbackPrompt_ApprovedOnly(t *testing.T) {
 	}
 }
 
+// TestBuildFeedbackPrompt_CommentedOnlyWithInlineComments verifies that
+// COMMENTED-only threads with inline comments are included in the prompt.
+func TestBuildFeedbackPrompt_CommentedOnlyWithInlineComments(t *testing.T) {
+	entry := &prCacheEntry{
+		threads: []github.ReviewThread{
+			{
+				Reviewer: "carol",
+				State:    "COMMENTED",
+				Body:     "",
+				Comments: []github.ReviewComment{
+					{Path: "server.go", Body: "nit: rename variable", Line: 42},
+				},
+			},
+		},
+	}
+	prompt := buildFeedbackPrompt(entry)
+	if prompt == "" {
+		t.Error("expected non-empty prompt for COMMENTED thread with inline comments")
+	}
+	if !strings.Contains(prompt, "carol") {
+		t.Errorf("prompt missing COMMENTED reviewer: %q", prompt)
+	}
+	if !strings.Contains(prompt, "server.go:42") {
+		t.Errorf("prompt missing inline comment location: %q", prompt)
+	}
+}
+
+// TestBuildFeedbackPrompt_CommentedOnlyWithoutInlineComments verifies that
+// COMMENTED threads with no inline comments are not included in the prompt.
+func TestBuildFeedbackPrompt_CommentedOnlyWithoutInlineComments(t *testing.T) {
+	entry := &prCacheEntry{
+		threads: []github.ReviewThread{
+			{
+				Reviewer: "dave",
+				State:    "COMMENTED",
+				Body:     "Nice work!",
+				Comments: nil,
+			},
+		},
+	}
+	if got := buildFeedbackPrompt(entry); got != "" {
+		t.Errorf("expected empty prompt for COMMENTED thread with no inline comments, got: %q", got)
+	}
+}
+
 // TestNKeyOpensPromptModal_WhenPlanFirstEnabled verifies the new plan-first
 // gate: with PlanFirstEnabled=true, pressing `n` opens the prompt modal
 // instead of immediately creating a session. With the flag off (today's
