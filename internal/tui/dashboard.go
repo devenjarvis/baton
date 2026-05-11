@@ -129,6 +129,7 @@ type dashboardModel struct {
 	focusReviewIdx         int            // index into reviewQueueSessions()
 	focusShippingIdx       int            // index into shippingSessions()
 	focusCursorSection     focusSection   // which fullscreen-focus section the cursor is on
+	prDraftSessionID       string         // session ID whose PR draft is in flight; "" when idle
 	activeRepoName         string         // display name of the active repo
 	activeRepoPath         string         // canonical path of the active repo (for pipeline filtering)
 	focusLaunchAgent       *agent.Agent   // agent open in focusLaunch terminal; nil otherwise
@@ -1536,14 +1537,18 @@ func (d dashboardModel) renderQueueRow(sess *agent.Session, repoName string, sel
 	}
 
 	var taskDisplay string
-	origPrompt := sess.OriginalPrompt()
-	switch {
-	case sess.HasTaskSummary() && sess.TaskSummary() != "":
-		taskDisplay = cardStyle.Render(truncateVisible(sess.TaskSummary(), width-30))
-	case origPrompt != "":
-		taskDisplay = cardStyle.Render(truncateVisible(origPrompt, width-30))
-	default:
-		taskDisplay = cardStyle.Render("…")
+	if d.prDraftSessionID != "" && sess.ID == d.prDraftSessionID {
+		taskDisplay = lipgloss.NewStyle().Foreground(ColorWarning).Render(reviewSpinnerFrame() + " drafting PR…")
+	} else {
+		origPrompt := sess.OriginalPrompt()
+		switch {
+		case sess.HasTaskSummary() && sess.TaskSummary() != "":
+			taskDisplay = cardStyle.Render(truncateVisible(sess.TaskSummary(), width-30))
+		case origPrompt != "":
+			taskDisplay = cardStyle.Render(truncateVisible(origPrompt, width-30))
+		default:
+			taskDisplay = cardStyle.Render("…")
+		}
 	}
 	left2 := "  " + taskDisplay
 	line2 := left2

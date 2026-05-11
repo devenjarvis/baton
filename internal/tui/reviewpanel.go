@@ -27,7 +27,8 @@ func reviewSpinnerFrame() string {
 // renderReviewPanel renders the fullscreen review panel for a session.
 // entry may be nil while diff stats are being fetched (shows loading placeholder).
 // cursor is the currently selected task row index (0-based among all task rows).
-func renderReviewPanel(sess *agent.Session, entry *reviewDiffEntry, width, height, cursor int) string {
+// prDraftInFlight, when true, shows a spinner status line and disables the p hint.
+func renderReviewPanel(sess *agent.Session, entry *reviewDiffEntry, width, height, cursor int, prDraftInFlight bool) string {
 	var lines []string
 
 	// Header
@@ -72,7 +73,12 @@ func renderReviewPanel(sess *agent.Session, entry *reviewDiffEntry, width, heigh
 	} else if len(entry.tasks) > 0 || len(entry.groups) > 0 {
 		// Overhead: header(1) + divider(1) + "ORIGINAL INTENT"(1) + intent(≤6) +
 		// blank(1) + divider(1) + blank(1) + divider(1) + hints(1) = 14 max.
-		taskListHeight := height - 14
+		// +1 when prDraftInFlight adds a spinner line above the footer.
+		overhead := 14
+		if prDraftInFlight {
+			overhead++
+		}
+		taskListHeight := height - overhead
 		if taskListHeight < 4 {
 			taskListHeight = 4
 		}
@@ -103,6 +109,12 @@ func renderReviewPanel(sess *agent.Session, entry *reviewDiffEntry, width, heigh
 		}
 	}
 
+	// In-flight PR draft status line
+	if prDraftInFlight {
+		draftStatus := lipgloss.NewStyle().Foreground(ColorWarning).Render(reviewSpinnerFrame() + " Pushing branch and drafting PR…")
+		lines = append(lines, draftStatus)
+	}
+
 	// Action footer
 	lines = append(lines, "")
 	lines = append(lines, StyleSubtle.Render(strings.Repeat("─", width-2)))
@@ -110,8 +122,14 @@ func renderReviewPanel(sess *agent.Session, entry *reviewDiffEntry, width, heigh
 	if len(entry.getGroups()) > 0 {
 		taskHint = "   " + lipgloss.NewStyle().Foreground(lipgloss.Color("#f0c060")).Render("enter") + StyleSubtle.Render(" — view task diff")
 	}
+	var pHint string
+	if prDraftInFlight {
+		pHint = StyleSubtle.Render("p — (in progress…)")
+	} else {
+		pHint = lipgloss.NewStyle().Foreground(lipgloss.Color("#5ab58a")).Render("p") + StyleSubtle.Render(" — create or open PR")
+	}
 	hints := "  " +
-		lipgloss.NewStyle().Foreground(lipgloss.Color("#5ab58a")).Render("p") + StyleSubtle.Render(" — create or open PR") +
+		pHint +
 		"   " + lipgloss.NewStyle().Foreground(lipgloss.Color("#7ec8e3")).Render("t") + StyleSubtle.Render(" — open agent terminal") +
 		"   " + StyleSubtle.Render("c — mark complete") +
 		"   " + StyleSubtle.Render("e — open in editor") +
