@@ -1092,6 +1092,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if sess := mgr.GetSession(msg.sessionID); sess != nil {
 						if sess.LifecyclePhase() == agent.LifecycleShipping {
 							sess.SetLifecyclePhase(agent.LifecycleComplete)
+							// Close the shipping panel if this session is currently open in it.
+							if a.shippingSession != nil && a.shippingSession.ID == msg.sessionID {
+								a.shippingSession = nil
+								a.dashboard.panelFocus = focusList
+							}
 						}
 					}
 				}

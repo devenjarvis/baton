@@ -2557,6 +2557,42 @@ func TestMergePRMsg_ClosesPanel(t *testing.T) {
 	}
 }
 
+// TestPRPollMsg_ExternalMergeClosesPanelAndTransitions verifies that when the
+// PR poller detects an external merge while the shipping panel is open, the
+// panel closes and the session transitions to LifecycleComplete.
+func TestPRPollMsg_ExternalMergeClosesPanelAndTransitions(t *testing.T) {
+	dir := t.TempDir()
+	sess := agent.NewSessionForTest("sess-ext", "ship")
+	sess.SetLifecyclePhase(agent.LifecycleShipping)
+
+	mgr := agent.NewManager(dir, config.Resolve(nil, nil))
+	defer mgr.Shutdown()
+	mgr.AddSessionForTest(sess)
+
+	app := NewApp()
+	app.shippingSession = sess
+	app.dashboard.panelFocus = focusShipping
+	app.managers[dir] = mgr
+	app.cfg = &config.Config{Repos: []config.Repo{{Path: dir}}}
+
+	msg := prPollMsg{
+		sessionID: "sess-ext",
+		pr:        &github.PRState{State: "merged"},
+	}
+	model, _ := app.Update(msg)
+	got := model.(App)
+
+	if got.dashboard.panelFocus == focusShipping {
+		t.Error("shipping panel should close when external merge is detected")
+	}
+	if got.shippingSession != nil {
+		t.Error("shippingSession should be nil after external merge")
+	}
+	if sess.LifecyclePhase() != agent.LifecycleComplete {
+		t.Errorf("session lifecycle = %v, want LifecycleComplete", sess.LifecyclePhase())
+	}
+}
+
 // TestMergePRMsg_ErrorSetsError verifies that a mergePRMsg error is surfaced.
 func TestMergePRMsg_ErrorSetsError(t *testing.T) {
 	app := NewApp()
