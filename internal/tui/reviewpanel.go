@@ -354,6 +354,167 @@ func renderTaskListPane(entry *reviewDiffEntry, width, height, cursor int) []str
 	return lines
 }
 
+// renderTaskDetailPane renders the right-pane detail for the cursor-selected task.
+// Sections: task heading, verdict badge, rationale, changed files, commits.
+func renderTaskDetailPane(entry *reviewDiffEntry, cursor, width, height int) []string {
+	if entry == nil {
+		return []string{StyleSubtle.Render("loading…")}
+	}
+
+	// No-plan overview path.
+	if len(entry.tasks) == 0 && len(entry.groups) == 0 {
+		var lines []string
+		if entry.aggregate != nil {
+			agg := entry.aggregate
+			subtleGreen := lipgloss.NewStyle().Foreground(lipgloss.Color("#7ed321"))
+			subtleRed := lipgloss.NewStyle().Foreground(lipgloss.Color("#e74c3c"))
+			summary := fmt.Sprintf("%d files · ", agg.Files) +
+				subtleGreen.Render(fmt.Sprintf("+%d", agg.Insertions)) +
+				" " + subtleRed.Render(fmt.Sprintf("-%d", agg.Deletions))
+			lines = append(lines, summary, "")
+			sorted := make([]git.FileStat, len(entry.files))
+			copy(sorted, entry.files)
+			sortFileStatsByChurn(sorted)
+			top := sorted
+			if len(top) > 8 {
+				top = sorted[:8]
+			}
+			for _, f := range top {
+				name := truncateVisible(f.Path, width-14)
+				stat := subtleGreen.Render(fmt.Sprintf("+%d", f.Insertions)) +
+					" " + subtleRed.Render(fmt.Sprintf("-%d", f.Deletions))
+				lines = append(lines, "  "+name+"  "+stat)
+			}
+			if len(sorted) > 8 {
+				lines = append(lines, StyleSubtle.Render(fmt.Sprintf("  … %d more files", len(sorted)-8)))
+			}
+		}
+		return lines
+	}
+
+	// Resolve selected task and group using same row order as renderTaskListPane.
+	groupByIdx := make(map[int]*taskReviewGroup, len(entry.groups))
+	for i := range entry.groups {
+		g := &entry.groups[i]
+		groupByIdx[g.taskIndex] = g
+	}
+
+	var selectedTask *agent.PlanTask
+	var group *taskReviewGroup
+	row := 0
+	for i := range entry.tasks {
+		if row == cursor {
+			t := entry.tasks[i]
+			selectedTask = &t
+			group = groupByIdx[t.Index]
+			break
+		}
+		row++
+	}
+	if selectedTask == nil {
+		if other, ok := groupByIdx[0]; ok && row == cursor {
+			group = other
+		}
+	}
+
+	var lines []string
+	maxW := width - 2
+
+	// (1) Task heading.
+	heading := ""
+	if selectedTask != nil {
+		heading = fmt.Sprintf("Task %d: %s", selectedTask.Index, selectedTask.Text)
+	} else if group != nil {
+		heading = "Other changes"
+	}
+	if heading != "" {
+		for _, l := range wrapText(heading, maxW) {
+			lines = append(lines, l)
+		}
+		lines = append(lines, "")
+	}
+
+	// (2) Verdict badge.
+	var rec *taskVerdictRecord
+	if entry.verdicts != nil && selectedTask != nil {
+		rec = entry.verdicts[selectedTask.Index]
+	} else if entry.verdicts != nil && group != nil {
+		rec = entry.verdicts[group.taskIndex]
+	}
+	icon, label, style := verdictBadge(rec)
+	lines = append(lines, style.Render(icon+" "+label))
+
+	// (3) Rationale.
+	if rec != nil && rec.state == verdictDone && rec.verdict.Rationale != "" {
+		lines = append(lines, "")
+		for _, l := range wrapText(rec.verdict.Rationale, maxW) {
+			lines = append(lines, l)
+		}
+	}
+
+	if group == nil {
+		lines = append(lines, "", StyleSubtle.Render("(no commits matched this task)"))
+		return capLines(lines, height)
+	}
+
+	// (4) Changed files.
+	if len(group.files) > 0 {
+		lines = append(lines, "", StyleSubtle.Render("Changed:"))
+		sorted := make([]git.FileStat, len(group.files))
+		copy(sorted, group.files)
+		sortFileStatsByChurn(sorted)
+		subtleGreen := lipgloss.NewStyle().Foreground(lipgloss.Color("#7ed321"))
+		subtleRed := lipgloss.NewStyle().Foreground(lipgloss.Color("#e74c3c"))
+		const maxFiles = 8
+		top := sorted
+		if len(top) > maxFiles {
+			top = sorted[:maxFiles]
+		}
+		for _, f := range top {
+			stat := subtleGreen.Render(fmt.Sprintf("+%d", f.Insertions)) +
+				" " + subtleRed.Render(fmt.Sprintf("-%d", f.Deletions))
+			statW := ansi.StringWidth(stat)
+			nameMax := maxW - 2 - 2 - statW
+			if nameMax < 4 {
+				nameMax = 4
+			}
+			name := truncateVisible(f.Path, nameMax)
+			lines = append(lines, "  "+name+"  "+stat)
+		}
+		if len(sorted) > maxFiles {
+			lines = append(lines, StyleSubtle.Render(fmt.Sprintf("  … %d more", len(sorted)-maxFiles)))
+		}
+	}
+
+	// (5) Commits.
+	if len(group.commits) > 0 {
+		lines = append(lines, "", StyleSubtle.Render("Commits:"))
+		for _, c := range group.commits {
+			hash := c.Hash
+			if len(hash) > 7 {
+				hash = hash[:7]
+			}
+			subject := truncateVisible(c.Subject, maxW-2-8)
+			lines = append(lines, "  "+StyleSubtle.Render(hash)+" "+subject)
+		}
+	}
+
+	// (6) Diff hint.
+	if group.rawDiff != "" {
+		lines = append(lines, "", StyleSubtle.Render("enter — open task diff"))
+	}
+
+	return capLines(lines, height)
+}
+
+// capLines returns lines capped to height, with a trailing truncation note if needed.
+func capLines(lines []string, height int) []string {
+	if height <= 0 || len(lines) <= height {
+		return lines
+	}
+	return append(lines[:height-1], StyleSubtle.Render(fmt.Sprintf("… %d more", len(lines)-height+1)))
+}
+
 // renderTaskList renders the scrollable per-task review rows. availHeight
 // controls the visible window; the list scrolls so the cursor stays visible.
 func renderTaskList(entry *reviewDiffEntry, width, availHeight, cursor int) []string {

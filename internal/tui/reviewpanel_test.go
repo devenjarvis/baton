@@ -121,6 +121,115 @@ func TestRenderTaskListPane_RowFormat(t *testing.T) {
 	}
 }
 
+// TestRenderTaskDetailPane_FullRationaleNoTruncation verifies that a 250-char
+// rationale renders in full without any ellipsis truncation.
+func TestRenderTaskDetailPane_FullRationaleNoTruncation(t *testing.T) {
+	rationale := strings.Repeat("Great implementation. ", 12)[:250]
+	entry := &reviewDiffEntry{
+		tasks: []agent.PlanTask{{Index: 1, Text: "Add auth middleware"}},
+		groups: []taskReviewGroup{{
+			taskIndex: 1,
+			commits:   []git.Commit{{Hash: "abc1234", Subject: "add middleware"}},
+			stats:     &git.DiffStats{Files: 1, Insertions: 5, Deletions: 1},
+		}},
+		verdicts: map[int]*taskVerdictRecord{
+			1: {state: verdictDone, verdict: agent.ReviewVerdict{Kind: agent.VerdictPass, Rationale: rationale}},
+		},
+	}
+
+	const width, height, cursor = 60, 20, 0
+	lines := renderTaskDetailPane(entry, cursor, width, height)
+	out := strings.Join(lines, "\n")
+
+	// Full rationale must appear — check a phrase that fits within one wrapped line.
+	if !strings.Contains(out, "Great implementation.") {
+		t.Error("full rationale must be present ('Great implementation.' not found)")
+	}
+	// Rationale is long enough to span multiple lines; verify last word also present.
+	if !strings.Contains(out, rationale[200:220]) {
+		t.Error("tail of rationale must also be present (rationale truncated)")
+	}
+	if strings.Contains(out, "…") {
+		t.Error("rationale must not be truncated with …")
+	}
+
+	// No individual rendered line exceeds width-2 visible cells.
+	for i, l := range lines {
+		if vw := ansi.StringWidth(l); vw > width-2 {
+			t.Errorf("line %d visible width %d exceeds %d: %q", i, vw, width-2, l)
+		}
+	}
+}
+
+// TestRenderTaskDetailPane_VerdictStatesRender verifies each verdict state produces
+// the expected label string in the detail pane.
+func TestRenderTaskDetailPane_VerdictStatesRender(t *testing.T) {
+	tests := []struct {
+		name      string
+		rec       *taskVerdictRecord
+		wantLabel string
+	}{
+		{"pass", &taskVerdictRecord{state: verdictDone, verdict: agent.ReviewVerdict{Kind: agent.VerdictPass}}, "Pass"},
+		{"concerns", &taskVerdictRecord{state: verdictDone, verdict: agent.ReviewVerdict{Kind: agent.VerdictConcerns}}, "Concerns"},
+		{"fail", &taskVerdictRecord{state: verdictDone, verdict: agent.ReviewVerdict{Kind: agent.VerdictFail}}, "Fail"},
+		{"pending", &taskVerdictRecord{state: verdictPending}, "Pending"},
+		{"running", &taskVerdictRecord{state: verdictRunning}, "Reviewing…"},
+		{"err", &taskVerdictRecord{state: verdictErr}, "Error"},
+		{"noDiff", &taskVerdictRecord{state: verdictNoDiff}, "No matching diff"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			entry := &reviewDiffEntry{
+				tasks:    []agent.PlanTask{{Index: 1, Text: "Do something"}},
+				groups:   []taskReviewGroup{{taskIndex: 1, commits: []git.Commit{{Hash: "abc1234"}}}},
+				verdicts: map[int]*taskVerdictRecord{1: tt.rec},
+			}
+			lines := renderTaskDetailPane(entry, 0, 80, 20)
+			out := strings.Join(lines, "\n")
+			if !strings.Contains(out, tt.wantLabel) {
+				t.Errorf("verdict state %s: want label %q in output; got:\n%s", tt.name, tt.wantLabel, out)
+			}
+		})
+	}
+}
+
+// TestRenderTaskDetailPane_ShowsFilesAndCommits verifies that file paths, +X -Y
+// stats, and commit subjects all appear in the detail pane.
+func TestRenderTaskDetailPane_ShowsFilesAndCommits(t *testing.T) {
+	entry := &reviewDiffEntry{
+		tasks: []agent.PlanTask{{Index: 1, Text: "Implement feature"}},
+		groups: []taskReviewGroup{{
+			taskIndex: 1,
+			commits: []git.Commit{
+				{Hash: "abc1234def", Subject: "feat: add new handler"},
+				{Hash: "fff5678abc", Subject: "test: add handler tests"},
+			},
+			files: []git.FileStat{
+				{Path: "internal/handler.go", Insertions: 42, Deletions: 3},
+				{Path: "internal/handler_test.go", Insertions: 80, Deletions: 0},
+			},
+			stats: &git.DiffStats{Files: 2, Insertions: 122, Deletions: 3},
+		}},
+		verdicts: map[int]*taskVerdictRecord{
+			1: {state: verdictDone, verdict: agent.ReviewVerdict{Kind: agent.VerdictPass}},
+		},
+	}
+
+	lines := renderTaskDetailPane(entry, 0, 80, 30)
+	out := strings.Join(lines, "\n")
+
+	for _, want := range []string{
+		"internal/handler.go", "+42", "-3",
+		"internal/handler_test.go", "+80",
+		"abc1234", "feat: add new handler",
+		"fff5678", "test: add handler tests",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("detail pane must contain %q; got:\n%s", want, out)
+		}
+	}
+}
+
 func TestRenderReviewPanel_ShowsOriginalPrompt(t *testing.T) {
 	sess := agent.NewSessionForTest("sess-1", "fix-auth")
 	sess.SetOriginalPrompt("Fix the auth bug so tokens redirect to /login")
