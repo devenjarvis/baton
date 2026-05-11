@@ -63,34 +63,71 @@ type ReviseRequest struct {
 	Cwd         string
 }
 
-// planDraftPrompt frames each Draft call. The five fixed sections match what
-// the plan editor expects (Goal / Context / Tasks / Verification / Not in
-// scope). Kept in lockstep with the editor's render so a renamed section
-// would be a code-coupled change, not a silent drift.
-const planDraftPrompt = `You are helping a developer plan a coding task before they hand it to an AI coding agent. Your working directory is the developer's worktree root.
+// planDraftPrompt frames each Draft call. The eight fixed sections (Goal /
+// Spec / Context / Reuse / Risks / Tasks / Verification / Not in scope) plus
+// the per-task labeled sub-bullets are research-backed (Plan-and-Solve, TDAD,
+// Superpowers, OpenSpec): plan completeness, not brevity, predicts build-agent
+// success. Wall-of-text risk is bounded by writing-density rules baked into
+// the prompt (Goal one sentence, Spec items one line, imperative task names,
+// labeled one-line sub-bullets) so the human reviewer's scan cost stays low
+// while the building agent gets executable detail. The checkbox-counting
+// constraint is load-bearing: ParsePlanTasks (session.go) and planTaskCounts
+// (tui/dashboard.go) count ALL "- [ ]" / "- [x]" lines top-to-bottom to derive
+// [task N] commit prefixes, so the prompt forbids checkbox syntax outside the
+// Tasks section.
+const planDraftPrompt = `You are drafting a plan with two readers: a separate coding agent that will execute it end-to-end, and a human developer who will scan it for correctness before approving. Write for both — the human cares about Goal, Spec, and the task list; the agent cares about the per-task sub-bullets. Detail is what makes this work: a plan that names specific files, line ranges, type signatures, and test expectations turns into a deterministic agent run, while a plan that hand-waves turns into rework.
 
-You have a read-only toolset: Read, Grep, Glob, LS, LSP, WebFetch, WebSearch. Before writing the plan, USE THEM to ground your work in the real codebase — locate the files the task touches, scan the conventions in that area, and check related code or imports. A plan that names actual files, functions, and constraints is far more useful than one written from the prompt alone. You cannot write, edit, or run shell commands; this is a research-then-draft pass, not an implementation.
+Your working directory is the developer's worktree root. You have a read-only toolset: Read, Grep, Glob, LS, LSP, WebFetch, WebSearch. USE THEM aggressively before drafting — locate every file the change touches, scan the surrounding code conventions, identify existing helpers you can reuse, and pull the relevant tests so you can name them by path. You cannot write, edit, or run shell commands; this is a research-then-draft pass.
 
-If the task description is genuinely ambiguous or missing information you can't infer from the codebase, you may call the ask_user tool with one focused clarifying question and wait for the developer's reply. Use it sparingly: prefer reading the code, and only ask when an unanswered ambiguity would force you to fabricate a load-bearing assumption. Never ask for trivia you could grep for.
+If a load-bearing ambiguity would otherwise force you to fabricate an assumption, you may call ask_user once with a single focused clarifying question. Prefer reading the code; never ask for trivia you could grep for.
 
-Once you've researched enough, produce a concise markdown plan with these sections, in order:
+There is no word cap. Be as long as the task requires and no longer — a trivial one-file change might be 200 words; a cross-package refactor might be 2000. Length comes from completeness, not padding.
 
-# Goal
-One sentence: what is the developer trying to accomplish?
+# Required section structure
 
-## Context
-2-3 sentences of background. What part of the system does this touch, and what constraints matter? Cite real file paths or symbols where relevant.
+Produce a markdown plan with exactly these sections, in this order:
 
-## Tasks
-A short checklist of the steps to ship this. Each task should be small and independently verifiable. Use markdown task syntax: - [ ] description. IMPORTANT: the build agent counts ALL "- [ ]" and "- [x]" lines in the plan file top-to-bottom (across every section) to derive the [task N] commit prefix. Do NOT place task-syntax lines anywhere outside this section — stray checkbox lines in Goal, Context, Verification, or Not in scope shift all task indices and break the review panel's commit-to-task mapping.
+# Goal — exactly one sentence. What is the developer trying to accomplish?
 
-## Verification
-How will the developer know the change works? Tests, manual checks, or both.
+## Spec — numbered acceptance criteria, one line per item, at most ~12 items. Each item should be a sentence the developer could turn into an assertion. No vague verbs ("handles", "supports") without a measurable subject. If you need more than ~12, the change is too large for one plan — split it and say so in Not in scope.
 
-## Not in scope
-What this plan deliberately excludes.
+## Context — bullet list (one fact per bullet) of what part of the system this touches. Cite real file:line references from your research. Note architectural constraints and local conventions (e.g. "this package uses table-driven tests with testify/require").
 
-The 400-word cap applies to the PLAN OUTPUT only — research with the tools as much as you need; tool calls and what you read don't count toward the cap, so don't truncate research mid-flight to stay short. The developer will edit your output before approving — favor a short, clear, code-grounded plan they can refine over an exhaustive one. Your response MUST begin with ` + "`# Goal`" + ` on the very first line — do not write any text, summary, or transitional sentence before it.
+## Reuse — bullet list of existing helpers, utilities, types, or patterns the implementation should build on rather than recreate. Cite paths/symbols. If nothing suitable exists, say so explicitly — the absence is a finding.
+
+## Risks — bullet list of architectural unknowns, external API contracts, concurrency hazards, or tests that will need updating. State load-bearing assumptions so the building agent knows what to probe early.
+
+## Tasks — ordered checklist. Each ` + "`- [ ]`" + ` line is one task and maps to a [task N] commit prefix. Task names are imperative short phrases ("Add --json flag to doctor", not "Working on adding a JSON output mode to the doctor command"). Each task includes labeled sub-bullets, one line each:
+
+  - Files: path/to/file.go:42, path/to/other.go
+  - Signatures: func Foo(ctx context.Context, x Bar) (Baz, error)  (only if introducing or changing one; omit otherwise)
+  - Test first: write failing test in path/to/file_test.go covering <case>; expect <specific failure message or assertion>
+  - Implement: 1–3 sentences describing the production change
+  - Verify: go test -race ./internal/foo passes; manually confirm <X>
+
+Sub-bullets MUST use two-space-indent ` + "`  - `" + ` (a regular bullet, no brackets). NEVER use ` + "`- [ ]`" + ` or ` + "`- [x]`" + ` anywhere except as a task name in this section — the build agent counts ALL checkbox lines top-to-bottom across the entire document to derive [task N] commit prefixes, so a stray checkbox in Goal, Spec, Context, Reuse, Risks, Verification, or Not in scope shifts every commit's task index and breaks the review panel.
+
+Every task follows test-first ordering. If a task has no meaningful test, say so explicitly in Verify ("manual: <specific check>") — never omit verification.
+
+## Verification — end-to-end checks once all tasks are done. Bullet list of concrete commands and expected outcomes, not prose:
+
+  - go test -race ./...
+  - go vet ./...
+  - Manual: launch baton, do <X>, observe <Y>
+
+## Not in scope — what this plan deliberately excludes. Use this to head off scope creep — if the developer's prompt implies a wider change, name the slice you're cutting and why.
+
+# Forbidden language
+
+Every word must be load-bearing. Reject these on sight:
+- Placeholders: "TBD", "similar to task N", "appropriate error handling", "as needed", "etc.", "and so on"
+- Filler: "this plan will...", "the goal is...", "to summarize", "in conclusion", "we will then..."
+
+Every task must be self-contained and complete.
+
+# Output discipline
+
+Your response MUST begin with ` + "`# Goal`" + ` on the very first line — no preamble, no transitional sentence. Research with the tools as much as you need before you start writing; tool calls and what you read don't count toward output length.
 
 The developer's task description follows.
 
@@ -101,7 +138,11 @@ The developer's task description follows.
 // earlier alongside the change request.
 const planRevisePrompt = `You are revising an existing plan for a coding task based on the developer's feedback. Your working directory is the developer's worktree root, and you have the same read-only toolset as the original drafter (Read, Grep, Glob, LS, LSP, WebFetch, WebSearch). If the critique points at code or files the current plan didn't already cover, re-read the relevant source before revising — don't invent paths or symbols.
 
-Output the full revised plan with the same five sections (Goal / Context / Tasks / Verification / Not in scope). Preserve sections, wording, and tasks the feedback does not touch — make small, surgical changes. Keep the plan under 400 words; research and tool use don't count toward that cap. Your response MUST begin with ` + "`# Goal`" + ` on the very first line — do not write any text, summary, or transitional sentence before it.
+Output the full revised plan with the same eight sections (Goal / Spec / Context / Reuse / Risks / Tasks / Verification / Not in scope). Preserve sections, wording, and tasks the feedback does not touch — make small, surgical changes.
+
+The same length, density, structure, and forbidden-language rules from the original drafting prompt apply: Goal is one sentence; Spec items are one line each; Context, Reuse, Risks, and Verification are bullet lists with one fact per bullet; task names are imperative short phrases; per-task sub-bullets are labeled and indented with ` + "`  - `" + ` (NEVER ` + "`- [ ]`" + ` or ` + "`- [x]`" + ` outside task names — the build agent counts checkbox lines globally to derive [task N] commit prefixes, so a stray checkbox shifts every commit's task index); no filler phrases. There is no word cap.
+
+Your response MUST begin with ` + "`# Goal`" + ` on the very first line — do not write any text, summary, or transitional sentence before it.
 
 CURRENT PLAN:
 `
