@@ -76,6 +76,16 @@ type killResultMsg struct {
 	err       error
 }
 
+// filterNotFound returns nil if err's message contains "not found", otherwise
+// returns err unchanged. Used to suppress benign double-cleanup races where two
+// concurrent paths both try to KillSession the same session.
+func filterNotFound(err error) error {
+	if err != nil && strings.Contains(err.Error(), "not found") {
+		return nil
+	}
+	return err
+}
+
 // diffStatsMsg carries the result of an async diff stats refresh.
 type diffStatsMsg struct {
 	sessionID string
@@ -1135,19 +1145,25 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.setError("merge failed: " + msg.err.Error())
 			return a, nil
 		}
-		// Transition the session to Complete immediately rather than waiting for
-		// the next PR poll to detect the merged state.
-		repoPath := a.repoPathForSession(msg.sessionID)
-		if repoPath != "" {
-			if mgr := a.managers[repoPath]; mgr != nil {
-				if sess := mgr.GetSession(msg.sessionID); sess != nil {
-					sess.SetLifecyclePhase(agent.LifecycleComplete)
-				}
-			}
-		}
 		a.shippingSession = nil
 		a.dashboard.panelFocus = focusList
-		return a, nil
+		repoPath := a.repoPathForSession(msg.sessionID)
+		if repoPath == "" {
+			return a, nil
+		}
+		mgr := a.managers[repoPath]
+		if mgr == nil || mgr.GetSession(msg.sessionID) == nil {
+			return a, nil
+		}
+		sessID := msg.sessionID
+		a.closingSessions[sessID] = true
+		return a, func() tea.Msg {
+			return killResultMsg{
+				scope:     killScopeSession,
+				sessionID: sessID,
+				err:       filterNotFound(mgr.KillSession(sessID)),
+			}
+		}
 
 	case resumeDoneMsg:
 		for _, repoPath := range msg.repoPaths {

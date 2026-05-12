@@ -2527,7 +2527,7 @@ func TestActivateFocusCursor_Shipping_NoPREntry(t *testing.T) {
 }
 
 // TestMergePRMsg_ClosesPanel verifies that a successful mergePRMsg closes the
-// shipping panel, clears shippingSession, and transitions the session to Complete.
+// shipping panel, clears shippingSession, and triggers async session cleanup.
 func TestMergePRMsg_ClosesPanel(t *testing.T) {
 	dir := t.TempDir()
 	sess := agent.NewSessionForTest("sess-1", "ship")
@@ -2543,7 +2543,7 @@ func TestMergePRMsg_ClosesPanel(t *testing.T) {
 	app.managers[dir] = mgr
 	app.cfg = &config.Config{Repos: []config.Repo{{Path: dir}}}
 
-	model, _ := app.Update(mergePRMsg{sessionID: "sess-1"})
+	model, cmd := app.Update(mergePRMsg{sessionID: "sess-1"})
 	got := model.(App)
 
 	if got.dashboard.panelFocus == focusShipping {
@@ -2552,8 +2552,20 @@ func TestMergePRMsg_ClosesPanel(t *testing.T) {
 	if got.shippingSession != nil {
 		t.Error("shippingSession should be nil after merge")
 	}
-	if sess.LifecyclePhase() != agent.LifecycleComplete {
-		t.Errorf("session lifecycle = %v, want LifecycleComplete", sess.LifecyclePhase())
+	if cmd == nil {
+		t.Fatal("expected a cmd to trigger async session cleanup after merge")
+	}
+
+	// Run the cleanup cmd and dispatch the resulting killResultMsg.
+	killMsg := cmd()
+	model2, _ := got.Update(killMsg)
+	got2 := model2.(App)
+
+	if mgr.GetSession("sess-1") != nil {
+		t.Error("session should be removed from manager after merge cleanup")
+	}
+	if got2.closingSessions["sess-1"] {
+		t.Error("closingSessions should be cleared after killResultMsg")
 	}
 }
 
