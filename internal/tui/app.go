@@ -4708,52 +4708,74 @@ func (a *App) startPRDraftCmd(sess *agent.Session, repoPath string, transitionSh
 			return prDraftReadyMsg{sessionID: sessionID, err: fmt.Errorf("parse remote url: %w", err)}
 		}
 
-		// Push the branch (first push sets upstream tracking).
-		if pushErr := git.Push(worktreePath, branch); pushErr != nil {
-			return prDraftReadyMsg{sessionID: sessionID, err: fmt.Errorf("push branch: %w", pushErr)}
-		}
-
-		// Determine base branch.
+		// Determine base branch (local, no network).
 		base := sess.Worktree.BaseBranch
 		if base == "" {
 			base = "main"
 		}
+		worktree := sess.Worktree
 
-		// Gather commits against base for the drafter context.
-		commits := ""
-		if cs, logErr := git.LogCommitsAgainstBase(sess.Worktree); logErr == nil && len(cs) > 0 {
-			var sb strings.Builder
-			for _, c := range cs {
-				sb.WriteString(c.Subject)
-				sb.WriteString("\n")
-				if c.Body != "" {
-					sb.WriteString(c.Body)
-					sb.WriteString("\n")
-				}
+		// Push and draft concurrently; total latency = max(push, drafter).
+		var (
+			pushErr  error
+			draftErr error
+			draft    *agent.PRDraft
+			wg       sync.WaitGroup
+		)
+
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			if err := git.Push(worktreePath, branch); err != nil {
+				pushErr = fmt.Errorf("push branch: %w", err)
 			}
-			commits = strings.TrimSpace(sb.String())
+		}()
+		go func() {
+			defer wg.Done()
+			commits := ""
+			if cs, logErr := git.LogCommitsAgainstBase(worktree); logErr == nil && len(cs) > 0 {
+				var sb strings.Builder
+				for _, c := range cs {
+					sb.WriteString(c.Subject)
+					sb.WriteString("\n")
+					if c.Body != "" {
+						sb.WriteString(c.Body)
+						sb.WriteString("\n")
+					}
+				}
+				commits = strings.TrimSpace(sb.String())
+			}
+
+			diffstat := ""
+			if stats, statsErr := git.GetDiffStats(repoPath, worktree); statsErr == nil {
+				diffstat = fmt.Sprintf("%d file(s) changed, +%d -%d lines",
+					stats.Files, stats.Insertions, stats.Deletions)
+			}
+
+			template := git.FindPRTemplate(worktreePath)
+
+			taskPrompt := sess.TaskSummary()
+			if taskPrompt == "" {
+				taskPrompt = sess.GetDisplayName()
+			}
+
+			drafter := agent.DefaultPRDrafter()
+			var err error
+			draft, err = drafter(ctx, commits, diffstat, taskPrompt, template)
+			if err != nil {
+				draftErr = fmt.Errorf("draft PR: %w", err)
+			}
+		}()
+		wg.Wait()
+
+		if pushErr != nil && draftErr != nil {
+			return prDraftReadyMsg{sessionID: sessionID, err: errors.Join(pushErr, draftErr)}
 		}
-
-		// Diff stats for context.
-		diffstat := ""
-		if stats, statsErr := git.GetDiffStats(repoPath, sess.Worktree); statsErr == nil {
-			diffstat = fmt.Sprintf("%d file(s) changed, +%d -%d lines",
-				stats.Files, stats.Insertions, stats.Deletions)
+		if pushErr != nil {
+			return prDraftReadyMsg{sessionID: sessionID, err: pushErr}
 		}
-
-		// PR template (optional).
-		template := git.FindPRTemplate(worktreePath)
-
-		// Session's original task prompt for drafter context.
-		taskPrompt := sess.TaskSummary()
-		if taskPrompt == "" {
-			taskPrompt = sess.GetDisplayName()
-		}
-
-		drafter := agent.DefaultPRDrafter()
-		draft, err := drafter(ctx, commits, diffstat, taskPrompt, template)
-		if err != nil {
-			return prDraftReadyMsg{sessionID: sessionID, err: fmt.Errorf("draft PR: %w", err)}
+		if draftErr != nil {
+			return prDraftReadyMsg{sessionID: sessionID, err: draftErr}
 		}
 
 		return prDraftReadyMsg{
