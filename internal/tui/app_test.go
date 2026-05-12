@@ -1965,9 +1965,8 @@ func TestFocusMode_RKey_NonEmptyQueue_OpensReviewPanel(t *testing.T) {
 }
 
 // TestReviewPanel_CKey_MarksComplete verifies that pressing "c" in the review
-// panel transitions the session to LifecycleComplete and closes the panel.
-// This unblocks workflows where a session has no PR (design docs, exploration)
-// and the user wants to take it off the review queue.
+// panel closes the panel and clears reviewSession. When no manager is wired up
+// (makeFocusModeMRApp), cleanup is a no-op but the panel still closes.
 func TestReviewPanel_CKey_MarksComplete(t *testing.T) {
 	app, _, sessR := makeFocusModeMRApp(t)
 	sessR.SetLifecyclePhase(agent.LifecycleInReview)
@@ -1977,14 +1976,55 @@ func TestReviewPanel_CKey_MarksComplete(t *testing.T) {
 	model, _ := app.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
 	app = model.(App)
 
-	if sessR.LifecyclePhase() != agent.LifecycleComplete {
-		t.Errorf("expected sessR phase=Complete, got %v", sessR.LifecyclePhase())
-	}
 	if app.dashboard.panelFocus != focusList {
 		t.Errorf("expected panelFocus=focusList after c, got %v", app.dashboard.panelFocus)
 	}
 	if app.reviewSession != nil {
 		t.Errorf("expected reviewSession cleared, got %v", app.reviewSession)
+	}
+}
+
+// TestReviewPanel_CMarkCompleteClosesSession verifies that pressing "c" in the
+// review panel triggers async session cleanup via KillSession, removing the
+// session from the manager and its worktree.
+func TestReviewPanel_CMarkCompleteClosesSession(t *testing.T) {
+	dir := t.TempDir()
+	sess := agent.NewSessionForTest("sess-review", "review")
+	sess.SetLifecyclePhase(agent.LifecycleInReview)
+
+	mgr := agent.NewManager(dir, config.Resolve(nil, nil))
+	defer mgr.Shutdown()
+	mgr.AddSessionForTest(sess)
+
+	app := NewApp()
+	app.reviewSession = sess
+	app.dashboard.panelFocus = focusReview
+	app.managers[dir] = mgr
+	app.cfg = &config.Config{Repos: []config.Repo{{Path: dir}}}
+
+	model, cmd := app.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
+	got := model.(App)
+
+	if got.dashboard.panelFocus != focusList {
+		t.Errorf("expected panelFocus=focusList after c, got %v", got.dashboard.panelFocus)
+	}
+	if got.reviewSession != nil {
+		t.Errorf("expected reviewSession cleared after c, got %v", got.reviewSession)
+	}
+	if cmd == nil {
+		t.Fatal("expected a cmd to trigger async session cleanup after marking complete")
+	}
+
+	// Run the cleanup cmd and dispatch the resulting killResultMsg.
+	killMsg := cmd()
+	model2, _ := got.Update(killMsg)
+	got2 := model2.(App)
+
+	if mgr.GetSession("sess-review") != nil {
+		t.Error("session should be removed from manager after marking complete")
+	}
+	if got2.closingSessions["sess-review"] {
+		t.Error("closingSessions should be cleared after killResultMsg")
 	}
 }
 

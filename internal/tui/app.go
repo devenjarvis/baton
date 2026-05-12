@@ -1622,12 +1622,27 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, nil
 			case "c":
 				// Mark complete without a PR (e.g. design docs, exploratory
-				// branches). Closes the panel.
+				// branches). Closes the panel and cleans up the session.
 				sess := a.reviewSession
-				sess.SetLifecyclePhase(agent.LifecycleComplete)
 				a.dashboard.panelFocus = focusList
 				a.reviewSession = nil
-				return a, nil
+				repoPath := a.repoPathForSession(sess.ID)
+				if repoPath == "" {
+					return a, nil
+				}
+				mgr := a.managers[repoPath]
+				if mgr == nil || mgr.GetSession(sess.ID) == nil {
+					return a, nil
+				}
+				sessID := sess.ID
+				a.closingSessions[sessID] = true
+				return a, func() tea.Msg {
+					return killResultMsg{
+						scope:     killScopeSession,
+						sessionID: sessID,
+						err:       filterNotFound(mgr.KillSession(sessID)),
+					}
+				}
 			case "e":
 				// Open in editor — same pattern as the existing "i" key handler.
 				sess := a.reviewSession
