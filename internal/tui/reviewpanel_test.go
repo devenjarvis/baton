@@ -4,9 +4,304 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/devenjarvis/baton/internal/agent"
 	"github.com/devenjarvis/baton/internal/git"
 )
+
+// TestRenderReviewHeader_TwoLineIntentCap checks that a long prompt is capped to
+// two intent lines (with trailing …) giving title+2 intent+divider = 4 lines total,
+// and that every line fits within width-4 visible cells.
+func TestRenderReviewHeader_TwoLineIntentCap(t *testing.T) {
+	const width = 120
+	sess := agent.NewSessionForTest("sess-1", "fix-auth")
+	// 400-character prompt with spaces so wrapText can break lines.
+	longPrompt := strings.Repeat("Fix authentication tokens so they properly redirect to the login page when expired. ", 5)
+	sess.SetOriginalPrompt(longPrompt)
+	sess.MarkDone()
+
+	lines := renderReviewHeader(sess, width)
+
+	// Expect: title row + exactly 2 intent rows (2nd ending with …) + divider = 4 total.
+	if len(lines) != 4 {
+		t.Errorf("renderReviewHeader returned %d lines, want 4 (title+2 intent+divider); got:\n%s",
+			len(lines), strings.Join(lines, "\n"))
+	}
+	if len(lines) < 4 {
+		t.Fatal("too few lines to inspect")
+	}
+	// Title line must contain REVIEW.
+	if !strings.Contains(lines[0], "REVIEW") {
+		t.Errorf("first line must contain REVIEW, got: %q", lines[0])
+	}
+	// Intent lines (lines[1] and lines[2]) must fit within width-4 visible cells.
+	for i := 1; i <= 2; i++ {
+		if vw := ansi.StringWidth(lines[i]); vw > width-4 {
+			t.Errorf("intent line %d visible width %d exceeds %d: %q", i, vw, width-4, lines[i])
+		}
+	}
+	// Second intent line (lines[2]) must end with ellipsis.
+	if !strings.HasSuffix(strings.TrimRight(lines[2], " "), "…") {
+		t.Errorf("second intent line must end with '…', got: %q", lines[2])
+	}
+	// Last line must be the divider.
+	last := lines[len(lines)-1]
+	if !strings.Contains(ansi.Strip(last), "─") {
+		t.Errorf("last line must be the horizontal divider, got: %q", last)
+	}
+}
+
+// TestRenderTaskListPane_RowFormat verifies the compact left-pane row structure.
+func TestRenderTaskListPane_RowFormat(t *testing.T) {
+	entry := &reviewDiffEntry{
+		tasks: []agent.PlanTask{
+			{Index: 1, Text: "Add auth middleware", Done: false},
+			{Index: 2, Text: "Write tests", Done: false},
+		},
+		groups: []taskReviewGroup{
+			{
+				taskIndex: 1,
+				commits:   []git.Commit{{Hash: "abc123", Subject: "[task 1] add middleware"}},
+				stats:     &git.DiffStats{Files: 1, Insertions: 10, Deletions: 2},
+			},
+			{
+				taskIndex: 0,
+				commits:   []git.Commit{{Hash: "def456", Subject: "other commit"}},
+				stats:     &git.DiffStats{Files: 1, Insertions: 3, Deletions: 1},
+			},
+		},
+		verdicts: map[int]*taskVerdictRecord{
+			1: {state: verdictDone, verdict: agent.ReviewVerdict{Kind: agent.VerdictPass}},
+			2: {state: verdictPending},
+		},
+	}
+
+	const width, height, cursor = 40, 10, 0
+	lines := renderTaskListPane(entry, width, height, cursor)
+	out := strings.Join(lines, "\n")
+
+	if !strings.Contains(out, "PLAN TASKS") {
+		t.Error("must contain PLAN TASKS header")
+	}
+
+	// Row 0 (task 1): pass icon, [1], task text.
+	found1 := false
+	for _, l := range lines {
+		if strings.Contains(l, "✓") && strings.Contains(l, "[1]") && strings.Contains(l, "Add auth") {
+			found1 = true
+			break
+		}
+	}
+	if !found1 {
+		t.Errorf("row 0 must contain ✓, [1], and 'Add auth'; got:\n%s", out)
+	}
+
+	// Row 1 (task 2): pending icon, [2].
+	found2 := false
+	for _, l := range lines {
+		if strings.Contains(l, "⋯") && strings.Contains(l, "[2]") {
+			found2 = true
+			break
+		}
+	}
+	if !found2 {
+		t.Errorf("row 1 must contain ⋯ and [2]; got:\n%s", out)
+	}
+
+	// "Other changes" row contains [?].
+	if !strings.Contains(out, "[?]") {
+		t.Errorf("Other changes row must contain [?]; got:\n%s", out)
+	}
+
+	// No line exceeds width visible cells.
+	for i, l := range lines {
+		if vw := ansi.StringWidth(l); vw > width {
+			t.Errorf("line %d width %d exceeds %d: %q", i, vw, width, l)
+		}
+	}
+}
+
+// TestRenderTaskDetailPane_FullRationaleNoTruncation verifies that a 250-char
+// rationale renders in full without any ellipsis truncation.
+func TestRenderTaskDetailPane_FullRationaleNoTruncation(t *testing.T) {
+	rationale := strings.Repeat("Great implementation. ", 12)[:250]
+	entry := &reviewDiffEntry{
+		tasks: []agent.PlanTask{{Index: 1, Text: "Add auth middleware"}},
+		groups: []taskReviewGroup{{
+			taskIndex: 1,
+			commits:   []git.Commit{{Hash: "abc1234", Subject: "add middleware"}},
+			stats:     &git.DiffStats{Files: 1, Insertions: 5, Deletions: 1},
+		}},
+		verdicts: map[int]*taskVerdictRecord{
+			1: {state: verdictDone, verdict: agent.ReviewVerdict{Kind: agent.VerdictPass, Rationale: rationale}},
+		},
+	}
+
+	const width, height, cursor = 60, 20, 0
+	lines := renderTaskDetailPane(entry, cursor, width, height)
+	out := strings.Join(lines, "\n")
+
+	// Full rationale must appear — check a phrase that fits within one wrapped line.
+	if !strings.Contains(out, "Great implementation.") {
+		t.Error("full rationale must be present ('Great implementation.' not found)")
+	}
+	// Rationale is long enough to span multiple lines; verify last word also present.
+	if !strings.Contains(out, rationale[200:220]) {
+		t.Error("tail of rationale must also be present (rationale truncated)")
+	}
+	if strings.Contains(out, "…") {
+		t.Error("rationale must not be truncated with …")
+	}
+
+	// No individual rendered line exceeds width-2 visible cells.
+	for i, l := range lines {
+		if vw := ansi.StringWidth(l); vw > width-2 {
+			t.Errorf("line %d visible width %d exceeds %d: %q", i, vw, width-2, l)
+		}
+	}
+}
+
+// TestRenderTaskDetailPane_VerdictStatesRender verifies each verdict state produces
+// the expected label string in the detail pane.
+func TestRenderTaskDetailPane_VerdictStatesRender(t *testing.T) {
+	tests := []struct {
+		name      string
+		rec       *taskVerdictRecord
+		wantLabel string
+	}{
+		{"pass", &taskVerdictRecord{state: verdictDone, verdict: agent.ReviewVerdict{Kind: agent.VerdictPass}}, "pass"},
+		{"concerns", &taskVerdictRecord{state: verdictDone, verdict: agent.ReviewVerdict{Kind: agent.VerdictConcerns}}, "concerns"},
+		{"fail", &taskVerdictRecord{state: verdictDone, verdict: agent.ReviewVerdict{Kind: agent.VerdictFail}}, "fail"},
+		{"pending", &taskVerdictRecord{state: verdictPending}, "Pending"},
+		{"running", &taskVerdictRecord{state: verdictRunning}, "Reviewing…"},
+		{"err", &taskVerdictRecord{state: verdictErr}, "error"},
+		{"noDiff", &taskVerdictRecord{state: verdictNoDiff}, "no diff found"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			entry := &reviewDiffEntry{
+				tasks:    []agent.PlanTask{{Index: 1, Text: "Do something"}},
+				groups:   []taskReviewGroup{{taskIndex: 1, commits: []git.Commit{{Hash: "abc1234"}}}},
+				verdicts: map[int]*taskVerdictRecord{1: tt.rec},
+			}
+			lines := renderTaskDetailPane(entry, 0, 80, 20)
+			out := strings.Join(lines, "\n")
+			if !strings.Contains(out, tt.wantLabel) {
+				t.Errorf("verdict state %s: want label %q in output; got:\n%s", tt.name, tt.wantLabel, out)
+			}
+		})
+	}
+}
+
+// TestRenderTaskDetailPane_ShowsFilesAndCommits verifies that file paths, +X -Y
+// stats, and commit subjects all appear in the detail pane.
+func TestRenderTaskDetailPane_ShowsFilesAndCommits(t *testing.T) {
+	entry := &reviewDiffEntry{
+		tasks: []agent.PlanTask{{Index: 1, Text: "Implement feature"}},
+		groups: []taskReviewGroup{{
+			taskIndex: 1,
+			commits: []git.Commit{
+				{Hash: "abc1234def", Subject: "feat: add new handler"},
+				{Hash: "fff5678abc", Subject: "test: add handler tests"},
+			},
+			files: []git.FileStat{
+				{Path: "internal/handler.go", Insertions: 42, Deletions: 3},
+				{Path: "internal/handler_test.go", Insertions: 80, Deletions: 0},
+			},
+			stats: &git.DiffStats{Files: 2, Insertions: 122, Deletions: 3},
+		}},
+		verdicts: map[int]*taskVerdictRecord{
+			1: {state: verdictDone, verdict: agent.ReviewVerdict{Kind: agent.VerdictPass}},
+		},
+	}
+
+	lines := renderTaskDetailPane(entry, 0, 80, 30)
+	out := strings.Join(lines, "\n")
+
+	for _, want := range []string{
+		"internal/handler.go", "+42", "-3",
+		"internal/handler_test.go", "+80",
+		"abc1234", "feat: add new handler",
+		"fff5678", "test: add handler tests",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("detail pane must contain %q; got:\n%s", want, out)
+		}
+	}
+}
+
+// TestRenderReviewPanel_TwoPaneLayout verifies that wide rendering composes both
+// panes side-by-side: left pane task list and right pane task detail.
+func TestRenderReviewPanel_TwoPaneLayout(t *testing.T) {
+	rationale := strings.Repeat("This implementation is well structured and correct. ", 4)
+	sess := agent.NewSessionForTest("sess-1", "fix-auth")
+	sess.SetOriginalPrompt("Fix auth")
+	sess.MarkDone()
+	entry := &reviewDiffEntry{
+		tasks: []agent.PlanTask{{Index: 1, Text: "Add auth middleware"}},
+		groups: []taskReviewGroup{{
+			taskIndex: 1,
+			commits:   []git.Commit{{Hash: "abc1234", Subject: "add middleware"}},
+			stats:     &git.DiffStats{Files: 1, Insertions: 5, Deletions: 1},
+		}},
+		verdicts: map[int]*taskVerdictRecord{
+			1: {state: verdictDone, verdict: agent.ReviewVerdict{Kind: agent.VerdictPass, Rationale: rationale}},
+		},
+	}
+
+	output := renderReviewPanel(sess, entry, 140, 30, 0, false)
+
+	if !strings.Contains(output, "PLAN TASKS") {
+		t.Error("must contain PLAN TASKS from left pane")
+	}
+	if !strings.Contains(output, "Task 1:") {
+		t.Error("must contain 'Task 1:' from right pane detail heading")
+	}
+	if !strings.Contains(output, "[1]") {
+		t.Error("must contain [1] task index from left pane row")
+	}
+	if !strings.Contains(output, "This implementation") {
+		t.Error("must contain rationale text from right pane")
+	}
+	if !strings.Contains(output, "create or open PR") {
+		t.Error("footer must still advertise 'create or open PR'")
+	}
+}
+
+// TestRenderReviewPanel_NarrowWidthStacks verifies that at <80 cols, panes stack
+// vertically (list above detail) rather than side by side.
+func TestRenderReviewPanel_NarrowWidthStacks(t *testing.T) {
+	sess := agent.NewSessionForTest("sess-1", "fix-auth")
+	sess.SetOriginalPrompt("Fix auth")
+	sess.MarkDone()
+	entry := &reviewDiffEntry{
+		tasks: []agent.PlanTask{{Index: 1, Text: "Add auth middleware"}},
+		groups: []taskReviewGroup{{
+			taskIndex: 1,
+			commits:   []git.Commit{{Hash: "abc1234", Subject: "add middleware"}},
+			stats:     &git.DiffStats{Files: 1, Insertions: 5, Deletions: 1},
+		}},
+		verdicts: map[int]*taskVerdictRecord{
+			1: {state: verdictDone, verdict: agent.ReviewVerdict{Kind: agent.VerdictPass, Rationale: "Looks good."}},
+		},
+	}
+
+	output := renderReviewPanel(sess, entry, 70, 30, 0, false)
+
+	if !strings.Contains(output, "PLAN TASKS") {
+		t.Error("must contain PLAN TASKS from list pane")
+	}
+	if !strings.Contains(output, "Task 1:") {
+		t.Error("must contain 'Task 1:' from detail pane")
+	}
+
+	// In stacked mode, no single line should contain both PLAN TASKS and Task 1:.
+	for _, line := range strings.Split(output, "\n") {
+		if strings.Contains(line, "PLAN TASKS") && strings.Contains(line, "Task 1:") {
+			t.Errorf("in narrow mode panes must be stacked, not side-by-side; found both on one line: %q", line)
+		}
+	}
+}
 
 func TestRenderReviewPanel_ShowsOriginalPrompt(t *testing.T) {
 	sess := agent.NewSessionForTest("sess-1", "fix-auth")
@@ -42,22 +337,102 @@ func TestRenderReviewPanel_NilDiffEntry(t *testing.T) {
 	}
 }
 
-func TestClassifyFile(t *testing.T) {
-	cases := []struct {
-		path string
-		want string
-	}{
-		{"middleware/auth_test.go", "tests"},
-		{"middleware/auth.go", "logic"},
-		{".github/workflows/ci.yml", "config"},
-		{"Makefile", "config"},
-		{"cmd/root.go", "logic"},
-		{"internal/config/settings.go", "logic"},
+// TestRenderReviewPanel_UsesThemeColors verifies that the panel uses the theme's
+// ColorSuccess ANSI escape rather than a hard-coded hex green for a pass verdict.
+func TestRenderReviewPanel_UsesThemeColors(t *testing.T) {
+	sess := agent.NewSessionForTest("sess-1", "fix-auth")
+	sess.SetOriginalPrompt("Fix auth")
+	sess.MarkDone()
+	entry := &reviewDiffEntry{
+		tasks: []agent.PlanTask{{Index: 1, Text: "Add auth middleware"}},
+		groups: []taskReviewGroup{{
+			taskIndex: 1,
+			commits:   []git.Commit{{Hash: "abc1234", Subject: "add middleware"}},
+			stats:     &git.DiffStats{Files: 1, Insertions: 10, Deletions: 2},
+		}},
+		verdicts: map[int]*taskVerdictRecord{
+			1: {state: verdictDone, verdict: agent.ReviewVerdict{Kind: agent.VerdictPass}},
+		},
 	}
-	for _, tc := range cases {
-		if got := classifyFile(tc.path); got != tc.want {
-			t.Errorf("classifyFile(%q) = %q, want %q", tc.path, got, tc.want)
-		}
+
+	output := renderReviewPanel(sess, entry, 120, 30, 0, false)
+
+	// The pass verdict icon should carry the ColorSuccess ANSI escape.
+	expectedPrefix := StyleSuccess.Render("✓")
+	if !strings.Contains(output, expectedPrefix) {
+		t.Errorf("pass verdict must use StyleSuccess ANSI color; styled icon %q not found in output", expectedPrefix)
+	}
+}
+
+// TestReviewListPaneRowAt verifies the click hit-test for the left task list pane.
+func TestReviewListPaneRowAt(t *testing.T) {
+	entry := &reviewDiffEntry{
+		tasks: []agent.PlanTask{
+			{Index: 1, Text: "Task one"},
+			{Index: 2, Text: "Task two"},
+			{Index: 3, Text: "Task three"},
+		},
+		groups: []taskReviewGroup{},
+	}
+
+	const paneTop, paneLeft, paneWidth = 4, 0, 40
+
+	tests := []struct {
+		name    string
+		mouseX  int
+		mouseY  int
+		wantRow int
+	}{
+		{"click row 0", 5, paneTop + 2, 0},
+		{"click row 1", 5, paneTop + 3, 1},
+		{"click row 2", 5, paneTop + 4, 2},
+		{"Y below rows", 5, paneTop + 5, -1},
+		{"in PLAN TASKS header", 5, paneTop, -1},
+		{"in blank header line", 5, paneTop + 1, -1},
+		{"X past right edge", paneLeft + paneWidth, paneTop + 2, -1},
+		{"X before left edge", paneLeft - 1, paneTop + 2, -1},
+		{"Y above pane", 5, paneTop - 1, -1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := reviewListPaneRowAt(entry, tt.mouseX, tt.mouseY, paneTop, paneLeft, paneWidth)
+			if got != tt.wantRow {
+				t.Errorf("reviewListPaneRowAt(x=%d, y=%d) = %d, want %d", tt.mouseX, tt.mouseY, got, tt.wantRow)
+			}
+		})
+	}
+}
+
+// TestRenderReviewPanel_NoPlanShowsOverview verifies the no-plan (overview) path.
+func TestRenderReviewPanel_NoPlanShowsOverview(t *testing.T) {
+	sess := agent.NewSessionForTest("sess-1", "fix-auth")
+	sess.SetOriginalPrompt("Fix the auth bug")
+	sess.MarkDone()
+
+	entry := &reviewDiffEntry{
+		files: []git.FileStat{
+			{Path: "auth.go", Status: "M", Insertions: 10, Deletions: 2},
+			{Path: "auth_test.go", Status: "M", Insertions: 20, Deletions: 0},
+		},
+		aggregate: &git.DiffStats{Files: 2, Insertions: 30, Deletions: 2},
+	}
+
+	output := renderReviewPanel(sess, entry, 120, 30, 0, false)
+
+	if !strings.Contains(output, "Overview") {
+		t.Error("must show 'Overview' row in list pane for no-plan session")
+	}
+	if !strings.Contains(output, "auth.go") {
+		t.Error("must show auth.go in detail pane aggregate view")
+	}
+	if !strings.Contains(output, "+10") {
+		t.Error("must show +10 insertions for auth.go")
+	}
+	if strings.Contains(output, "REVIEW SHAPE") {
+		t.Error("must not show legacy 'REVIEW SHAPE' string")
+	}
+	if strings.Contains(output, "FOCUS HERE FIRST") {
+		t.Error("must not show legacy 'FOCUS HERE FIRST' string")
 	}
 }
 
@@ -254,10 +629,10 @@ func TestPopulateNoDiffVerdicts(t *testing.T) {
 	}
 }
 
-// TestRenderTaskList_NoDiffFoundBadge verifies that a plan task with no matching
+// TestRenderReviewPanel_NoDiffFoundBadge verifies that a plan task with no matching
 // commit group renders a "no diff found" verdict badge instead of being silent,
 // when other tasks do have commit groups (i.e. verdicts map is initialised).
-func TestRenderTaskList_NoDiffFoundBadge(t *testing.T) {
+func TestRenderReviewPanel_NoDiffFoundBadge(t *testing.T) {
 	entry := &reviewDiffEntry{
 		files:     []git.FileStat{{Path: "auth.go", Status: "M", Insertions: 5, Deletions: 1}},
 		aggregate: &git.DiffStats{Files: 1, Insertions: 5, Deletions: 1},
@@ -320,11 +695,93 @@ func TestReviewTaskCount(t *testing.T) {
 			},
 			3,
 		},
+		{
+			"no tasks no groups with aggregate (no-plan session)",
+			&reviewDiffEntry{
+				aggregate: &git.DiffStats{Files: 2, Insertions: 30, Deletions: 2},
+			},
+			1,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := reviewTaskCount(tt.entry); got != tt.want {
 				t.Errorf("reviewTaskCount = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestVerdictBadge verifies the icon, label, and style returned for each verdict state.
+func TestVerdictBadge(t *testing.T) {
+	spinnerChars := map[string]bool{}
+	for _, f := range spinnerFrames {
+		spinnerChars[f] = true
+	}
+
+	tests := []struct {
+		name      string
+		rec       *taskVerdictRecord
+		wantIcon  func(string) bool
+		wantLabel string
+	}{
+		{
+			name:      "nil record",
+			rec:       nil,
+			wantIcon:  func(s string) bool { return s == "⋯" },
+			wantLabel: "Pending",
+		},
+		{
+			name:      "verdictPending",
+			rec:       &taskVerdictRecord{state: verdictPending},
+			wantIcon:  func(s string) bool { return s == "⋯" },
+			wantLabel: "Pending",
+		},
+		{
+			name:      "verdictRunning",
+			rec:       &taskVerdictRecord{state: verdictRunning},
+			wantIcon:  func(s string) bool { return spinnerChars[s] },
+			wantLabel: "Reviewing…",
+		},
+		{
+			name:      "verdictDone Pass",
+			rec:       &taskVerdictRecord{state: verdictDone, verdict: agent.ReviewVerdict{Kind: agent.VerdictPass}},
+			wantIcon:  func(s string) bool { return s == "✓" },
+			wantLabel: "pass",
+		},
+		{
+			name:      "verdictDone Concerns",
+			rec:       &taskVerdictRecord{state: verdictDone, verdict: agent.ReviewVerdict{Kind: agent.VerdictConcerns}},
+			wantIcon:  func(s string) bool { return s == "!" },
+			wantLabel: "concerns",
+		},
+		{
+			name:      "verdictDone Fail",
+			rec:       &taskVerdictRecord{state: verdictDone, verdict: agent.ReviewVerdict{Kind: agent.VerdictFail}},
+			wantIcon:  func(s string) bool { return s == "✗" },
+			wantLabel: "fail",
+		},
+		{
+			name:      "verdictErr",
+			rec:       &taskVerdictRecord{state: verdictErr},
+			wantIcon:  func(s string) bool { return s == "✗" },
+			wantLabel: "error",
+		},
+		{
+			name:      "verdictNoDiff",
+			rec:       &taskVerdictRecord{state: verdictNoDiff},
+			wantIcon:  func(s string) bool { return s == "⊘" },
+			wantLabel: "no diff found",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			icon, label, _ := verdictBadge(tt.rec)
+			if !tt.wantIcon(icon) {
+				t.Errorf("verdictBadge icon = %q, unexpected for %s", icon, tt.name)
+			}
+			if label != tt.wantLabel {
+				t.Errorf("verdictBadge label = %q, want %q", label, tt.wantLabel)
 			}
 		})
 	}

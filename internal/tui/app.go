@@ -2350,6 +2350,50 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 
+		// focusReview: left-pane row clicks move the review task cursor.
+		if a.dashboard.panelFocus == focusReview && a.reviewSession != nil {
+			entry := a.reviewDiffCache[a.reviewSession.ID]
+			if entry != nil && a.width >= 80 {
+				headerH := len(renderReviewHeader(a.reviewSession, a.width))
+				leftW := a.width * 4 / 10
+				if leftW < 32 {
+					leftW = 32
+				}
+				paneTop := dashboardTopY + headerH
+				if rowIdx := reviewListPaneRowAt(entry, msg.X, msg.Y, paneTop, 0, leftW); rowIdx >= 0 {
+					// renderTaskListPane scrolls so the cursor stays centred; reproduce
+					// its offset computation so clicking visual row N maps to data row
+					// offset+N rather than jumping the cursor back to N.
+					footerLines := 3
+					if a.prDraftInFlight {
+						footerLines++
+					}
+					bodyH := a.height - dashboardTopY - headerH - footerLines
+					if bodyH < 4 {
+						bodyH = 4
+					}
+					const listHeaderLines = 2
+					rowsH := bodyH - listHeaderLines
+					if rowsH < 1 {
+						rowsH = 1
+					}
+					nRows := reviewTaskCount(entry)
+					offset := a.reviewTaskCursor - rowsH/2
+					if offset < 0 {
+						offset = 0
+					}
+					if offset+rowsH > nRows {
+						offset = nRows - rowsH
+						if offset < 0 {
+							offset = 0
+						}
+					}
+					a.reviewTaskCursor = offset + rowIdx
+					return a, nil
+				}
+			}
+		}
+
 		// Pipeline view: click on a session card moves the cursor; double-click
 		// activates (focusLaunch for active sessions, review panel for queue).
 		// PR-indicator click on a queue row opens the PR in the browser.
@@ -3798,7 +3842,7 @@ func (a *App) repoPathForSession(sessionID string) string {
 }
 
 // reviewTaskGroupAtCursor returns the taskReviewGroup at position cursor in the
-// review task list, following the same row ordering as renderTaskList: plan
+// review task list, following the same row ordering as renderTaskListPane: plan
 // tasks in index order, then the "Other changes" group (taskIndex == 0) last.
 // Returns nil if cursor is out of range or no groups exist.
 func reviewTaskGroupAtCursor(entry *reviewDiffEntry, cursor int) *taskReviewGroup {
@@ -3827,10 +3871,15 @@ func reviewTaskGroupAtCursor(entry *reviewDiffEntry, cursor int) *taskReviewGrou
 }
 
 // reviewTaskCount returns the number of task rows in a review entry (plan tasks
-// plus the "other" group if present).
+// plus the "other" group if present). For no-plan sessions with aggregate data,
+// returns 1 for the synthetic "Overview" row.
 func reviewTaskCount(entry *reviewDiffEntry) int {
 	if entry == nil {
 		return 0
+	}
+	// No-plan session: synthetic Overview row.
+	if len(entry.tasks) == 0 && len(entry.groups) == 0 && entry.aggregate != nil {
+		return 1
 	}
 	n := len(entry.tasks)
 	for _, g := range entry.groups {
