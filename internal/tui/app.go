@@ -2361,7 +2361,34 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				paneTop := dashboardTopY + headerH
 				if rowIdx := reviewListPaneRowAt(entry, msg.X, msg.Y, paneTop, 0, leftW); rowIdx >= 0 {
-					a.reviewTaskCursor = rowIdx
+					// renderTaskListPane scrolls so the cursor stays centred; reproduce
+					// its offset computation so clicking visual row N maps to data row
+					// offset+N rather than jumping the cursor back to N.
+					footerLines := 3
+					if a.prDraftInFlight {
+						footerLines++
+					}
+					bodyH := a.height - dashboardTopY - headerH - footerLines
+					if bodyH < 4 {
+						bodyH = 4
+					}
+					const listHeaderLines = 2
+					rowsH := bodyH - listHeaderLines
+					if rowsH < 1 {
+						rowsH = 1
+					}
+					nRows := reviewTaskCount(entry)
+					offset := a.reviewTaskCursor - rowsH/2
+					if offset < 0 {
+						offset = 0
+					}
+					if offset+rowsH > nRows {
+						offset = nRows - rowsH
+						if offset < 0 {
+							offset = 0
+						}
+					}
+					a.reviewTaskCursor = offset + rowIdx
 					return a, nil
 				}
 			}
