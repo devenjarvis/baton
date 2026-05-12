@@ -3839,7 +3839,7 @@ func (a *App) repoPathForSession(sessionID string) string {
 }
 
 // reviewTaskGroupAtCursor returns the taskReviewGroup at position cursor in the
-// review task list, following the same row ordering as renderTaskList: plan
+// review task list, following the same row ordering as renderTaskListPane: plan
 // tasks in index order, then the "Other changes" group (taskIndex == 0) last.
 // Returns nil if cursor is out of range or no groups exist.
 func reviewTaskGroupAtCursor(entry *reviewDiffEntry, cursor int) *taskReviewGroup {

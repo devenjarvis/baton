@@ -629,10 +629,10 @@ func TestPopulateNoDiffVerdicts(t *testing.T) {
 	}
 }
 
-// TestRenderTaskList_NoDiffFoundBadge verifies that a plan task with no matching
+// TestRenderReviewPanel_NoDiffFoundBadge verifies that a plan task with no matching
 // commit group renders a "no diff found" verdict badge instead of being silent,
 // when other tasks do have commit groups (i.e. verdicts map is initialised).
-func TestRenderTaskList_NoDiffFoundBadge(t *testing.T) {
+func TestRenderReviewPanel_NoDiffFoundBadge(t *testing.T) {
 	entry := &reviewDiffEntry{
 		files:     []git.FileStat{{Path: "auth.go", Status: "M", Insertions: 5, Deletions: 1}},
 		aggregate: &git.DiffStats{Files: 1, Insertions: 5, Deletions: 1},
