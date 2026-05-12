@@ -2059,9 +2059,10 @@ func TestReviewPanel_PKey_NoPR_DoesNotOrphan(t *testing.T) {
 	app = model.(App)
 
 	// Pressing p with no open PR now starts the push+draft pipeline.
-	// The status message should indicate progress, not an error.
-	if !strings.Contains(app.err, "Pushing") {
-		t.Errorf("expected progress message containing 'Pushing', got %q", app.err)
+	// The in-flight flag must be set; no error banner should appear.
+	if !app.prDraftInFlight || app.prDraftSessionID != sessR.ID {
+		t.Errorf("expected prDraftInFlight=true and prDraftSessionID=%q, got inFlight=%v sessionID=%q",
+			sessR.ID, app.prDraftInFlight, app.prDraftSessionID)
 	}
 
 	// Press ESC to close the panel — session stays InReview.
@@ -2214,9 +2215,10 @@ func TestPipeline_PKey_NoPRStartsDraft(t *testing.T) {
 
 	model, _ := app.Update(tea.KeyPressMsg{Code: 'p', Text: "p"})
 	app = model.(App)
-	// p with no cached PR starts the draft flow — progress message should appear.
-	if !strings.Contains(app.err, "Pushing") {
-		t.Errorf("expected progress message containing 'Pushing', got %q", app.err)
+	// p with no cached PR starts the draft flow — in-flight flag must be set.
+	if !app.prDraftInFlight || app.prDraftSessionID != sess.ID {
+		t.Errorf("expected prDraftInFlight=true and prDraftSessionID=%q, got inFlight=%v sessionID=%q",
+			sess.ID, app.prDraftInFlight, app.prDraftSessionID)
 	}
 }
 

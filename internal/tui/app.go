@@ -1580,7 +1580,6 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.prDraftInFlight = true
 					a.prDraftSessionID = sess.ID
 					repoPath := a.repoPathForSession(sess.ID)
-					a.setError("Pushing branch and drafting PR…")
 					return a, a.startPRDraftCmd(sess, repoPath, true)
 				}
 				return a, nil
@@ -2202,7 +2201,6 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.prDraftInFlight = true
 					a.prDraftSessionID = sess.ID
 					repoPath := a.cursorSelectedRepoPath()
-					a.setError("Pushing branch and drafting PR…")
 					return a, a.startPRDraftCmd(sess, repoPath, false)
 				}
 			}
