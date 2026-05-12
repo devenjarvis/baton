@@ -1356,7 +1356,8 @@ func TestSession_CachedPlan_LazyLoadsFromDisk(t *testing.T) {
 		t.Fatal(err)
 	}
 	const body = "# Goal\nresumed\n\n- [x] done\n- [ ] todo\n"
-	if err := os.WriteFile(filepath.Join(dir, ".claude", "plan.md"), []byte(body), 0o644); err != nil {
+	planPath := filepath.Join(dir, ".claude", "plan.md")
+	if err := os.WriteFile(planPath, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	s := newSession("id", "name", &git.WorktreeInfo{Path: dir})
@@ -1364,14 +1365,36 @@ func TestSession_CachedPlan_LazyLoadsFromDisk(t *testing.T) {
 	if !present || plan != body {
 		t.Errorf("CachedPlan() = (%q, %v), want (%q, true)", plan, present, body)
 	}
-	// Second call must hit the cache. Truncate the file under the cache to
-	// confirm — if the cache works, we still see the cached body.
-	if err := os.WriteFile(filepath.Join(dir, ".claude", "plan.md"), []byte("changed"), 0o644); err != nil {
+
+	// Second call with unchanged mtime must return the cached content without
+	// re-reading (cache hit). Overwrite the file content but keep the mtime
+	// identical so the stat check sees no change.
+	fi, err := os.Stat(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	origMtime := fi.ModTime()
+	const bodyChanged = "# Goal\nresumed\n\n- [x] done\n- [x] todo\n"
+	if err := os.WriteFile(planPath, []byte(bodyChanged), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Restore original mtime to simulate an unchanged file.
+	if err := os.Chtimes(planPath, origMtime, origMtime); err != nil {
 		t.Fatal(err)
 	}
 	plan2, _ := s.CachedPlan()
 	if plan2 != body {
-		t.Errorf("second CachedPlan() = %q, want cached %q (cache miss)", plan2, body)
+		t.Errorf("same mtime: CachedPlan() = %q, want cached %q", plan2, body)
+	}
+
+	// Now bump mtime to the future — the cache must re-read and return the new content.
+	future := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(planPath, future, future); err != nil {
+		t.Fatal(err)
+	}
+	plan3, _ := s.CachedPlan()
+	if plan3 != bodyChanged {
+		t.Errorf("bumped mtime: CachedPlan() = %q, want new content %q", plan3, bodyChanged)
 	}
 }
 
