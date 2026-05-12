@@ -1096,19 +1096,28 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			threads: msg.threads,
 			stack:   msg.stack,
 		}
-		// Detect PR merge/close and transition to Complete lifecycle phase.
+		// Detect PR merge/close and trigger async session cleanup.
+		var cmds []tea.Cmd
 		if msg.pr != nil && (msg.pr.State == "merged" || msg.pr.State == "closed") {
 			repoPath := a.repoPathForSession(msg.sessionID)
 			if repoPath != "" {
 				if mgr := a.managers[repoPath]; mgr != nil {
 					if sess := mgr.GetSession(msg.sessionID); sess != nil {
 						if sess.LifecyclePhase() == agent.LifecycleShipping {
-							sess.SetLifecyclePhase(agent.LifecycleComplete)
 							// Close the shipping panel if this session is currently open in it.
 							if a.shippingSession != nil && a.shippingSession.ID == msg.sessionID {
 								a.shippingSession = nil
 								a.dashboard.panelFocus = focusList
 							}
+							sessID := msg.sessionID
+							a.closingSessions[sessID] = true
+							cmds = append(cmds, func() tea.Msg {
+								return killResultMsg{
+									scope:     killScopeSession,
+									sessionID: sessID,
+									err:       filterNotFound(mgr.KillSession(sessID)),
+								}
+							})
 						}
 					}
 				}
@@ -1138,7 +1147,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			ps.lastCheckState = newState
 		}
 		a.updateDashboardPRCache()
-		return a, nil
+		return a, tea.Batch(cmds...)
 
 	case mergePRMsg:
 		if msg.err != nil {

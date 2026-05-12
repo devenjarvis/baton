@@ -2571,7 +2571,7 @@ func TestMergePRMsg_ClosesPanel(t *testing.T) {
 
 // TestPRPollMsg_ExternalMergeClosesPanelAndTransitions verifies that when the
 // PR poller detects an external merge while the shipping panel is open, the
-// panel closes and the session transitions to LifecycleComplete.
+// panel closes and async session cleanup is triggered.
 func TestPRPollMsg_ExternalMergeClosesPanelAndTransitions(t *testing.T) {
 	dir := t.TempDir()
 	sess := agent.NewSessionForTest("sess-ext", "ship")
@@ -2591,7 +2591,7 @@ func TestPRPollMsg_ExternalMergeClosesPanelAndTransitions(t *testing.T) {
 		sessionID: "sess-ext",
 		pr:        &github.PRState{State: "merged"},
 	}
-	model, _ := app.Update(msg)
+	model, cmd := app.Update(msg)
 	got := model.(App)
 
 	if got.dashboard.panelFocus == focusShipping {
@@ -2600,8 +2600,66 @@ func TestPRPollMsg_ExternalMergeClosesPanelAndTransitions(t *testing.T) {
 	if got.shippingSession != nil {
 		t.Error("shippingSession should be nil after external merge")
 	}
-	if sess.LifecyclePhase() != agent.LifecycleComplete {
-		t.Errorf("session lifecycle = %v, want LifecycleComplete", sess.LifecyclePhase())
+	if cmd == nil {
+		t.Fatal("expected a cmd to trigger async session cleanup after external merge")
+	}
+
+	// Run the cleanup cmd and dispatch the resulting killResultMsg.
+	killMsg := cmd()
+	model2, _ := got.Update(killMsg)
+	got2 := model2.(App)
+
+	if mgr.GetSession("sess-ext") != nil {
+		t.Error("session should be removed from manager after external merge cleanup")
+	}
+	if got2.closingSessions["sess-ext"] {
+		t.Error("closingSessions should be cleared after killResultMsg")
+	}
+}
+
+// TestPRPollMsg_ExternalCloseCleansSession verifies that a "closed" PR state
+// triggers the same async session cleanup as a "merged" state.
+func TestPRPollMsg_ExternalCloseCleansSession(t *testing.T) {
+	dir := t.TempDir()
+	sess := agent.NewSessionForTest("sess-closed", "ship")
+	sess.SetLifecyclePhase(agent.LifecycleShipping)
+
+	mgr := agent.NewManager(dir, config.Resolve(nil, nil))
+	defer mgr.Shutdown()
+	mgr.AddSessionForTest(sess)
+
+	app := NewApp()
+	app.shippingSession = sess
+	app.dashboard.panelFocus = focusShipping
+	app.managers[dir] = mgr
+	app.cfg = &config.Config{Repos: []config.Repo{{Path: dir}}}
+
+	msg := prPollMsg{
+		sessionID: "sess-closed",
+		pr:        &github.PRState{State: "closed"},
+	}
+	model, cmd := app.Update(msg)
+	got := model.(App)
+
+	if got.dashboard.panelFocus == focusShipping {
+		t.Error("shipping panel should close when PR is closed")
+	}
+	if got.shippingSession != nil {
+		t.Error("shippingSession should be nil after PR close")
+	}
+	if cmd == nil {
+		t.Fatal("expected a cmd to trigger async session cleanup after PR close")
+	}
+
+	killMsg := cmd()
+	model2, _ := got.Update(killMsg)
+	got2 := model2.(App)
+
+	if mgr.GetSession("sess-closed") != nil {
+		t.Error("session should be removed from manager after PR close cleanup")
+	}
+	if got2.closingSessions["sess-closed"] {
+		t.Error("closingSessions should be cleared after killResultMsg")
 	}
 }
 
