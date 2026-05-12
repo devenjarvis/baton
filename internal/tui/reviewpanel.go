@@ -25,7 +25,7 @@ func reviewSpinnerFrame() string {
 
 // verdictBadge returns the icon, label, and lipgloss style for a task verdict record.
 // rec may be nil (treated as verdictPending).
-func verdictBadge(rec *taskVerdictRecord) (icon string, label string, style lipgloss.Style) {
+func verdictBadge(rec *taskVerdictRecord) (icon, label string, style lipgloss.Style) {
 	if rec == nil {
 		return "⋯", "Pending", StyleSubtle
 	}
@@ -445,9 +445,7 @@ func renderTaskDetailPane(entry *reviewDiffEntry, cursor, width, height int) []s
 		heading = "Other changes"
 	}
 	if heading != "" {
-		for _, l := range wrapText(heading, maxW) {
-			lines = append(lines, l)
-		}
+		lines = append(lines, wrapText(heading, maxW)...)
 		lines = append(lines, "")
 	}
 
@@ -464,9 +462,7 @@ func renderTaskDetailPane(entry *reviewDiffEntry, cursor, width, height int) []s
 	// (3) Rationale.
 	if rec != nil && rec.state == verdictDone && rec.verdict.Rationale != "" {
 		lines = append(lines, "")
-		for _, l := range wrapText(rec.verdict.Rationale, maxW) {
-			lines = append(lines, l)
-		}
+		lines = append(lines, wrapText(rec.verdict.Rationale, maxW)...)
 	}
 
 	if group == nil {
