@@ -297,6 +297,43 @@ func TestPlanEditor_DisplayLineCountAgreesWithRenderer(t *testing.T) {
 	}
 }
 
+// TestPlanEditor_ParsesCanonicalSectionsAndAppliesDefaults verifies that
+// parsePlanSections finds all eight canonical H1/H2 headings and that
+// defaultSectionFolded gives the right initial fold state: Goal (H1), Spec, and
+// Tasks are expanded; every other H2 is collapsed.
+func TestPlanEditor_ParsesCanonicalSectionsAndAppliesDefaults(t *testing.T) {
+	sess, _ := newEditorTestSession(t)
+	const plan = "# Goal\nGoal body\n\n## Spec\nspec\n\n## Context\nctx\n\n## Reuse\nreuse\n\n## Risks\nrisks\n\n## Tasks\n- [ ] t1\n\n## Verification\nverify\n\n## Not in scope\nnot\n"
+	if err := sess.WritePlan(plan); err != nil {
+		t.Fatalf("WritePlan: %v", err)
+	}
+	editor := newPlanEditor(sess, "", 80, 30)
+	if len(editor.sections) != 8 {
+		t.Fatalf("sections count = %d, want 8", len(editor.sections))
+	}
+	if editor.sections[0].heading != "Goal" || editor.sections[0].level != 1 {
+		t.Errorf("sections[0] = {%q, level %d}, want Goal level 1", editor.sections[0].heading, editor.sections[0].level)
+	}
+	if editor.sections[1].heading != "Spec" {
+		t.Errorf("sections[1].heading = %q, want Spec", editor.sections[1].heading)
+	}
+	if editor.sections[0].headingLine != 0 {
+		t.Errorf("sections[0].headingLine = %d, want 0", editor.sections[0].headingLine)
+	}
+	expanded := []string{"Goal", "Spec", "Tasks"}
+	for _, name := range expanded {
+		if editor.folds[name] {
+			t.Errorf("folds[%q] = true, want false (expanded by default)", name)
+		}
+	}
+	collapsed := []string{"Context", "Reuse", "Risks", "Verification", "Not in scope"}
+	for _, name := range collapsed {
+		if !editor.folds[name] {
+			t.Errorf("folds[%q] = false, want true (collapsed by default)", name)
+		}
+	}
+}
+
 // TestPlanEditor_ScrollModeStylesHeadings asserts that scroll-mode rendering
 // actually emits ANSI styling for known markdown constructs. Without this,
 // a regression that silently nil-checks the renderer or short-circuits

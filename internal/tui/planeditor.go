@@ -19,6 +19,56 @@ import (
 // Hardcoded for now — a follow-up will plumb this through config.Settings.
 const planEditorChromaStyle = "monokai"
 
+// planSection represents one H1 or H2 ATX section in the plan. headingLine is
+// the 0-based source-line index of the `#`/`##` line; nextLine is the index of
+// the next sibling-or-ancestor heading (or end-of-lines). level is 1 or 2.
+// heading is the trimmed text after the `#` characters.
+type planSection struct {
+	headingLine int
+	nextLine    int
+	level       int
+	heading     string
+}
+
+// parsePlanSections walks LineContexts and builds the ordered section list.
+// preamble lines before the first H1/H2 are not represented here; callers
+// handle them as source lines [0, sections[0].headingLine).
+func parsePlanSections(srcLines []string, ctxs []mdrender.LineCtx) []planSection {
+	var sections []planSection
+	for i, ctx := range ctxs {
+		if ctx.Kind == mdrender.LineHeading && ctx.HeadingLevel <= 2 {
+			heading := strings.TrimSpace(strings.TrimLeft(srcLines[i], "#\t "))
+			sections = append(sections, planSection{
+				headingLine: i,
+				level:       ctx.HeadingLevel,
+				heading:     heading,
+			})
+		}
+	}
+	// Fill nextLine: each section ends where the next one begins (or at len(srcLines)).
+	for i := range sections {
+		if i+1 < len(sections) {
+			sections[i].nextLine = sections[i+1].headingLine
+		} else {
+			sections[i].nextLine = len(srcLines)
+		}
+	}
+	return sections
+}
+
+// defaultSectionFolded returns the initial fold state for a section.
+// H1 sections and H2 Spec/Tasks/Goal are expanded; every other H2 is collapsed.
+func defaultSectionFolded(heading string, level int) bool {
+	if level == 1 {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(heading)) {
+	case "spec", "tasks", "goal":
+		return false
+	}
+	return true
+}
+
 // planEditorMode is the editor's current input mode. The default is
 // scroll-mode (read-only navigation); `i` enters edit-mode and `r` enters
 // revise-input-mode. planEditorModeQuestion is entered automatically when
@@ -60,11 +110,22 @@ type planEditorModel struct {
 
 	renderer *mdrender.Renderer
 
+	// sections is the ordered list of H1/H2 sections parsed from the current
+	// plan. folds maps section heading name to its current fold state (true =
+	// collapsed). Both are repopulated by reload() and preserved across Reload()
+	// for headings that survive the edit.
+	sections []planSection
+	folds    map[string]bool
+
 	// displayCache memoises the post-wrap, post-style display lines for the
 	// current textarea value at the current width. Invalidated by content
 	// hash so edits always re-derive. The renderer itself caches at a coarser
 	// grain (sha256(plan), styleName, width) — this avoids the per-frame map
 	// lookup when nothing changed between renders.
+	//
+	// foldsHash is included in the key because a fold toggle changes the
+	// displayed lines without changing the plan content; missing this would
+	// return stale lines from cache after a toggle.
 	displayCache    []string
 	displayCacheKey displayCacheKey
 
@@ -81,11 +142,12 @@ type planEditorModel struct {
 
 // displayCacheKey gates the editor-local cache of display lines. width matters
 // because re-wrap depends on it; valueHash matters because edits change the
-// content. styleName isn't part of the key — the renderer is reused per
-// editor and the style is fixed at construction.
+// content; foldsHash captures the current fold state so toggling a fold
+// invalidates the cache even when the plan content is unchanged.
 type displayCacheKey struct {
 	width     int
 	valueHash [32]byte
+	foldsHash [32]byte
 }
 
 // planEditorApproveMsg is emitted when the user approves the plan (`a`).
@@ -265,6 +327,8 @@ func (m *planEditorModel) resolveQuestion(answer string) {
 }
 
 // reload rereads the plan file from disk and resets dirty/scroll state.
+// It repopulates sections and seeds folds with default values; existing fold
+// state for unchanged heading names is preserved in Reload() by the caller.
 func (m *planEditorModel) reload() {
 	if m.sess == nil {
 		return
@@ -278,6 +342,34 @@ func (m *planEditorModel) reload() {
 	m.textarea.SetValue(plan)
 	m.dirty = false
 	m.scrollOff = 0
+	m.rebuildSections()
+}
+
+// rebuildSections parses the current plan into sections and seeds folds,
+// preserving any existing fold state for headings that still exist.
+func (m *planEditorModel) rebuildSections() {
+	v := m.textarea.Value()
+	srcLines := splitPlanLines(v)
+	ctxs := m.renderer.LineContexts(v)
+	newSections := parsePlanSections(srcLines, ctxs)
+	newFolds := make(map[string]bool, len(newSections))
+	for _, s := range newSections {
+		if existing, ok := m.folds[s.heading]; ok {
+			newFolds[s.heading] = existing
+		} else {
+			newFolds[s.heading] = defaultSectionFolded(s.heading, s.level)
+		}
+	}
+	m.sections = newSections
+	m.folds = newFolds
+}
+
+// splitPlanLines splits plan content on "\n", matching mdrender's convention.
+func splitPlanLines(plan string) []string {
+	if plan == "" {
+		return nil
+	}
+	return strings.Split(plan, "\n")
 }
 
 // Reload is the exported version called by the App when a draft completes
