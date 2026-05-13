@@ -94,8 +94,31 @@ func renderReviewHeader(sess *agent.Session, width int) []string {
 		intentLines = []string{intentLines[0], line2 + " …"}
 	}
 
-	lines := make([]string, 0, 2+len(intentLines)+1)
+	lines := make([]string, 0, 3+len(intentLines)+1)
 	lines = append(lines, titleRow)
+
+	// Goal line from plan, if present.
+	if plan, ok := sess.CachedPlan(); ok {
+		sections := agent.ParsePlanSections(plan)
+		// Use the first non-empty line of the Goal section.
+		goalText := ""
+		for _, l := range strings.Split(sections.Goal, "\n") {
+			if t := strings.TrimSpace(l); t != "" {
+				goalText = t
+				break
+			}
+		}
+		if goalText != "" {
+			maxGoal := width - 10
+			if maxGoal < 10 {
+				maxGoal = 10
+			}
+			goalText = truncateVisible(goalText, maxGoal)
+			goalLine := "  " + StyleSubtle.Render("Goal:") + " " + goalText
+			lines = append(lines, goalLine)
+		}
+	}
+
 	for _, l := range intentLines {
 		lines = append(lines, "  "+l)
 	}

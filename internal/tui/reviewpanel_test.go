@@ -851,6 +851,55 @@ func TestVerdictBadge(t *testing.T) {
 	}
 }
 
+// TestRenderReviewHeader_GoalLineFromPlan verifies that the review header includes
+// a Goal: line populated from the plan's # Goal section when the session has a plan.
+func TestRenderReviewHeader_GoalLineFromPlan(t *testing.T) {
+	dir := t.TempDir()
+	sess := agent.NewSessionForTestWithPath("sess-goal", "fix-auth", dir)
+	sess.SetOriginalPrompt("Fix the auth redirect bug")
+	sess.MarkDone()
+
+	plan := "# Goal\nFix the auth redirect bug.\n\n## Spec\n1. Users redirect correctly.\n"
+	if err := sess.WritePlan(plan); err != nil {
+		t.Fatalf("WritePlan: %v", err)
+	}
+
+	lines := renderReviewHeader(sess, 120)
+	out := strings.Join(lines, "\n")
+
+	foundGoalLine := false
+	for _, l := range lines {
+		stripped := ansi.Strip(l)
+		if strings.HasPrefix(strings.TrimSpace(stripped), "Goal:") {
+			foundGoalLine = true
+			if !strings.Contains(stripped, "Fix the auth redirect bug.") {
+				t.Errorf("Goal: line does not contain goal text, got: %q", stripped)
+			}
+			break
+		}
+	}
+	if !foundGoalLine {
+		t.Errorf("renderReviewHeader must include a 'Goal:' line when session has a plan; got:\n%s", out)
+	}
+}
+
+// TestRenderReviewHeader_NoGoalWhenNoPlan verifies that the review header has no
+// Goal: line when the session has no plan.
+func TestRenderReviewHeader_NoGoalWhenNoPlan(t *testing.T) {
+	sess := agent.NewSessionForTest("sess-noplan", "fix-auth")
+	sess.SetOriginalPrompt("Fix the auth redirect bug")
+	sess.MarkDone()
+
+	lines := renderReviewHeader(sess, 120)
+	out := strings.Join(lines, "\n")
+
+	for _, l := range lines {
+		if strings.Contains(ansi.Strip(l), "Goal:") {
+			t.Errorf("renderReviewHeader must not include a 'Goal:' line when session has no plan; got:\n%s", out)
+		}
+	}
+}
+
 // TestRenderReviewPanel_PRDraftInFlight verifies that the spinner status line
 // and disabled p hint appear when prDraftInFlight is true.
 func TestRenderReviewPanel_PRDraftInFlight(t *testing.T) {
