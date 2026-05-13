@@ -3866,6 +3866,51 @@ func TestShippingPanel_CursorAndScrollKeys(t *testing.T) {
 	}
 }
 
+func TestShippingPanel_VerdictKeys(t *testing.T) {
+	sess := agent.NewSessionForTest("ship-v", "ship")
+	sess.SetLifecyclePhase(agent.LifecycleShipping)
+	app := NewApp()
+	app.shippingSession = sess
+	app.dashboard.panelFocus = focusShipping
+	app.width = 120
+	app.height = 40
+	// One inline comment with ID=42.
+	app.prCache[sess.ID] = &prCacheEntry{
+		pr: &github.PRState{Number: 2, MergeableState: "clean"},
+		threads: []github.ReviewThread{
+			{
+				Reviewer: "alice",
+				State:    "CHANGES_REQUESTED",
+				Comments: []github.ReviewComment{
+					{ID: 42, Path: "foo.go", Body: "fix this", Line: 1},
+				},
+			},
+		},
+	}
+	// cursor=0 → the inline comment (no body → only inline item)
+
+	// Press 'a' — approve.
+	m, _ := app.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	got := m.(App)
+	if e := got.feedbackTriage[sess.ID]["comment:42"]; e == nil || e.Verdict != feedbackApproved {
+		t.Errorf("after a: want feedbackApproved, got %+v", e)
+	}
+
+	// Press 'x' — disagree.
+	m, _ = got.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
+	got = m.(App)
+	if e := got.feedbackTriage[sess.ID]["comment:42"]; e == nil || e.Verdict != feedbackDisagreed {
+		t.Errorf("after x: want feedbackDisagreed, got %+v", e)
+	}
+
+	// Press 'u' — neutral (should remove the entry since no note).
+	m, _ = got.Update(tea.KeyPressMsg{Code: 'u', Text: "u"})
+	got = m.(App)
+	if e := got.feedbackTriage[sess.ID]["comment:42"]; e != nil {
+		t.Errorf("after u: expected entry removed (neutral+empty note), got %+v", e)
+	}
+}
+
 func TestNewApp_InitsFeedbackTriage(t *testing.T) {
 	app := NewApp()
 	if app.feedbackTriage == nil {
