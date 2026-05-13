@@ -301,6 +301,57 @@ func TestRowStatePhrase(t *testing.T) {
 	}
 }
 
+// TestPrPollMsg_UnknownArmsBurst verifies that a prPollMsg with MergeableState
+// "unknown" or "" arms the 15s burst window on the poll state.
+func TestPrPollMsg_UnknownArmsBurst(t *testing.T) {
+	cases := []struct {
+		name           string
+		mergeableState string
+	}{
+		{"unknown", "unknown"},
+		{"empty", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := NewApp()
+			a.prPollsInFlight = 1
+			a.prPollStates["s1"] = &prSessionState{inFlight: true}
+
+			model, _ := a.Update(prPollMsg{
+				sessionID: "s1",
+				pr:        &github.PRState{Number: 1, MergeableState: tc.mergeableState},
+			})
+			got := model.(App).prPollStates["s1"]
+			if got == nil {
+				t.Fatal("prPollStates missing after update")
+			}
+			if !got.burstUntil.After(time.Now().Add(14 * time.Second)) {
+				t.Errorf("burstUntil should be >14s in the future, got %v", got.burstUntil)
+			}
+		})
+	}
+}
+
+// TestPrPollMsg_KnownDoesNotArmBurst verifies that a prPollMsg with a known
+// mergeable state (e.g. "clean") does not arm the burst window.
+func TestPrPollMsg_KnownDoesNotArmBurst(t *testing.T) {
+	a := NewApp()
+	a.prPollsInFlight = 1
+	a.prPollStates["s1"] = &prSessionState{inFlight: true}
+
+	model, _ := a.Update(prPollMsg{
+		sessionID: "s1",
+		pr:        &github.PRState{Number: 1, MergeableState: "clean"},
+	})
+	got := model.(App).prPollStates["s1"]
+	if got == nil {
+		t.Fatal("prPollStates missing after update")
+	}
+	if got.burstUntil.After(time.Now()) {
+		t.Errorf("burstUntil should not be armed for known state, got %v", got.burstUntil)
+	}
+}
+
 // TestPrIndicator_StatePhrase verifies that prIndicator surfaces the state phrase.
 func TestPrIndicator_StatePhrase(t *testing.T) {
 	entry := &prCacheEntry{

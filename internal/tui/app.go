@@ -1096,6 +1096,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			threads: msg.threads,
 			stack:   msg.stack,
 		}
+		// Arm a short burst so the unknown → known transition resolves promptly.
+		if ps != nil && (msg.pr.MergeableState == "" || msg.pr.MergeableState == "unknown") {
+			ps.burstUntil = time.Now().Add(15 * time.Second)
+		}
 		// Auto-promote to Shipping when an open PR is discovered externally.
 		if msg.pr != nil && msg.pr.State == "open" {
 			if sess := a.sessionByID(msg.sessionID); sess != nil {
