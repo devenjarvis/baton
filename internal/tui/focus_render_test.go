@@ -254,7 +254,7 @@ func TestBuildingProgressBadge(t *testing.T) {
 }
 
 // TestSessionFocusStatus_BuildingWithTodosShowsProgressBadge verifies that
-// sessionFocusStatus shows a "▸ done/total" progress badge for a Building
+// sessionFocusStatus shows a "done/total tasks" progress badge for a Building
 // session that has received ≥1 TodoWrite, instead of the plain "N active, M idle".
 func TestSessionFocusStatus_BuildingWithTodosShowsProgressBadge(t *testing.T) {
 	sess := agent.NewSessionForTest("s", "my-session")

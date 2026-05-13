@@ -945,9 +945,9 @@ func secondUncompletedTask(plan string) string {
 
 // focusTaskDescription chooses the description lines for a session card in
 // focus mode and reports whether they should render in pending (italic) style.
-// For Building-phase sessions, line1 is the active task text (raw, no "▸ " prefix
-// — the render layer adds that) and line2 is the next task text (raw, no "↳ next: "
-// prefix). Priority: in_progress TodoItem > plan firstUncompletedTask > fallback.
+// For Building-phase sessions, line1 is the active task text and line2 is
+// the next task text (both raw). Priority: in_progress TodoItem > plan
+// firstUncompletedTask > fallback.
 func focusTaskDescription(sess *agent.Session, budget int) (line1, line2 string, pending bool) {
 	if sess.LifecyclePhase() == agent.LifecycleInProgress && !sess.IsReviewable() {
 		if ag := sess.PrimaryAgent(); ag != nil {
