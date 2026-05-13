@@ -173,26 +173,26 @@ type App struct {
 	audioPlayer     *audio.Player
 
 	// Wellness state.
-	appStart               time.Time // set once at init; never reset; used for total session duration in wellness log
-	sessionStart           time.Time // per-block work timer; reset on each break completion
-	lastReviewAt           time.Time
-	agentLimitModalActive  bool
-	focusSessionMinutes    int          // cached from resolved global settings
-	focusBreakMinutes      int          // cached from resolved global settings
-	focusPlanningIdx       int          // index into planningSessions()
-	focusBuildingIdx       int          // index into buildingSessions()
-	focusReviewIdx         int          // index into reviewQueueSessions()
-	focusShippingIdx       int          // index into shippingSessions()
-	focusCursorSection     focusSection // which section the pipeline cursor is on
-	focusLaunchAgent       *agent.Agent
-	focusLaunchSession     *agent.Session
-	focusBacklogWarning    bool // first n at backlog limit shows warning; second proceeds
-	focusBreakMode         bool
-	focusBreakStart        time.Time // wall-clock; monotonic stripped so suspend counts toward elapsed
-	focusBlockCount        int
-	focusBreakShortWarning bool
-	focusBreakTimerUp      bool // break duration elapsed; waiting on user to resume
-	focusBreakAnimFrame    int
+	appStart                time.Time // set once at init; never reset; used for total session duration in wellness log
+	sessionStart            time.Time // per-block work timer; reset on each break completion
+	lastReviewAt            time.Time
+	agentLimitModalActive   bool
+	focusSessionMinutes     int          // cached from resolved global settings
+	focusBreakMinutes       int          // cached from resolved global settings
+	focusPlanningIdx        int          // index into planningSessions()
+	focusBuildingIdx        int          // index into buildingSessions()
+	focusReviewIdx          int          // index into reviewQueueSessions()
+	focusShippingIdx        int          // index into shippingSessions()
+	focusCursorSection      focusSection // which section the pipeline cursor is on
+	focusLaunchAgent        *agent.Agent
+	focusLaunchSession      *agent.Session
+	focusBacklogWarning     bool // first n at backlog limit shows warning; second proceeds
+	focusBreakMode          bool
+	focusBreakStart         time.Time // wall-clock; monotonic stripped so suspend counts toward elapsed
+	focusBlockCount         int
+	focusBreakShortWarning  bool
+	focusBreakTimerUp       bool // break duration elapsed; waiting on user to resume
+	focusBreakAnimFrame     int
 	reviewDiffCache         map[string]*reviewDiffEntry                // keyed by session ID
 	reviewSession           *agent.Session                             // session currently open in review panel
 	reviewTaskCursor        int                                        // selected task row in the review task list
@@ -248,23 +248,23 @@ type App struct {
 
 func NewApp() App {
 	return App{
-		view:            ViewDashboard,
-		dashboard:       newDashboardModel(),
-		managers:        make(map[string]*agent.Manager),
-		repoSettings:    make(map[string]*config.RepoSettings),
-		resolvedCache:   make(map[string]config.ResolvedSettings),
-		lastKnownStatus: make(map[string]agent.Status),
-		diffStatsCache:  make(map[string]*diffStatsEntry),
+		view:                  ViewDashboard,
+		dashboard:             newDashboardModel(),
+		managers:              make(map[string]*agent.Manager),
+		repoSettings:          make(map[string]*config.RepoSettings),
+		resolvedCache:         make(map[string]config.ResolvedSettings),
+		lastKnownStatus:       make(map[string]agent.Status),
+		diffStatsCache:        make(map[string]*diffStatsEntry),
 		reviewDiffCache:       make(map[string]*reviewDiffEntry),
 		reviewDiffCacheByTask: make(map[int]*diffmodel.Model),
-		prCache:         make(map[string]*prCacheEntry),
-		prPollStates:    make(map[string]*prSessionState),
-		closingAgents:   make(map[string]bool),
-		closingSessions: make(map[string]bool),
-		feedbackTriage:  make(map[string]map[string]*feedbackTriageEntry),
-		feedbackNote:    newFeedbackNoteModal(),
-		promptModal:     newPromptModal(),
-		prComposeModal:  newPRComposeModal(),
+		prCache:               make(map[string]*prCacheEntry),
+		prPollStates:          make(map[string]*prSessionState),
+		closingAgents:         make(map[string]bool),
+		closingSessions:       make(map[string]bool),
+		feedbackTriage:        make(map[string]map[string]*feedbackTriageEntry),
+		feedbackNote:          newFeedbackNoteModal(),
+		promptModal:           newPromptModal(),
+		prComposeModal:        newPRComposeModal(),
 	}
 }
 

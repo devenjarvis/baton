@@ -240,14 +240,6 @@ func renderReviewPanel(sess *agent.Session, entry *reviewDiffEntry, width, heigh
 	return strings.Join(lines, "\n")
 }
 
-// getGroups safely returns groups, even on a nil entry.
-func (e *reviewDiffEntry) getGroups() []taskReviewGroup {
-	if e == nil {
-		return nil
-	}
-	return e.groups
-}
-
 // reviewListPaneRowAt returns the 0-based task row index at (mouseX, mouseY) within the
 // left task-list pane, or -1 if the click is outside the pane or in the PLAN TASKS header.
 // paneTop is the Y coordinate of the first line of the pane (including the 2-line header).
@@ -702,7 +694,7 @@ func renderReviewSpecOverlay(sess *agent.Session, plan string, scrollOffset, wid
 		{"## Not in scope", sections.NotInScope},
 	}
 
-	var allLines []string
+	allLines := make([]string, 0, len(ordered)*8)
 	for _, sec := range ordered {
 		if sec.body == "" {
 			continue

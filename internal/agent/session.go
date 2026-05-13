@@ -903,11 +903,11 @@ func ParsePlanSections(plan string) PlanSections {
 	)
 
 	var (
-		cur    field
-		goal   []string
-		spec   []string
-		verif  []string
-		notin  []string
+		cur   field
+		goal  []string
+		spec  []string
+		verif []string
+		notin []string
 	)
 
 	for _, line := range strings.Split(plan, "\n") {
