@@ -350,6 +350,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			a.promptModal.SetSize(msg.Width, msg.Height-1)
 			a.prComposeModal.SetSize(msg.Width, msg.Height-1)
+			a.feedbackNote.SetSize(msg.Width, msg.Height)
 		}
 
 	case initAppMsg:
@@ -3802,7 +3803,11 @@ func (a App) View() tea.View {
 		if a.dashboard.panelFocus == focusShipping && a.shippingSession != nil {
 			entry := a.prCache[a.shippingSession.ID]
 			sessID := a.shippingSession.ID
-			v := tea.NewView(renderShippingPanel(a.shippingSession, entry, a.width, a.height, a.shippingFeedbackCursor, a.shippingDetailScroll, a.feedbackTriage[sessID]))
+			panel := renderShippingPanel(a.shippingSession, entry, a.width, a.height, a.shippingFeedbackCursor, a.shippingDetailScroll, a.feedbackTriage[sessID])
+			if a.feedbackNote.Active() {
+				panel = lipgloss.Place(a.width, a.height, lipgloss.Center, lipgloss.Center, a.feedbackNote.View())
+			}
+			v := tea.NewView(panel)
 			v.AltScreen = true
 			return v
 		}
