@@ -1799,7 +1799,69 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Shipping panel key handling.
 		if a.dashboard.panelFocus == focusShipping && a.shippingSession != nil {
+			// Modal intercepts all keys first.
+			if a.feedbackNote.Active() {
+				cmd, submitted, note := a.feedbackNote.Update(msg)
+				if submitted {
+					a.setFeedbackNote(a.shippingSession.ID, a.feedbackNote.itemKey, note)
+				}
+				return a, cmd
+			}
+			entry := a.prCache[a.shippingSession.ID]
+			items := feedbackItems(entryThreads(entry))
+			halfPane := a.height / 4
+			if halfPane < 1 {
+				halfPane = 1
+			}
 			switch msg.String() {
+			case "j", "down":
+				max := len(items) - 1
+				if max < 0 {
+					max = 0
+				}
+				if a.shippingFeedbackCursor < max {
+					a.shippingFeedbackCursor++
+				}
+				a.shippingDetailScroll = 0
+			case "k", "up":
+				if a.shippingFeedbackCursor > 0 {
+					a.shippingFeedbackCursor--
+				}
+				a.shippingDetailScroll = 0
+			case "pgdown", "ctrl+d":
+				a.shippingDetailScroll += halfPane
+			case "pgup", "ctrl+u":
+				a.shippingDetailScroll -= halfPane
+				if a.shippingDetailScroll < 0 {
+					a.shippingDetailScroll = 0
+				}
+			case "a":
+				if len(items) > 0 && a.shippingFeedbackCursor < len(items) {
+					key := feedbackItemKey(items[a.shippingFeedbackCursor])
+					a.setFeedbackVerdict(a.shippingSession.ID, key, feedbackApproved)
+				}
+			case "x":
+				if len(items) > 0 && a.shippingFeedbackCursor < len(items) {
+					key := feedbackItemKey(items[a.shippingFeedbackCursor])
+					a.setFeedbackVerdict(a.shippingSession.ID, key, feedbackDisagreed)
+				}
+			case "u":
+				if len(items) > 0 && a.shippingFeedbackCursor < len(items) {
+					key := feedbackItemKey(items[a.shippingFeedbackCursor])
+					a.setFeedbackVerdict(a.shippingSession.ID, key, feedbackNeutral)
+				}
+			case "n":
+				if len(items) > 0 && a.shippingFeedbackCursor < len(items) {
+					item := items[a.shippingFeedbackCursor]
+					key := feedbackItemKey(item)
+					existing := ""
+					if m := a.feedbackTriage[a.shippingSession.ID]; m != nil {
+						if e := m[key]; e != nil {
+							existing = e.Note
+						}
+					}
+					return a, a.feedbackNote.Open(key, existing)
+				}
 			case "esc":
 				a.dashboard.panelFocus = focusList
 				a.shippingSession = nil
@@ -1811,7 +1873,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.setError("session has no agents to open")
 				}
 			case "p":
-				if entry := a.prCache[a.shippingSession.ID]; entry != nil && entry.pr != nil && entry.pr.URL != "" {
+				if entry != nil && entry.pr != nil && entry.pr.URL != "" {
 					if err := openURL(entry.pr.URL); err != nil {
 						a.setError(err.Error())
 					}
@@ -1820,7 +1882,6 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			case "m":
 				// Merge: gated on isMergeReady.
-				entry := a.prCache[a.shippingSession.ID]
 				if !isMergeReady(entry) {
 					a.setError("not ready to merge — use M to force")
 					return a, nil
@@ -1828,7 +1889,6 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, a.mergePRCmd(a.shippingSession.ID)
 			case "M":
 				// Force merge: bypasses isMergeReady check.
-				entry := a.prCache[a.shippingSession.ID]
 				if entry == nil || entry.pr == nil {
 					a.setError("no PR found")
 					return a, nil
@@ -3485,6 +3545,8 @@ func (a *App) activateFocusCursor() (tea.Cmd, bool) {
 		return nil, true
 	case focusSectionShipping:
 		a.shippingSession = sess
+		a.shippingFeedbackCursor = 0
+		a.shippingDetailScroll = 0
 		a.dashboard.panelFocus = focusShipping
 		return nil, true
 	}
@@ -4329,6 +4391,55 @@ func (a *App) refreshPRStatusForSession(sessionID, branch, repoPath, worktreePat
 			threads:   threads,
 			stack:     stack,
 		}
+	}
+}
+
+// entryThreads safely returns threads from a prCacheEntry (nil-safe).
+func entryThreads(entry *prCacheEntry) []github.ReviewThread {
+	if entry == nil {
+		return nil
+	}
+	return entry.threads
+}
+
+// setFeedbackVerdict lazily allocates the per-session triage map and sets the
+// verdict on the item with the given key. For feedbackNeutral with an empty
+// note, the entry is deleted to keep the map clean.
+func (a *App) setFeedbackVerdict(sessID, itemKey string, v feedbackVerdict) {
+	if a.feedbackTriage[sessID] == nil {
+		a.feedbackTriage[sessID] = make(map[string]*feedbackTriageEntry)
+	}
+	m := a.feedbackTriage[sessID]
+	if v == feedbackNeutral {
+		if e := m[itemKey]; e == nil || strings.TrimSpace(e.Note) == "" {
+			delete(m, itemKey)
+			return
+		}
+	}
+	if m[itemKey] == nil {
+		m[itemKey] = &feedbackTriageEntry{}
+	}
+	m[itemKey].Verdict = v
+}
+
+// setFeedbackNote lazily allocates the per-session triage map and sets the
+// note on the item. If the resulting entry is neutral with an empty note, it
+// is deleted.
+func (a *App) setFeedbackNote(sessID, itemKey, note string) {
+	if a.feedbackTriage[sessID] == nil {
+		a.feedbackTriage[sessID] = make(map[string]*feedbackTriageEntry)
+	}
+	m := a.feedbackTriage[sessID]
+	if m[itemKey] == nil {
+		if note == "" {
+			return
+		}
+		m[itemKey] = &feedbackTriageEntry{}
+	}
+	m[itemKey].Note = note
+	// Clean up neutral entries with no note.
+	if m[itemKey].Verdict == feedbackNeutral && strings.TrimSpace(m[itemKey].Note) == "" {
+		delete(m, itemKey)
 	}
 }
 

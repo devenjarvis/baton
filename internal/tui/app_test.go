@@ -3802,6 +3802,70 @@ func TestRefreshPRStatus_WrongRepoReturnsError(t *testing.T) {
 	}
 }
 
+func TestShippingPanel_CursorAndScrollKeys(t *testing.T) {
+	sess := agent.NewSessionForTest("ship-cs", "ship")
+	sess.SetLifecyclePhase(agent.LifecycleShipping)
+	app := NewApp()
+	app.shippingSession = sess
+	app.dashboard.panelFocus = focusShipping
+	app.width = 120
+	app.height = 40
+	app.prCache[sess.ID] = &prCacheEntry{
+		pr: &github.PRState{Number: 1, MergeableState: "clean"},
+		threads: []github.ReviewThread{
+			{Reviewer: "alice", State: "CHANGES_REQUESTED", Body: "fix a"},
+			{Reviewer: "bob", State: "CHANGES_REQUESTED", Body: "fix b"},
+			{Reviewer: "carol", State: "APPROVED", Body: "lgtm"},
+		},
+	}
+
+	// j moves cursor down.
+	m, _ := app.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
+	got := m.(App)
+	if got.shippingFeedbackCursor != 1 {
+		t.Errorf("after j: cursor = %d, want 1", got.shippingFeedbackCursor)
+	}
+	if got.shippingDetailScroll != 0 {
+		t.Errorf("after j: scroll should reset to 0, got %d", got.shippingDetailScroll)
+	}
+
+	// j again.
+	m, _ = got.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
+	got = m.(App)
+	if got.shippingFeedbackCursor != 2 {
+		t.Errorf("after j×2: cursor = %d, want 2", got.shippingFeedbackCursor)
+	}
+
+	// j past end clamps.
+	m, _ = got.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
+	got = m.(App)
+	if got.shippingFeedbackCursor != 2 {
+		t.Errorf("j past end: cursor = %d, want 2 (clamped)", got.shippingFeedbackCursor)
+	}
+
+	// k moves cursor up.
+	m, _ = got.Update(tea.KeyPressMsg{Code: 'k', Text: "k"})
+	got = m.(App)
+	if got.shippingFeedbackCursor != 1 {
+		t.Errorf("after k: cursor = %d, want 1", got.shippingFeedbackCursor)
+	}
+
+	// pgdn increments detail scroll.
+	got.shippingDetailScroll = 0
+	m, _ = got.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
+	got = m.(App)
+	if got.shippingDetailScroll <= 0 {
+		t.Errorf("pgdn: scroll = %d, want >0", got.shippingDetailScroll)
+	}
+
+	// j resets detail scroll to 0.
+	m, _ = got.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
+	got = m.(App)
+	if got.shippingDetailScroll != 0 {
+		t.Errorf("j after scroll: scroll should reset to 0, got %d", got.shippingDetailScroll)
+	}
+}
+
 func TestNewApp_InitsFeedbackTriage(t *testing.T) {
 	app := NewApp()
 	if app.feedbackTriage == nil {
