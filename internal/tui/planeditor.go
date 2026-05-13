@@ -350,8 +350,9 @@ func (m *planEditorModel) reload() {
 	m.rebuildSections()
 }
 
-// rebuildSections parses the current plan into sections and seeds folds,
-// preserving any existing fold state for headings that still exist.
+// rebuildSections parses the current plan into sections and applies the
+// default fold policy to every heading. It does NOT preserve existing fold
+// state — callers that need preservation (see Reload) must do so explicitly.
 //
 // Fold state is keyed by heading text, not by position. If two H2s share the
 // same name (non-canonical but user-editable), they collapse/expand together —
@@ -363,11 +364,7 @@ func (m *planEditorModel) rebuildSections() {
 	newSections := parsePlanSections(srcLines, ctxs)
 	newFolds := make(map[string]bool, len(newSections))
 	for _, s := range newSections {
-		if existing, ok := m.folds[s.heading]; ok {
-			newFolds[s.heading] = existing
-		} else {
-			newFolds[s.heading] = defaultSectionFolded(s.heading, s.level)
-		}
+		newFolds[s.heading] = defaultSectionFolded(s.heading, s.level)
 	}
 	m.sections = newSections
 	m.folds = newFolds
@@ -381,9 +378,24 @@ func splitPlanLines(plan string) []string {
 	return strings.Split(plan, "\n")
 }
 
-// Reload is the exported version called by the App when a draft completes
-// or a revise lands.
-func (m *planEditorModel) Reload() { m.reload() }
+// Reload is called by the App when a draft completes or a revise lands. It
+// re-reads the plan from disk and preserves fold state for every heading name
+// that still exists in the new content. New headings receive the default fold
+// policy (spec item 2); vanished headings are dropped silently.
+func (m *planEditorModel) Reload() {
+	// Snapshot current fold state before reload resets it to defaults.
+	savedFolds := make(map[string]bool, len(m.folds))
+	for heading, folded := range m.folds {
+		savedFolds[heading] = folded
+	}
+	m.reload()
+	// Overwrite default folds with saved state for any heading that survived.
+	for _, s := range m.sections {
+		if saved, ok := savedFolds[s.heading]; ok {
+			m.folds[s.heading] = saved
+		}
+	}
+}
 
 // Update routes a key event. The caller should already have dispatched
 // other tea.Msg types (resize, ticks).
