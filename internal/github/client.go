@@ -142,6 +142,24 @@ func isNotFoundOrUnprocessable(resp *gh.Response) bool {
 		resp.StatusCode == http.StatusUnprocessableEntity
 }
 
+// getPRDetail fetches the singular PR endpoint for the given number, which
+// populates mergeable_state (always null from list endpoints). Falls back to
+// the provided base PR if the detail fetch fails so a transient error doesn't
+// blank the panel.
+func (c *Client) getPRDetail(ctx context.Context, owner, repo string, number int) (*gh.PullRequest, error) {
+	var pr *gh.PullRequest
+	err := c.doWithRetry(ctx, func() (*gh.Response, error) {
+		var resp *gh.Response
+		var err error
+		pr, resp, err = c.gh.PullRequests.Get(ctx, owner, repo, number)
+		return resp, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return pr, nil
+}
+
 // GetPR finds an open pull request for the given head branch.
 // Returns nil (not an error) if no open PR exists for the branch.
 func (c *Client) GetPR(ctx context.Context, owner, repo, branch string) (*PRState, error) {
@@ -166,7 +184,11 @@ func (c *Client) GetPR(ctx context.Context, owner, repo, branch string) (*PRStat
 		return nil, nil
 	}
 
-	return prToState(prs[0]), nil
+	detail, err := c.getPRDetail(ctx, owner, repo, prs[0].GetNumber())
+	if err != nil {
+		return prToState(prs[0]), nil
+	}
+	return prToState(detail), nil
 }
 
 // GetPRBySHA finds the open PR associated with a commit SHA. This is invariant
@@ -206,7 +228,11 @@ func (c *Client) GetPRBySHA(ctx context.Context, owner, repo, sha string) (*PRSt
 			continue
 		}
 		if pr.GetState() == "open" {
-			return prToState(pr), nil
+			detail, err := c.getPRDetail(ctx, owner, repo, pr.GetNumber())
+			if err != nil {
+				return prToState(pr), nil
+			}
+			return prToState(detail), nil
 		}
 	}
 	return nil, nil
@@ -387,7 +413,11 @@ func (c *Client) CreatePR(ctx context.Context, owner, repo, head, base, title, b
 	if err != nil {
 		return nil, fmt.Errorf("creating PR: %w", err)
 	}
-	return prToState(pr), nil
+	detail, err := c.getPRDetail(ctx, owner, repo, pr.GetNumber())
+	if err != nil {
+		return prToState(pr), nil
+	}
+	return prToState(detail), nil
 }
 
 // GetReviewThreads returns review threads for a PR grouped by reviewer.

@@ -36,10 +36,14 @@ func newTestClient(t *testing.T, srv *httptest.Server) *Client {
 
 func TestGetPR_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/repos/o/r/pulls" {
+		switch r.URL.Path {
+		case "/repos/o/r/pulls":
+			_, _ = fmt.Fprintln(w, `[{"number":42,"title":"t","html_url":"u","state":"open","head":{"ref":"feat"},"base":{"ref":"main"}}]`)
+		case "/repos/o/r/pulls/42":
+			_, _ = fmt.Fprintln(w, `{"number":42,"title":"t","html_url":"u","state":"open","head":{"ref":"feat"},"base":{"ref":"main"}}`)
+		default:
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
-		_, _ = fmt.Fprintln(w, `[{"number":42,"title":"t","html_url":"u","state":"open","head":{"ref":"feat"},"base":{"ref":"main"}}]`)
 	}))
 	defer srv.Close()
 
@@ -70,14 +74,21 @@ func TestGetPR_NoPR(t *testing.T) {
 }
 
 func TestGetPR_Retry503ThenSuccess(t *testing.T) {
-	var calls atomic.Int32
+	var listCalls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		n := calls.Add(1)
-		if n == 1 {
-			http.Error(w, "down", http.StatusServiceUnavailable)
-			return
+		switch r.URL.Path {
+		case "/repos/o/r/pulls":
+			n := listCalls.Add(1)
+			if n == 1 {
+				http.Error(w, "down", http.StatusServiceUnavailable)
+				return
+			}
+			_, _ = fmt.Fprintln(w, `[{"number":1,"title":"","state":"open","head":{"ref":"f"},"base":{"ref":"main"}}]`)
+		case "/repos/o/r/pulls/1":
+			_, _ = fmt.Fprintln(w, `{"number":1,"state":"open","head":{"ref":"f"},"base":{"ref":"main"}}`)
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
-		_, _ = fmt.Fprintln(w, `[{"number":1,"title":"","state":"open","head":{"ref":"f"},"base":{"ref":"main"}}]`)
 	}))
 	defer srv.Close()
 
@@ -89,8 +100,8 @@ func TestGetPR_Retry503ThenSuccess(t *testing.T) {
 	if pr == nil {
 		t.Fatalf("expected PR, got nil")
 	}
-	if got := calls.Load(); got != 2 {
-		t.Fatalf("expected 2 attempts, got %d", got)
+	if got := listCalls.Load(); got != 2 {
+		t.Fatalf("expected 2 list attempts, got %d", got)
 	}
 }
 
@@ -188,10 +199,14 @@ func TestGetPR_CtxCancelledDuringBackoff(t *testing.T) {
 
 func TestGetPRBySHA_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/repos/o/r/commits/deadbeef/pulls" {
+		switch r.URL.Path {
+		case "/repos/o/r/commits/deadbeef/pulls":
+			_, _ = fmt.Fprintln(w, `[{"number":7,"state":"open","head":{"ref":"feat","repo":{"full_name":"o/r"}},"base":{"ref":"main"}}]`)
+		case "/repos/o/r/pulls/7":
+			_, _ = fmt.Fprintln(w, `{"number":7,"state":"open","head":{"ref":"feat"},"base":{"ref":"main"}}`)
+		default:
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
-		_, _ = fmt.Fprintln(w, `[{"number":7,"state":"open","head":{"ref":"feat","repo":{"full_name":"o/r"}},"base":{"ref":"main"}}]`)
 	}))
 	defer srv.Close()
 
@@ -207,11 +222,18 @@ func TestGetPRBySHA_Success(t *testing.T) {
 
 func TestGetPRBySHA_ForkFilter(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Two PRs for this commit — one from a fork, one from the owner's repo.
-		_, _ = fmt.Fprintln(w, `[
-			{"number":9,"state":"open","head":{"ref":"feat","repo":{"full_name":"fork/r"}}},
-			{"number":7,"state":"open","head":{"ref":"feat","repo":{"full_name":"o/r"}}}
-		]`)
+		switch r.URL.Path {
+		case "/repos/o/r/commits/deadbeef/pulls":
+			// Two PRs for this commit — one from a fork, one from the owner's repo.
+			_, _ = fmt.Fprintln(w, `[
+				{"number":9,"state":"open","head":{"ref":"feat","repo":{"full_name":"fork/r"}}},
+				{"number":7,"state":"open","head":{"ref":"feat","repo":{"full_name":"o/r"}},"base":{"ref":"main"}}
+			]`)
+		case "/repos/o/r/pulls/7":
+			_, _ = fmt.Fprintln(w, `{"number":7,"state":"open","head":{"ref":"feat"},"base":{"ref":"main"}}`)
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
 	}))
 	defer srv.Close()
 
@@ -281,11 +303,15 @@ func TestGetPRBySHA_AllClosedReturnsNil(t *testing.T) {
 
 func TestCreatePR_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/repos/o/r/pulls" {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/repos/o/r/pulls":
+			w.WriteHeader(http.StatusCreated)
+			_, _ = fmt.Fprintln(w, `{"number":42,"title":"my title","html_url":"https://github.com/o/r/pull/42","state":"open","draft":true,"head":{"ref":"feat","repo":{"full_name":"o/r"}},"base":{"ref":"main"}}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/o/r/pulls/42":
+			_, _ = fmt.Fprintln(w, `{"number":42,"title":"my title","html_url":"https://github.com/o/r/pull/42","state":"open","draft":true,"mergeable_state":"unknown","head":{"ref":"feat"},"base":{"ref":"main"}}`)
+		default:
 			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
 		}
-		w.WriteHeader(http.StatusCreated)
-		_, _ = fmt.Fprintln(w, `{"number":42,"title":"my title","html_url":"https://github.com/o/r/pull/42","state":"open","draft":true,"head":{"ref":"feat","repo":{"full_name":"o/r"}},"base":{"ref":"main"}}`)
 	}))
 	defer srv.Close()
 
@@ -472,6 +498,60 @@ func TestGetReviewThreads_CommentOnlyReviewer(t *testing.T) {
 	}
 	if threads[0].Reviewer != "charlie" || threads[0].State != "COMMENTED" {
 		t.Errorf("unexpected thread: %+v", threads[0])
+	}
+}
+
+func TestGetPR_FollowsUpWithGet(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/o/r/pulls":
+			_, _ = fmt.Fprintln(w, `[{"number":42,"state":"open","head":{"ref":"feat"},"base":{"ref":"main"}}]`)
+		case "/repos/o/r/pulls/42":
+			_, _ = fmt.Fprintln(w, `{"number":42,"mergeable_state":"clean","state":"open","head":{"ref":"feat"},"base":{"ref":"main"}}`)
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	pr, err := c.GetPR(context.Background(), "o", "r", "feat")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if pr == nil {
+		t.Fatal("expected PR, got nil")
+	}
+	if pr.MergeableState != "clean" {
+		t.Errorf("MergeableState = %q, want \"clean\"", pr.MergeableState)
+	}
+}
+
+func TestGetPRBySHA_FollowsUpWithGet(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/o/r/commits/abc123/pulls":
+			_, _ = fmt.Fprintln(w, `[{"number":7,"state":"open","head":{"ref":"feat","repo":{"full_name":"o/r"}},"base":{"ref":"main"}}]`)
+		case "/repos/o/r/pulls/7":
+			_, _ = fmt.Fprintln(w, `{"number":7,"mergeable_state":"clean","state":"open","head":{"ref":"feat"},"base":{"ref":"main"}}`)
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	pr, err := c.GetPRBySHA(context.Background(), "o", "r", "abc123")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if pr == nil {
+		t.Fatal("expected PR, got nil")
+	}
+	if pr.MergeableState != "clean" {
+		t.Errorf("MergeableState = %q, want \"clean\"", pr.MergeableState)
 	}
 }
 
