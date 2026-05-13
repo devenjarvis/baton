@@ -3176,11 +3176,8 @@ func (a *App) pipelineHitTest(dashboardContentY int) (focusSection, int, bool) {
 			continue
 		}
 		cursor += labelRows
-		for i, item := range items {
+		for i := range items {
 			rowH := rowsPerItem(section)
-			if section == focusSectionBuilding && item.session != nil && planProgressLine(item.session, 1) != "" {
-				rowH++
-			}
 			start := cursor
 			end := start + rowH
 			if dashboardContentY >= start && dashboardContentY < end {

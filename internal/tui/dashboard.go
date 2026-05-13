@@ -916,36 +916,6 @@ func secondUncompletedTask(plan string) string {
 	return ""
 }
 
-// planProgressLine returns the text content for the optional task-progress
-// line on a Building session card ("▸ first open · next: second open"),
-// truncated to budget display cells. Returns "" when the line should be
-// omitted: session is not LifecycleInProgress, it is reviewable (all tasks
-// done), it has no plan, the plan has no task lines, or all tasks are already
-// done (firstUncompletedTask returns ""). The first-open-task approximation is
-// intentional — deriving the in-flight task from git commits would require
-// per-tick git I/O that the plan cache avoids.
-func planProgressLine(sess *agent.Session, budget int) string {
-	if sess.LifecyclePhase() != agent.LifecycleInProgress {
-		return ""
-	}
-	if sess.IsReviewable() {
-		return ""
-	}
-	plan, present := sess.CachedPlan()
-	if !present {
-		return ""
-	}
-	first := firstUncompletedTask(plan)
-	if first == "" {
-		return ""
-	}
-	text := "▸ " + first
-	if second := secondUncompletedTask(plan); second != "" {
-		text += " · next: " + second
-	}
-	return truncateVisible(text, budget)
-}
-
 
 // focusTaskDescription chooses the description lines for a session card in
 // focus mode and reports whether they should render in pending (italic) style.
