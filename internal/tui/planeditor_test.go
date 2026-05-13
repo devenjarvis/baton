@@ -269,9 +269,9 @@ func TestPlanEditor_ScrollAndEditModeUseSameWidth(t *testing.T) {
 
 // TestPlanEditor_DisplayLineCountAgreesWithRenderer asserts that the editor's
 // scroll-mode display lines exactly match a direct mdrender call on the same
-// content+width. If this drifts apart the i/esc toggle no longer guarantees
-// "scroll position preserved" — the post-wrap row count would change between
-// modes, scrolling the user past content unexpectedly.
+// content+width when no sections are folded. Folding intentionally elides
+// content lines; this test pins the wrap-parity invariant for the fully-
+// expanded case so the i/esc mode toggle guarantees "scroll position preserved".
 func TestPlanEditor_DisplayLineCountAgreesWithRenderer(t *testing.T) {
 	prev := lipgloss.ColorProfile()
 	lipgloss.SetColorProfile(termenv.TrueColor)
@@ -288,6 +288,13 @@ func TestPlanEditor_DisplayLineCountAgreesWithRenderer(t *testing.T) {
 		t.Fatal(err)
 	}
 	editor := newPlanEditor(sess, "", 60, 30)
+
+	// Expand all folds before comparing: folding intentionally elides content
+	// lines, so the line-count invariant only holds when nothing is folded.
+	for k := range editor.folds {
+		editor.folds[k] = false
+	}
+	editor.invalidateDisplayCache()
 
 	scrollLines := editor.displayLines()
 	directLines := mdrender.New("monokai").RenderLines(editor.textarea.Value(), editor.contentWidth())

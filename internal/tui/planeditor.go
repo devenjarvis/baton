@@ -130,9 +130,9 @@ type planEditorModel struct {
 	//
 	// sectionDisplayStart[i] is the display-line index where sections[i]'s
 	// heading line appears. Recomputed with displayCache.
-	displayCache         []string
-	displayCacheKey      displayCacheKey
-	sectionDisplayStart  []int
+	displayCache        []string
+	displayCacheKey     displayCacheKey
+	sectionDisplayStart []int
 
 	// Planner question state. When questionAnswerCh is non-nil, the editor is
 	// in planEditorModeQuestion and mirrors the question text + a single-line
