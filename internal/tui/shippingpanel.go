@@ -13,7 +13,8 @@ import (
 
 // renderShippingPanel renders the fullscreen shipping panel for a session.
 // entry may be nil while the first PR poll is in flight (shows loading state).
-func renderShippingPanel(sess *agent.Session, entry *prCacheEntry, width, height int) string {
+// cursor and scroll control the feedback two-pane UI; triage holds user verdicts.
+func renderShippingPanel(sess *agent.Session, entry *prCacheEntry, width, height, cursor, scroll int, triage map[string]*feedbackTriageEntry) string {
 	var lines []string
 
 	// ── Header ────────────────────────────────────────────────────────────────
@@ -78,18 +79,69 @@ func renderShippingPanel(sess *agent.Session, entry *prCacheEntry, width, height
 	lines = append(lines, "")
 	lines = append(lines, StyleSubtle.Render(strings.Repeat("─", width-2)))
 
-	// ── Review threads ────────────────────────────────────────────────────────
-	lines = append(lines, StyleSubtle.Render("REVIEW THREADS"))
-	if len(entry.threads) == 0 {
+	// ── Review feedback (two-pane) ────────────────────────────────────────────
+	lines = append(lines, StyleSubtle.Render("REVIEW FEEDBACK"))
+	items := feedbackItems(entry.threads)
+	if len(items) == 0 {
 		lines = append(lines, StyleSubtle.Render("  no review feedback"))
+		lines = append(lines, "")
 	} else {
-		for _, thread := range entry.threads {
-			lines = append(lines, renderReviewThread(thread, width)...)
+		// Reserve height for header+PR+CI+dividers already rendered (+ footer).
+		usedAbove := len(lines) + 3 // +3 for footer sep + hints + blank before footer
+		bodyH := height - usedAbove
+		if bodyH < 4 {
+			bodyH = 4
+		}
+
+		if width < 80 {
+			// Narrow: stack list above detail.
+			listH := bodyH / 2
+			detailH := bodyH - listH - 1
+			if listH < 2 {
+				listH = 2
+			}
+			if detailH < 2 {
+				detailH = 2
+			}
+			w := width - 2
+			lines = append(lines, renderFeedbackList(items, cursor, triage, w, listH)...)
+			lines = append(lines, StyleSubtle.Render(strings.Repeat("─", width-2)))
+			lines = append(lines, renderFeedbackDetail(items, cursor, triage, scroll, w, detailH)...)
+		} else {
+			// Wide: side-by-side panes.
+			leftW := width * 4 / 10
+			if leftW < 30 {
+				leftW = 30
+			}
+			rightW := width - leftW - 5
+			if rightW < 20 {
+				rightW = 20
+			}
+			leftLines := renderFeedbackList(items, cursor, triage, leftW, bodyH)
+			rightLines := renderFeedbackDetail(items, cursor, triage, scroll, rightW, bodyH)
+			gutter := " " + StyleSubtle.Render("│") + " "
+			maxRows := len(leftLines)
+			if len(rightLines) > maxRows {
+				maxRows = len(rightLines)
+			}
+			for i := 0; i < maxRows; i++ {
+				l, r := "", ""
+				if i < len(leftLines) {
+					l = leftLines[i]
+				}
+				if i < len(rightLines) {
+					r = rightLines[i]
+				}
+				padW := leftW - ansi.StringWidth(l)
+				if padW < 0 {
+					padW = 0
+				}
+				lines = append(lines, l+strings.Repeat(" ", padW)+gutter+r)
+			}
 		}
 	}
 
 	// ── Footer ────────────────────────────────────────────────────────────────
-	// Pad remaining height so the footer always sits at the bottom.
 	used := len(lines) + 2 // +2 for separator + hints
 	if remaining := height - used; remaining > 0 {
 		lines = append(lines, strings.Repeat("\n", remaining-1))
@@ -98,6 +150,182 @@ func renderShippingPanel(sess *agent.Session, entry *prCacheEntry, width, height
 	lines = append(lines, shippingHints(isMergeReady(entry)))
 
 	return strings.Join(lines, "\n")
+}
+
+// verdictGlyph returns the colored one-character glyph for a verdict.
+func verdictGlyph(v feedbackVerdict) string {
+	switch v {
+	case feedbackApproved:
+		return StyleSuccess.Render("✓")
+	case feedbackDisagreed:
+		return StyleError.Render("✗")
+	default:
+		return StyleSubtle.Render("·")
+	}
+}
+
+// renderFeedbackList renders the left-pane list of feedback items.
+func renderFeedbackList(items []feedbackItem, cursor int, triage map[string]*feedbackTriageEntry, w, h int) []string {
+	header := []string{StyleSubtle.Render("FEEDBACK"), ""}
+	const headerLines = 2
+
+	rowsH := h - headerLines
+	if rowsH < 1 {
+		rowsH = 1
+	}
+	offset := cursor - rowsH/2
+	if offset < 0 {
+		offset = 0
+	}
+	if offset+rowsH > len(items) {
+		offset = len(items) - rowsH
+		if offset < 0 {
+			offset = 0
+		}
+	}
+
+	cursorBar := lipgloss.NewStyle().Foreground(ColorPrimary).Render("│")
+
+	end := offset + rowsH
+	if end > len(items) {
+		end = len(items)
+	}
+	lines := make([]string, 0, h)
+	lines = append(lines, header...)
+
+	for i := offset; i < end; i++ {
+		item := items[i]
+		selected := i == cursor
+		key := feedbackItemKey(item)
+
+		var verdict feedbackVerdict
+		if triage != nil {
+			if e := triage[key]; e != nil {
+				verdict = e.Verdict
+			}
+		}
+		glyph := verdictGlyph(verdict)
+
+		// Note indicator.
+		noteGlyph := "  "
+		if triage != nil {
+			if e := triage[key]; e != nil && strings.TrimSpace(e.Note) != "" {
+				noteGlyph = " " + StyleSubtle.Render("✎")
+			}
+		}
+
+		// Label: reviewer (for body items) or path:line (for inline).
+		var label string
+		if item.IsInline {
+			if item.Line > 0 {
+				label = fmt.Sprintf("%s:%d", item.Path, item.Line)
+			} else {
+				label = item.Path
+			}
+		} else {
+			label = item.Reviewer
+		}
+
+		// Overhead: glyph(1) + space(1) + border×2(4) + note(2) + sep(2)
+		overhead := 1 + 1 + 4 + 2 + 2
+		maxLabelW := w - overhead - 1
+		if maxLabelW < 4 {
+			maxLabelW = 4
+		}
+		// Truncate label; show body preview inline after a colon.
+		labelStr := truncateVisible(label, maxLabelW)
+		rowText := glyph + " " + labelStr + noteGlyph
+
+		if selected {
+			contentW := w - 4
+			if rw := ansi.StringWidth(rowText); rw < contentW {
+				rowText += strings.Repeat(" ", contentW-rw)
+			}
+			lines = append(lines, " "+cursorBar+rowText+cursorBar+" ")
+		} else {
+			lines = append(lines, "  "+rowText)
+		}
+	}
+	return lines
+}
+
+// renderFeedbackDetail renders the right-pane detail for the cursor-selected item.
+func renderFeedbackDetail(items []feedbackItem, cursor int, triage map[string]*feedbackTriageEntry, scroll, w, h int) []string {
+	if len(items) == 0 || cursor >= len(items) {
+		return []string{StyleSubtle.Render("no feedback")}
+	}
+	item := items[cursor]
+	key := feedbackItemKey(item)
+
+	lines := make([]string, 0, h)
+
+	// Heading: reviewer + state (or path:line for inline).
+	var heading string
+	stateStyle := StyleSubtle
+	switch item.State {
+	case "APPROVED":
+		stateStyle = StyleSuccess
+	case "CHANGES_REQUESTED":
+		stateStyle = StyleError
+	}
+	if item.IsInline {
+		loc := item.Path
+		if item.Line > 0 {
+			loc = fmt.Sprintf("%s:%d", item.Path, item.Line)
+		}
+		heading = StyleSubtle.Render(loc) + "  " + stateStyle.Render(strings.ToLower(strings.ReplaceAll(item.State, "_", " ")))
+	} else {
+		heading = lipgloss.NewStyle().Bold(true).Render(item.Reviewer) + "  " + stateStyle.Render(strings.ToLower(strings.ReplaceAll(item.State, "_", " ")))
+	}
+	lines = append(lines, heading, "")
+
+	// Wrapped body.
+	wrapped := wrapText(item.Body, w-2)
+	// Scroll offset into wrapped lines.
+	bodyH := h - 4 // leave room for heading + note section
+	if bodyH < 2 {
+		bodyH = 2
+	}
+	maxScroll := len(wrapped) - bodyH
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	if scroll > maxScroll {
+		scroll = maxScroll
+	}
+	if scroll < 0 {
+		scroll = 0
+	}
+
+	// Scroll affordance above.
+	if scroll > 0 {
+		lines = append(lines, StyleSubtle.Render(fmt.Sprintf("↑ %d lines above", scroll)))
+	}
+
+	end := scroll + bodyH
+	if end > len(wrapped) {
+		end = len(wrapped)
+	}
+	lines = append(lines, wrapped[scroll:end]...)
+
+	// Scroll affordance below.
+	remaining := len(wrapped) - end
+	if remaining > 0 {
+		lines = append(lines, StyleSubtle.Render(fmt.Sprintf("↓ %d below", remaining)))
+	}
+
+	// Note section.
+	if triage != nil {
+		if e := triage[key]; e != nil && strings.TrimSpace(e.Note) != "" {
+			lines = append(lines, "")
+			lines = append(lines, StyleSubtle.Render("Your note:"))
+			for _, noteLine := range wrapText(e.Note, w-2) {
+				lines = append(lines, "  "+noteLine)
+			}
+		}
+	}
+
+	return lines
 }
 
 // renderCheckRow renders one check-run line: status icon + name + duration.
@@ -138,37 +366,69 @@ func renderCheckRow(run github.CheckRun, width int) string {
 	return row
 }
 
-// renderReviewThread renders one reviewer block (state + body + inline comments).
-func renderReviewThread(thread github.ReviewThread, width int) []string {
-	lines := make([]string, 0, 2+len(thread.Comments)*2)
+// feedbackVerdict is the user's disposition on a single feedback item.
+type feedbackVerdict int
 
-	stateStyle := StyleSubtle
-	switch thread.State {
-	case "APPROVED":
-		stateStyle = lipgloss.NewStyle().Foreground(ColorSuccess)
-	case "CHANGES_REQUESTED":
-		stateStyle = lipgloss.NewStyle().Foreground(ColorError)
-	}
-	header := "  " + lipgloss.NewStyle().Bold(true).Render(thread.Reviewer) +
-		"  " + stateStyle.Render(strings.ToLower(strings.ReplaceAll(thread.State, "_", " ")))
-	lines = append(lines, header)
+const (
+	feedbackNeutral   feedbackVerdict = iota
+	feedbackApproved                  // user agreed; item will be addressed
+	feedbackDisagreed                 // user disputes; item framed as advisory
+)
 
-	if thread.Body != "" {
-		body := truncateVisible(thread.Body, width-6)
-		lines = append(lines, "    "+StyleSubtle.Render(body))
-	}
+// feedbackTriageEntry holds the verdict and optional guidance note for one item.
+type feedbackTriageEntry struct {
+	Verdict feedbackVerdict
+	Note    string
+}
 
-	for _, c := range thread.Comments {
-		fileLabel := StyleSubtle.Render(c.Path)
-		if c.Line > 0 {
-			fileLabel += StyleSubtle.Render(fmt.Sprintf(":%d", c.Line))
+// feedbackItem is a flattened view of a single piece of review feedback.
+type feedbackItem struct {
+	Reviewer  string
+	State     string
+	Path      string
+	Line      int
+	Body      string
+	CommentID int64
+	IsInline  bool
+}
+
+// feedbackItems flattens review threads into an ordered slice of feedback items.
+// For each thread: one body item (when non-empty), then one item per inline comment.
+func feedbackItems(threads []github.ReviewThread) []feedbackItem {
+	var items []feedbackItem
+	for _, t := range threads {
+		if strings.TrimSpace(t.Body) != "" {
+			items = append(items, feedbackItem{
+				Reviewer: t.Reviewer,
+				State:    t.State,
+				Body:     t.Body,
+				IsInline: false,
+			})
 		}
-		lines = append(lines, "    "+fileLabel)
-		commentBody := truncateVisible(c.Body, width-8)
-		lines = append(lines, "      "+commentBody)
+		for _, c := range t.Comments {
+			items = append(items, feedbackItem{
+				Reviewer:  t.Reviewer,
+				State:     t.State,
+				Path:      c.Path,
+				Line:      c.Line,
+				Body:      c.Body,
+				CommentID: c.ID,
+				IsInline:  true,
+			})
+		}
 	}
-	lines = append(lines, "")
-	return lines
+	return items
+}
+
+// feedbackItemKey returns the stable triage map key for an item.
+// Inline comments use "comment:<id>"; thread bodies use "thread:<reviewer>".
+// The reviewer key is unique because GetReviewThreads produces at most one
+// ReviewThread per reviewer (latest-review dedup + seen guard).
+func feedbackItemKey(item feedbackItem) string {
+	if item.IsInline {
+		return fmt.Sprintf("comment:%d", item.CommentID)
+	}
+	return "thread:" + item.Reviewer
 }
 
 // shippingHints returns the action hint line for the shipping panel footer.
@@ -178,11 +438,17 @@ func shippingHints(mergeReady bool) string {
 	if !mergeReady {
 		mKey = StyleSubtle.Render("m")
 	}
+	blue := lipgloss.Color("#7ec8e3")
+	key := func(s string) string { return lipgloss.NewStyle().Foreground(blue).Render(s) }
 	return "  " +
 		mKey + mDesc +
 		"   " + StyleSubtle.Render("M — force merge") +
-		"   " + lipgloss.NewStyle().Foreground(lipgloss.Color("#7ec8e3")).Render("r") + StyleSubtle.Render(" — address feedback") +
-		"   " + lipgloss.NewStyle().Foreground(lipgloss.Color("#7ec8e3")).Render("p") + StyleSubtle.Render(" — open PR") +
-		"   " + lipgloss.NewStyle().Foreground(lipgloss.Color("#7ec8e3")).Render("t") + StyleSubtle.Render(" — terminal") +
+		"   " + key("a") + StyleSubtle.Render(" — approve") +
+		"   " + key("x") + StyleSubtle.Render(" — disagree") +
+		"   " + key("u") + StyleSubtle.Render(" — clear") +
+		"   " + key("n") + StyleSubtle.Render(" — note") +
+		"   " + key("r") + StyleSubtle.Render(" — address feedback") +
+		"   " + key("p") + StyleSubtle.Render(" — open PR") +
+		"   " + key("t") + StyleSubtle.Render(" — terminal") +
 		"   " + StyleSubtle.Render("ESC — back")
 }

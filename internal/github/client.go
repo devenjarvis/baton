@@ -480,6 +480,7 @@ func (c *Client) GetReviewThreads(ctx context.Context, owner, repo string, numbe
 	for _, comment := range allComments {
 		login := comment.GetUser().GetLogin()
 		rc := ReviewComment{
+			ID:   comment.GetID(),
 			Path: comment.GetPath(),
 			Body: comment.GetBody(),
 			Line: comment.GetLine(),

@@ -462,6 +462,9 @@ func TestGetReviewThreads_GroupsByReviewer(t *testing.T) {
 	if len(threads[0].Comments) != 1 || threads[0].Comments[0].Path != "utils.go" {
 		t.Errorf("thread[0] comments = %+v, want 1 comment on utils.go", threads[0].Comments)
 	}
+	if threads[0].Comments[0].ID != 2 {
+		t.Errorf("thread[0].Comments[0].ID = %d, want 2", threads[0].Comments[0].ID)
+	}
 	if threads[1].Reviewer != "bob" {
 		t.Errorf("thread[1] reviewer = %q, want bob", threads[1].Reviewer)
 	}
@@ -470,6 +473,44 @@ func TestGetReviewThreads_GroupsByReviewer(t *testing.T) {
 	}
 	if len(threads[1].Comments) != 1 || threads[1].Comments[0].Path != "main.go" {
 		t.Errorf("thread[1] comments = %+v, want 1 comment on main.go", threads[1].Comments)
+	}
+	if threads[1].Comments[0].ID != 1 {
+		t.Errorf("thread[1].Comments[0].ID = %d, want 1", threads[1].Comments[0].ID)
+	}
+}
+
+func TestGetReviewThreads_CommentIDsStable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/o/r/pulls/3/reviews":
+			_, _ = fmt.Fprintln(w, `[]`)
+		case "/repos/o/r/pulls/3/comments":
+			_, _ = fmt.Fprintln(w, `[
+				{"id":1001,"user":{"login":"dave"},"path":"a.go","body":"first","line":1},
+				{"id":1002,"user":{"login":"dave"},"path":"b.go","body":"second","line":2}
+			]`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	threads, err := c.GetReviewThreads(context.Background(), "o", "r", 3)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(threads) != 1 {
+		t.Fatalf("expected 1 thread, got %d", len(threads))
+	}
+	if len(threads[0].Comments) != 2 {
+		t.Fatalf("expected 2 comments, got %d", len(threads[0].Comments))
+	}
+	if threads[0].Comments[0].ID != 1001 {
+		t.Errorf("comment[0].ID = %d, want 1001", threads[0].Comments[0].ID)
+	}
+	if threads[0].Comments[1].ID != 1002 {
+		t.Errorf("comment[1].ID = %d, want 1002", threads[0].Comments[1].ID)
 	}
 }
 
@@ -498,6 +539,9 @@ func TestGetReviewThreads_CommentOnlyReviewer(t *testing.T) {
 	}
 	if threads[0].Reviewer != "charlie" || threads[0].State != "COMMENTED" {
 		t.Errorf("unexpected thread: %+v", threads[0])
+	}
+	if len(threads[0].Comments) != 1 || threads[0].Comments[0].ID != 1 {
+		t.Errorf("expected comment with ID=1, got: %+v", threads[0].Comments)
 	}
 }
 

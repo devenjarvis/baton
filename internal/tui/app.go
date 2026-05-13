@@ -192,12 +192,16 @@ type App struct {
 	focusBreakShortWarning bool
 	focusBreakTimerUp      bool // break duration elapsed; waiting on user to resume
 	focusBreakAnimFrame    int
-	reviewDiffCache        map[string]*reviewDiffEntry // keyed by session ID
-	reviewSession          *agent.Session              // session currently open in review panel
-	reviewTaskCursor       int                         // selected task row in the review task list
-	shippingSession        *agent.Session              // session currently open in shipping panel
-	planEditor             *planEditorModel            // non-nil while panelFocus == focusPlanEditor
-	promptModal            promptModalModel            // overlay for plan-first new-session prompt
+	reviewDiffCache        map[string]*reviewDiffEntry                // keyed by session ID
+	reviewSession          *agent.Session                             // session currently open in review panel
+	reviewTaskCursor       int                                        // selected task row in the review task list
+	shippingSession        *agent.Session                             // session currently open in shipping panel
+	feedbackTriage         map[string]map[string]*feedbackTriageEntry // keyed by sessionID → itemKey
+	shippingFeedbackCursor int                                        // cursor row in the feedback list pane
+	shippingDetailScroll   int                                        // scroll offset in the feedback detail pane
+	feedbackNote           feedbackNoteModal                          // overlay for adding a guidance note to a feedback item
+	planEditor             *planEditorModel                           // non-nil while panelFocus == focusPlanEditor
+	promptModal            promptModalModel                           // overlay for plan-first new-session prompt
 
 	// Wellness counters (written to log on quit).
 	agentsCreatedCount   int
@@ -251,6 +255,8 @@ func NewApp() App {
 		prPollStates:    make(map[string]*prSessionState),
 		closingAgents:   make(map[string]bool),
 		closingSessions: make(map[string]bool),
+		feedbackTriage:  make(map[string]map[string]*feedbackTriageEntry),
+		feedbackNote:    newFeedbackNoteModal(),
 		promptModal:     newPromptModal(),
 		prComposeModal:  newPRComposeModal(),
 	}
@@ -344,6 +350,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			a.promptModal.SetSize(msg.Width, msg.Height-1)
 			a.prComposeModal.SetSize(msg.Width, msg.Height-1)
+			a.feedbackNote.SetSize(msg.Width, msg.Height)
 		}
 
 	case initAppMsg:
@@ -1793,7 +1800,72 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Shipping panel key handling.
 		if a.dashboard.panelFocus == focusShipping && a.shippingSession != nil {
+			// Modal intercepts all keys first.
+			if a.feedbackNote.Active() {
+				cmd, submitted, note := a.feedbackNote.Update(msg)
+				if submitted {
+					a.setFeedbackNote(a.shippingSession.ID, a.feedbackNote.itemKey, note)
+				}
+				return a, cmd
+			}
+			entry := a.prCache[a.shippingSession.ID]
+			items := feedbackItems(entryThreads(entry))
+			halfPane := a.height / 4
+			if halfPane < 1 {
+				halfPane = 1
+			}
 			switch msg.String() {
+			case "j", "down":
+				max := len(items) - 1
+				if max < 0 {
+					max = 0
+				}
+				if a.shippingFeedbackCursor < max {
+					a.shippingFeedbackCursor++
+				}
+				a.shippingDetailScroll = 0
+			case "k", "up":
+				if a.shippingFeedbackCursor > 0 {
+					a.shippingFeedbackCursor--
+				}
+				a.shippingDetailScroll = 0
+			case "pgdown", "ctrl+d":
+				a.shippingDetailScroll += halfPane
+				if a.shippingDetailScroll < 0 { // overflow guard only; render clamps to real max
+					a.shippingDetailScroll = 0
+				}
+			case "pgup", "ctrl+u":
+				a.shippingDetailScroll -= halfPane
+				if a.shippingDetailScroll < 0 {
+					a.shippingDetailScroll = 0
+				}
+			case "a":
+				if len(items) > 0 && a.shippingFeedbackCursor < len(items) {
+					key := feedbackItemKey(items[a.shippingFeedbackCursor])
+					a.setFeedbackVerdict(a.shippingSession.ID, key, feedbackApproved)
+				}
+			case "x":
+				if len(items) > 0 && a.shippingFeedbackCursor < len(items) {
+					key := feedbackItemKey(items[a.shippingFeedbackCursor])
+					a.setFeedbackVerdict(a.shippingSession.ID, key, feedbackDisagreed)
+				}
+			case "u":
+				if len(items) > 0 && a.shippingFeedbackCursor < len(items) {
+					key := feedbackItemKey(items[a.shippingFeedbackCursor])
+					a.setFeedbackVerdict(a.shippingSession.ID, key, feedbackNeutral)
+				}
+			case "n":
+				if len(items) > 0 && a.shippingFeedbackCursor < len(items) {
+					item := items[a.shippingFeedbackCursor]
+					key := feedbackItemKey(item)
+					existing := ""
+					if m := a.feedbackTriage[a.shippingSession.ID]; m != nil {
+						if e := m[key]; e != nil {
+							existing = e.Note
+						}
+					}
+					return a, a.feedbackNote.Open(key, existing)
+				}
 			case "esc":
 				a.dashboard.panelFocus = focusList
 				a.shippingSession = nil
@@ -1805,7 +1877,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.setError("session has no agents to open")
 				}
 			case "p":
-				if entry := a.prCache[a.shippingSession.ID]; entry != nil && entry.pr != nil && entry.pr.URL != "" {
+				if entry != nil && entry.pr != nil && entry.pr.URL != "" {
 					if err := openURL(entry.pr.URL); err != nil {
 						a.setError(err.Error())
 					}
@@ -1814,7 +1886,6 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			case "m":
 				// Merge: gated on isMergeReady.
-				entry := a.prCache[a.shippingSession.ID]
 				if !isMergeReady(entry) {
 					a.setError("not ready to merge — use M to force")
 					return a, nil
@@ -1822,7 +1893,6 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, a.mergePRCmd(a.shippingSession.ID)
 			case "M":
 				// Force merge: bypasses isMergeReady check.
-				entry := a.prCache[a.shippingSession.ID]
 				if entry == nil || entry.pr == nil {
 					a.setError("no PR found")
 					return a, nil
@@ -3479,6 +3549,8 @@ func (a *App) activateFocusCursor() (tea.Cmd, bool) {
 		return nil, true
 	case focusSectionShipping:
 		a.shippingSession = sess
+		a.shippingFeedbackCursor = 0
+		a.shippingDetailScroll = 0
 		a.dashboard.panelFocus = focusShipping
 		return nil, true
 	}
@@ -3733,7 +3805,12 @@ func (a App) View() tea.View {
 		}
 		if a.dashboard.panelFocus == focusShipping && a.shippingSession != nil {
 			entry := a.prCache[a.shippingSession.ID]
-			v := tea.NewView(renderShippingPanel(a.shippingSession, entry, a.width, a.height))
+			sessID := a.shippingSession.ID
+			panel := renderShippingPanel(a.shippingSession, entry, a.width, a.height, a.shippingFeedbackCursor, a.shippingDetailScroll, a.feedbackTriage[sessID])
+			if a.feedbackNote.Active() {
+				panel = lipgloss.Place(a.width, a.height, lipgloss.Center, lipgloss.Center, a.feedbackNote.View())
+			}
+			v := tea.NewView(panel)
 			v.AltScreen = true
 			return v
 		}
@@ -4325,6 +4402,55 @@ func (a *App) refreshPRStatusForSession(sessionID, branch, repoPath, worktreePat
 	}
 }
 
+// entryThreads safely returns threads from a prCacheEntry (nil-safe).
+func entryThreads(entry *prCacheEntry) []github.ReviewThread {
+	if entry == nil {
+		return nil
+	}
+	return entry.threads
+}
+
+// setFeedbackVerdict lazily allocates the per-session triage map and sets the
+// verdict on the item with the given key. For feedbackNeutral with an empty
+// note, the entry is deleted to keep the map clean.
+func (a *App) setFeedbackVerdict(sessID, itemKey string, v feedbackVerdict) {
+	if a.feedbackTriage[sessID] == nil {
+		a.feedbackTriage[sessID] = make(map[string]*feedbackTriageEntry)
+	}
+	m := a.feedbackTriage[sessID]
+	if v == feedbackNeutral {
+		if e := m[itemKey]; e == nil || strings.TrimSpace(e.Note) == "" {
+			delete(m, itemKey)
+			return
+		}
+	}
+	if m[itemKey] == nil {
+		m[itemKey] = &feedbackTriageEntry{}
+	}
+	m[itemKey].Verdict = v
+}
+
+// setFeedbackNote lazily allocates the per-session triage map and sets the
+// note on the item. If the resulting entry is neutral with an empty note, it
+// is deleted.
+func (a *App) setFeedbackNote(sessID, itemKey, note string) {
+	if a.feedbackTriage[sessID] == nil {
+		a.feedbackTriage[sessID] = make(map[string]*feedbackTriageEntry)
+	}
+	m := a.feedbackTriage[sessID]
+	if m[itemKey] == nil {
+		if note == "" {
+			return
+		}
+		m[itemKey] = &feedbackTriageEntry{}
+	}
+	m[itemKey].Note = note
+	// Clean up neutral entries with no note.
+	if m[itemKey].Verdict == feedbackNeutral && strings.TrimSpace(m[itemKey].Note) == "" {
+		delete(m, itemKey)
+	}
+}
+
 // addressFeedback synthesizes a prompt from failing CI checks and unresolved
 // review comments, spawns a new agent in the session's existing worktree, and
 // transitions the session back to LifecycleInProgress. The PR stays open.
@@ -4344,7 +4470,7 @@ func (a *App) addressFeedback(sess *agent.Session) (tea.Model, tea.Cmd) {
 	}
 
 	entry := a.prCache[sess.ID]
-	prompt := buildFeedbackPrompt(entry)
+	prompt := buildFeedbackPrompt(entry, a.feedbackTriage[sess.ID])
 	if prompt == "" {
 		prompt = "Address the CI failures and review feedback on this PR."
 	}
@@ -4369,6 +4495,7 @@ func (a *App) addressFeedback(sess *agent.Session) (tea.Model, tea.Cmd) {
 	sessID := sess.ID
 	a.shippingSession = nil
 	a.dashboard.panelFocus = focusList
+	delete(a.feedbackTriage, sessID)
 	return a, func() tea.Msg {
 		ag, err := mgr.AddAgent(sessID, cfg)
 		if err != nil {
@@ -4380,14 +4507,17 @@ func (a *App) addressFeedback(sess *agent.Session) (tea.Model, tea.Cmd) {
 }
 
 // buildFeedbackPrompt synthesizes an agent prompt from the failing CI checks
-// and unresolved review comments in entry. Returns "" when nothing is actionable.
-func buildFeedbackPrompt(entry *prCacheEntry) string {
+// and review feedback, bucketed by user triage verdicts. Returns "" when
+// nothing is actionable (all disagreed with no notes, and no failing CI).
+// triage may be nil (treats all items as neutral).
+func buildFeedbackPrompt(entry *prCacheEntry, triage map[string]*feedbackTriageEntry) string {
 	if entry == nil {
 		return ""
 	}
 	var b strings.Builder
 	wrote := false
 
+	// ── Failing CI checks (unchanged) ────────────────────────────────────────
 	if entry.checks != nil {
 		var failingRuns []github.CheckRun
 		for _, run := range entry.checks.Runs {
@@ -4415,42 +4545,79 @@ func buildFeedbackPrompt(entry *prCacheEntry) string {
 		}
 	}
 
-	hasActionableThreads := false
+	// ── Review feedback, bucketed by triage ──────────────────────────────────
+	// Pre-compute actionable threads using the same filter as the original code:
+	// CHANGES_REQUESTED always actionable; COMMENTED only when it has inline comments.
+	actionableThreads := make(map[string]bool, len(entry.threads))
 	for _, thread := range entry.threads {
 		if thread.State == "CHANGES_REQUESTED" || (thread.State == "COMMENTED" && len(thread.Comments) > 0) {
-			hasActionableThreads = true
-			break
+			actionableThreads[thread.Reviewer] = true
 		}
 	}
-	if hasActionableThreads {
-		b.WriteString("## Review Feedback\n\n")
-		for _, thread := range entry.threads {
-			if thread.State != "CHANGES_REQUESTED" && (thread.State != "COMMENTED" || len(thread.Comments) == 0) {
+
+	items := feedbackItems(entry.threads)
+	var addressItems, disputedItems []feedbackItem
+	var disputedNotes []string
+
+	for _, item := range items {
+		// Apply actionability filter.
+		if !actionableThreads[item.Reviewer] {
+			continue
+		}
+		key := feedbackItemKey(item)
+		var e *feedbackTriageEntry
+		if triage != nil {
+			e = triage[key]
+		}
+		if e != nil && e.Verdict == feedbackDisagreed {
+			if strings.TrimSpace(e.Note) == "" {
+				// Disagreed with no note: skip entirely.
 				continue
 			}
-			b.WriteString("**")
-			b.WriteString(thread.Reviewer)
-			b.WriteString("**")
-			if thread.State == "CHANGES_REQUESTED" {
-				b.WriteString(" (changes requested)")
-			}
-			b.WriteString(":\n")
-			if thread.Body != "" {
-				b.WriteString(thread.Body)
-				b.WriteByte('\n')
-			}
-			for _, c := range thread.Comments {
-				b.WriteString("- ")
-				b.WriteString(c.Path)
-				if c.Line > 0 {
-					b.WriteString(fmt.Sprintf(":%d", c.Line))
-				}
-				b.WriteString(": ")
-				b.WriteString(c.Body)
-				b.WriteByte('\n')
-			}
-			b.WriteByte('\n')
+			disputedItems = append(disputedItems, item)
+			disputedNotes = append(disputedNotes, strings.TrimSpace(e.Note))
+		} else {
+			addressItems = append(addressItems, item)
 		}
+	}
+
+	writeFeedbackItem := func(item feedbackItem) {
+		b.WriteString("- ")
+		if item.IsInline {
+			b.WriteString(item.Reviewer)
+			b.WriteString(" (")
+			b.WriteString(item.Path)
+			if item.Line > 0 {
+				b.WriteString(fmt.Sprintf(":%d", item.Line))
+			}
+			b.WriteString("): ")
+		} else {
+			b.WriteString("**")
+			b.WriteString(item.Reviewer)
+			b.WriteString("**: ")
+		}
+		b.WriteString(item.Body)
+		b.WriteByte('\n')
+	}
+
+	if len(addressItems) > 0 {
+		b.WriteString("## Feedback to address\n\n")
+		for _, item := range addressItems {
+			writeFeedbackItem(item)
+		}
+		b.WriteByte('\n')
+		wrote = true
+	}
+
+	if len(disputedItems) > 0 {
+		b.WriteString("## Disputed feedback (advisory — do not change unless you find a strong reason)\n\n")
+		for i, item := range disputedItems {
+			writeFeedbackItem(item)
+			if i < len(disputedNotes) && disputedNotes[i] != "" {
+				b.WriteString(fmt.Sprintf("  > I disagree because: %s\n", disputedNotes[i]))
+			}
+		}
+		b.WriteByte('\n')
 		wrote = true
 	}
 

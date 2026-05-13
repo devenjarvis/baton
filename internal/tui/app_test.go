@@ -2990,7 +2990,7 @@ func TestBuildFeedbackPrompt_FailingChecksAndComments(t *testing.T) {
 			},
 		},
 	}
-	prompt := buildFeedbackPrompt(entry)
+	prompt := buildFeedbackPrompt(entry, nil)
 
 	if !strings.Contains(prompt, "lint") {
 		t.Errorf("prompt missing failing check name: %q", prompt)
@@ -3011,7 +3011,7 @@ func TestBuildFeedbackPrompt_FailingChecksAndComments(t *testing.T) {
 
 // TestBuildFeedbackPrompt_NilEntry verifies that a nil entry returns "".
 func TestBuildFeedbackPrompt_NilEntry(t *testing.T) {
-	if got := buildFeedbackPrompt(nil); got != "" {
+	if got := buildFeedbackPrompt(nil, nil); got != "" {
 		t.Errorf("expected empty prompt for nil entry, got: %q", got)
 	}
 }
@@ -3025,7 +3025,7 @@ func TestBuildFeedbackPrompt_ApprovedOnly(t *testing.T) {
 			{Reviewer: "bob", State: "APPROVED", Body: "LGTM"},
 		},
 	}
-	if got := buildFeedbackPrompt(entry); got != "" {
+	if got := buildFeedbackPrompt(entry, nil); got != "" {
 		t.Errorf("expected empty prompt when no actionable feedback, got: %q", got)
 	}
 }
@@ -3045,7 +3045,7 @@ func TestBuildFeedbackPrompt_CommentedOnlyWithInlineComments(t *testing.T) {
 			},
 		},
 	}
-	prompt := buildFeedbackPrompt(entry)
+	prompt := buildFeedbackPrompt(entry, nil)
 	if prompt == "" {
 		t.Error("expected non-empty prompt for COMMENTED thread with inline comments")
 	}
@@ -3070,12 +3070,61 @@ func TestBuildFeedbackPrompt_CommentedOnlyWithoutInlineComments(t *testing.T) {
 			},
 		},
 	}
-	if got := buildFeedbackPrompt(entry); got != "" {
+	if got := buildFeedbackPrompt(entry, nil); got != "" {
 		t.Errorf("expected empty prompt for COMMENTED thread with no inline comments, got: %q", got)
 	}
 }
 
 // TestBuildReviewReworkPrompt_NilEntry verifies a nil entry returns "".
+func TestBuildFeedbackPrompt_TriagedApprovedAndDisagreed(t *testing.T) {
+	entry := &prCacheEntry{
+		threads: []github.ReviewThread{
+			{Reviewer: "alice", State: "CHANGES_REQUESTED", Body: "fix X"},
+			{Reviewer: "bob", State: "CHANGES_REQUESTED", Body: "rename Y"},
+		},
+	}
+	triage := map[string]*feedbackTriageEntry{
+		"thread:alice": {Verdict: feedbackApproved},
+		"thread:bob":   {Verdict: feedbackDisagreed, Note: "API contract"},
+	}
+	prompt := buildFeedbackPrompt(entry, triage)
+
+	if !strings.Contains(prompt, "## Feedback to address") {
+		t.Errorf("prompt missing approved section: %q", prompt)
+	}
+	if !strings.Contains(prompt, "fix X") {
+		t.Errorf("prompt missing approved body: %q", prompt)
+	}
+	if !strings.Contains(prompt, "## Disputed feedback") {
+		t.Errorf("prompt missing disputed section: %q", prompt)
+	}
+	if !strings.Contains(prompt, "bob") {
+		t.Errorf("prompt missing disputed reviewer: %q", prompt)
+	}
+	if !strings.Contains(prompt, "rename Y") {
+		t.Errorf("prompt missing disputed body: %q", prompt)
+	}
+	if !strings.Contains(prompt, "API contract") {
+		t.Errorf("prompt missing disagreement note: %q", prompt)
+	}
+}
+
+func TestBuildFeedbackPrompt_AllDisagreedNoNoteReturnsEmpty(t *testing.T) {
+	entry := &prCacheEntry{
+		threads: []github.ReviewThread{
+			{Reviewer: "alice", State: "CHANGES_REQUESTED", Body: "fix X"},
+		},
+	}
+	triage := map[string]*feedbackTriageEntry{
+		"thread:alice": {Verdict: feedbackDisagreed}, // no note
+	}
+	// All items disagreed with no note → nothing to act on, return "".
+	got := buildFeedbackPrompt(entry, triage)
+	if got != "" {
+		t.Errorf("expected empty prompt when all items disagreed with no note, got: %q", got)
+	}
+}
+
 func TestBuildReviewReworkPrompt_NilEntry(t *testing.T) {
 	if got := buildReviewReworkPrompt(nil); got != "" {
 		t.Errorf("expected empty prompt for nil entry, got: %q", got)
@@ -3799,5 +3848,171 @@ func TestRefreshPRStatus_WrongRepoReturnsError(t *testing.T) {
 	}
 	if !strings.Contains(poll.err.Error(), "internal") {
 		t.Errorf("expected error to contain %q, got: %s", "internal", poll.err.Error())
+	}
+}
+
+func TestShippingPanel_CursorAndScrollKeys(t *testing.T) {
+	sess := agent.NewSessionForTest("ship-cs", "ship")
+	sess.SetLifecyclePhase(agent.LifecycleShipping)
+	app := NewApp()
+	app.shippingSession = sess
+	app.dashboard.panelFocus = focusShipping
+	app.width = 120
+	app.height = 40
+	app.prCache[sess.ID] = &prCacheEntry{
+		pr: &github.PRState{Number: 1, MergeableState: "clean"},
+		threads: []github.ReviewThread{
+			{Reviewer: "alice", State: "CHANGES_REQUESTED", Body: "fix a"},
+			{Reviewer: "bob", State: "CHANGES_REQUESTED", Body: "fix b"},
+			{Reviewer: "carol", State: "APPROVED", Body: "lgtm"},
+		},
+	}
+
+	// j moves cursor down.
+	m, _ := app.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
+	got := m.(App)
+	if got.shippingFeedbackCursor != 1 {
+		t.Errorf("after j: cursor = %d, want 1", got.shippingFeedbackCursor)
+	}
+	if got.shippingDetailScroll != 0 {
+		t.Errorf("after j: scroll should reset to 0, got %d", got.shippingDetailScroll)
+	}
+
+	// j again.
+	m, _ = got.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
+	got = m.(App)
+	if got.shippingFeedbackCursor != 2 {
+		t.Errorf("after j×2: cursor = %d, want 2", got.shippingFeedbackCursor)
+	}
+
+	// j past end clamps.
+	m, _ = got.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
+	got = m.(App)
+	if got.shippingFeedbackCursor != 2 {
+		t.Errorf("j past end: cursor = %d, want 2 (clamped)", got.shippingFeedbackCursor)
+	}
+
+	// k moves cursor up.
+	m, _ = got.Update(tea.KeyPressMsg{Code: 'k', Text: "k"})
+	got = m.(App)
+	if got.shippingFeedbackCursor != 1 {
+		t.Errorf("after k: cursor = %d, want 1", got.shippingFeedbackCursor)
+	}
+
+	// pgdn increments detail scroll.
+	got.shippingDetailScroll = 0
+	m, _ = got.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
+	got = m.(App)
+	if got.shippingDetailScroll <= 0 {
+		t.Errorf("pgdn: scroll = %d, want >0", got.shippingDetailScroll)
+	}
+
+	// j resets detail scroll to 0.
+	m, _ = got.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
+	got = m.(App)
+	if got.shippingDetailScroll != 0 {
+		t.Errorf("j after scroll: scroll should reset to 0, got %d", got.shippingDetailScroll)
+	}
+}
+
+func TestShippingPanel_VerdictKeys(t *testing.T) {
+	sess := agent.NewSessionForTest("ship-v", "ship")
+	sess.SetLifecyclePhase(agent.LifecycleShipping)
+	app := NewApp()
+	app.shippingSession = sess
+	app.dashboard.panelFocus = focusShipping
+	app.width = 120
+	app.height = 40
+	// One inline comment with ID=42.
+	app.prCache[sess.ID] = &prCacheEntry{
+		pr: &github.PRState{Number: 2, MergeableState: "clean"},
+		threads: []github.ReviewThread{
+			{
+				Reviewer: "alice",
+				State:    "CHANGES_REQUESTED",
+				Comments: []github.ReviewComment{
+					{ID: 42, Path: "foo.go", Body: "fix this", Line: 1},
+				},
+			},
+		},
+	}
+	// cursor=0 → the inline comment (no body → only inline item)
+
+	// Press 'a' — approve.
+	m, _ := app.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	got := m.(App)
+	if e := got.feedbackTriage[sess.ID]["comment:42"]; e == nil || e.Verdict != feedbackApproved {
+		t.Errorf("after a: want feedbackApproved, got %+v", e)
+	}
+
+	// Press 'x' — disagree.
+	m, _ = got.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
+	got = m.(App)
+	if e := got.feedbackTriage[sess.ID]["comment:42"]; e == nil || e.Verdict != feedbackDisagreed {
+		t.Errorf("after x: want feedbackDisagreed, got %+v", e)
+	}
+
+	// Press 'u' — neutral (should remove the entry since no note).
+	m, _ = got.Update(tea.KeyPressMsg{Code: 'u', Text: "u"})
+	got = m.(App)
+	if e := got.feedbackTriage[sess.ID]["comment:42"]; e != nil {
+		t.Errorf("after u: expected entry removed (neutral+empty note), got %+v", e)
+	}
+}
+
+func TestAddressFeedback_ClearsTriage(t *testing.T) {
+	dir := t.TempDir()
+	sess := agent.NewSessionForTest("addr-t", "ship")
+	sess.SetLifecyclePhase(agent.LifecycleShipping)
+
+	mgr := agent.NewManager(dir, config.Resolve(nil, nil))
+	defer mgr.Shutdown()
+	mgr.AddSessionForTest(sess)
+
+	app := NewApp()
+	app.shippingSession = sess
+	app.dashboard.panelFocus = focusShipping
+	app.managers[dir] = mgr
+	app.cfg = &config.Config{Repos: []config.Repo{{Path: dir}}}
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.prCache[sess.ID] = &prCacheEntry{
+		pr: &github.PRState{Number: 5, MergeableState: "clean"},
+		threads: []github.ReviewThread{
+			{Reviewer: "alice", State: "CHANGES_REQUESTED", Body: "fix it"},
+		},
+	}
+	// Seed triage.
+	app.feedbackTriage[sess.ID] = map[string]*feedbackTriageEntry{
+		"thread:alice": {Verdict: feedbackDisagreed, Note: "n/a"},
+	}
+
+	// Press 'r' → dispatches addressFeedback, which should clear triage.
+	// addressFeedback uses pointer receiver so may return *App — handle both.
+	model, _ := app.Update(tea.KeyPressMsg{Code: 'r', Text: "r"})
+	var gotApp App
+	switch v := model.(type) {
+	case App:
+		gotApp = v
+	case *App:
+		gotApp = *v
+	default:
+		t.Fatalf("unexpected model type %T", model)
+	}
+
+	if m := gotApp.feedbackTriage[sess.ID]; len(m) != 0 {
+		t.Errorf("expected feedbackTriage[%s] cleared after r, got: %v", sess.ID, m)
+	}
+}
+
+func TestNewApp_InitsFeedbackTriage(t *testing.T) {
+	app := NewApp()
+	if app.feedbackTriage == nil {
+		t.Error("feedbackTriage should be initialized, got nil")
+	}
+	if len(app.feedbackTriage) != 0 {
+		t.Errorf("feedbackTriage should be empty on init, got len=%d", len(app.feedbackTriage))
 	}
 }

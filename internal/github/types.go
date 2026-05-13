@@ -44,6 +44,7 @@ type ReviewStatus struct {
 
 // ReviewComment is a single inline comment on a pull request.
 type ReviewComment struct {
+	ID   int64
 	Path string
 	Body string
 	Line int
