@@ -218,10 +218,6 @@ func renderReviewPanel(sess *agent.Session, entry *reviewDiffEntry, width, heigh
 	// Action footer.
 	lines = append(lines, "")
 	lines = append(lines, StyleSubtle.Render(strings.Repeat("─", width-2)))
-	taskHint := ""
-	if len(entry.getGroups()) > 0 {
-		taskHint = "   " + lipgloss.NewStyle().Foreground(lipgloss.Color("#f0c060")).Render("enter") + StyleSubtle.Render(" — view task diff")
-	}
 	var pHint string
 	if prDraftInFlight {
 		pHint = StyleSubtle.Render("p — (in progress…)")
@@ -236,7 +232,8 @@ func renderReviewPanel(sess *agent.Session, entry *reviewDiffEntry, width, heigh
 		"   " + StyleSubtle.Render("c — mark complete") +
 		"   " + StyleSubtle.Render("e — open in editor") +
 		"   " + StyleSubtle.Render("d — defer") +
-		taskHint +
+		"   " + StyleSubtle.Render("pgdn") + StyleSubtle.Render("/pgup") + StyleSubtle.Render(" — scroll diff") +
+		"   " + lipgloss.NewStyle().Foreground(lipgloss.Color("#f0c060")).Render("?") + StyleSubtle.Render(" — spec") +
 		"   " + StyleSubtle.Render("ESC — back to focus")
 	lines = append(lines, hints)
 

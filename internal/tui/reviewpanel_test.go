@@ -900,6 +900,36 @@ func TestRenderReviewHeader_NoGoalWhenNoPlan(t *testing.T) {
 	}
 }
 
+// TestRenderReviewPanel_HintsIncludeSpecAndScroll verifies that the footer hints
+// include ? (spec) and pgdn/pgup (scroll), and no longer show "view task diff".
+func TestRenderReviewPanel_HintsIncludeSpecAndScroll(t *testing.T) {
+	sess := agent.NewSessionForTest("sess-hints", "fix-auth")
+	sess.SetOriginalPrompt("Fix auth")
+	sess.MarkDone()
+
+	entry := &reviewDiffEntry{
+		tasks: []agent.PlanTask{{Index: 1, Text: "Fix handler"}},
+		groups: []taskReviewGroup{{
+			taskIndex: 1,
+			commits:   []git.Commit{{Hash: "abc1234", Subject: "[task 1] fix"}},
+			rawDiff:   "diff --git a/a.go b/a.go\nindex 1234567..abcdefg 100644\n--- a/a.go\n+++ b/a.go\n@@ -1,2 +1,3 @@\n package main\n+// marker\n func A() {}\n",
+		}},
+		verdicts: map[int]*taskVerdictRecord{1: {state: verdictPending}},
+	}
+
+	output := renderReviewPanel(sess, entry, 140, 40, 0, false, 0)
+
+	if !strings.Contains(output, "?") {
+		t.Error("footer must include '?' hint for spec overlay")
+	}
+	if !strings.Contains(output, "pgdn") {
+		t.Error("footer must include 'pgdn' hint for scroll")
+	}
+	if strings.Contains(output, "view task diff") {
+		t.Error("footer must not include 'view task diff' hint (removed in favor of inline diff)")
+	}
+}
+
 // TestRenderReviewSpecOverlay_ContainsAllSections verifies that the spec overlay
 // renders Goal, Spec, Verification, and Not in scope section content.
 func TestRenderReviewSpecOverlay_ContainsAllSections(t *testing.T) {
