@@ -942,7 +942,6 @@ func secondUncompletedTask(plan string) string {
 	return ""
 }
 
-
 // focusTaskDescription chooses the description lines for a session card in
 // focus mode and reports whether they should render in pending (italic) style.
 // For Building-phase sessions, line1 is the active task text (raw, no "▸ " prefix

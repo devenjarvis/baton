@@ -253,19 +253,6 @@ func TestBuildingProgressBadge(t *testing.T) {
 	}
 }
 
-// makeTodos builds a slice of n TodoItems with done of them marked completed.
-func makeTodos(n, done int) []agent.TodoItem {
-	items := make([]agent.TodoItem, n)
-	for i := range items {
-		if i < done {
-			items[i] = agent.TodoItem{Content: "task", Status: "completed"}
-		} else {
-			items[i] = agent.TodoItem{Content: "task", Status: "pending"}
-		}
-	}
-	return items
-}
-
 // TestSessionFocusStatus_BuildingWithTodosShowsProgressBadge verifies that
 // sessionFocusStatus shows a "▸ done/total" progress badge for a Building
 // session that has received ≥1 TodoWrite, instead of the plain "N active, M idle".
