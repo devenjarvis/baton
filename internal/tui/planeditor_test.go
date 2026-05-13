@@ -421,6 +421,75 @@ func TestPlanEditor_TabTogglesFoldAtViewportTop(t *testing.T) {
 	}
 }
 
+// TestPlanEditor_BracketsJumpBetweenSections verifies that ] and [ step the
+// viewport to the next and previous section headings respectively, clamping at
+// the ends.
+func TestPlanEditor_BracketsJumpBetweenSections(t *testing.T) {
+	sess, _ := newEditorTestSession(t)
+	// Use non-default folds: all expanded so we get display lines between sections.
+	const plan = "# Goal\nGoal body\n\n## Spec\nspec body\n\n## Tasks\ntask body\n"
+	if err := sess.WritePlan(plan); err != nil {
+		t.Fatalf("WritePlan: %v", err)
+	}
+	// height=8 gives bodyHeight=3, so clampScroll allows scrolling (content > viewport).
+	editor := newPlanEditor(sess, "", 80, 8)
+	// Expand all sections so navigation has multiple display lines to cross.
+	for k := range editor.folds {
+		editor.folds[k] = false
+	}
+	editor.invalidateDisplayCache()
+	editor.scrollOff = 0
+
+	lines := editor.displayLines()
+	if len(lines) == 0 {
+		t.Fatal("no display lines")
+	}
+
+	// Find display-line indices for ## Spec and ## Tasks headings.
+	specLine, tasksLine := -1, -1
+	for i, l := range lines {
+		stripped := testutil.StripANSI(l)
+		if strings.Contains(stripped, "## Spec") && specLine < 0 {
+			specLine = i
+		}
+		if strings.Contains(stripped, "## Tasks") && tasksLine < 0 {
+			tasksLine = i
+		}
+	}
+	if specLine < 0 || tasksLine < 0 {
+		t.Fatalf("couldn't find section headings; specLine=%d tasksLine=%d\nlines:\n%s",
+			specLine, tasksLine, strings.Join(lines, "\n"))
+	}
+
+	// ] from top → Spec heading.
+	editor.Update(tea.KeyPressMsg{Code: ']', Text: "]"})
+	if editor.scrollOff != specLine {
+		t.Errorf("] from 0: scrollOff = %d, want %d (Spec)", editor.scrollOff, specLine)
+	}
+
+	// ] again → Tasks heading.
+	editor.Update(tea.KeyPressMsg{Code: ']', Text: "]"})
+	if editor.scrollOff != tasksLine {
+		t.Errorf("] from Spec: scrollOff = %d, want %d (Tasks)", editor.scrollOff, tasksLine)
+	}
+
+	// ] at last section → no change.
+	editor.Update(tea.KeyPressMsg{Code: ']', Text: "]"})
+	if editor.scrollOff != tasksLine {
+		t.Errorf("] at last section: scrollOff = %d, want %d (clamp)", editor.scrollOff, tasksLine)
+	}
+
+	// [ twice → back to top (Goal heading).
+	editor.Update(tea.KeyPressMsg{Code: '[', Text: "["})
+	if editor.scrollOff != specLine {
+		t.Errorf("[ from Tasks: scrollOff = %d, want %d (Spec)", editor.scrollOff, specLine)
+	}
+	editor.Update(tea.KeyPressMsg{Code: '[', Text: "["})
+	if editor.scrollOff != 0 {
+		t.Errorf("[ from Spec: scrollOff = %d, want 0 (Goal)", editor.scrollOff)
+	}
+}
+
 // TestPlanEditor_ScrollModeStylesHeadings asserts that scroll-mode rendering
 // actually emits ANSI styling for known markdown constructs. Without this,
 // a regression that silently nil-checks the renderer or short-circuits

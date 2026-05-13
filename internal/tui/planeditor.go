@@ -490,6 +490,29 @@ func (m *planEditorModel) updateScroll(msg tea.KeyPressMsg) tea.Cmd {
 			m.clampScroll()
 		}
 		return nil
+	case "]":
+		m.displayLines() // ensure sectionDisplayStart is populated
+		for _, start := range m.sectionDisplayStart {
+			if start > m.scrollOff {
+				m.scrollOff = start
+				m.clampScroll()
+				return nil
+			}
+		}
+		return nil
+	case "[":
+		m.displayLines() // ensure sectionDisplayStart is populated
+		best := -1
+		for _, start := range m.sectionDisplayStart {
+			if start < m.scrollOff {
+				best = start
+			}
+		}
+		if best >= 0 {
+			m.scrollOff = best
+			m.clampScroll()
+		}
+		return nil
 	case "i":
 		if m.revising {
 			return nil
