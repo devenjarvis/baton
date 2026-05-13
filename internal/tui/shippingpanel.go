@@ -260,7 +260,7 @@ func renderFeedbackDetail(items []feedbackItem, cursor int, triage map[string]*f
 	item := items[cursor]
 	key := feedbackItemKey(item)
 
-	var lines []string
+	lines := make([]string, 0, h)
 
 	// Heading: reviewer + state (or path:line for inline).
 	var heading string
@@ -309,9 +309,7 @@ func renderFeedbackDetail(items []feedbackItem, cursor int, triage map[string]*f
 	if end > len(wrapped) {
 		end = len(wrapped)
 	}
-	for _, l := range wrapped[scroll:end] {
-		lines = append(lines, l)
-	}
+	lines = append(lines, wrapped[scroll:end]...)
 
 	// Scroll affordance below.
 	remaining := len(wrapped) - end
@@ -369,39 +367,6 @@ func renderCheckRow(run github.CheckRun, width int) string {
 		row += strings.Repeat(" ", padW) + StyleSubtle.Render(dur)
 	}
 	return row
-}
-
-// renderReviewThread renders one reviewer block (state + body + inline comments).
-func renderReviewThread(thread github.ReviewThread, width int) []string {
-	lines := make([]string, 0, 2+len(thread.Comments)*2)
-
-	stateStyle := StyleSubtle
-	switch thread.State {
-	case "APPROVED":
-		stateStyle = lipgloss.NewStyle().Foreground(ColorSuccess)
-	case "CHANGES_REQUESTED":
-		stateStyle = lipgloss.NewStyle().Foreground(ColorError)
-	}
-	header := "  " + lipgloss.NewStyle().Bold(true).Render(thread.Reviewer) +
-		"  " + stateStyle.Render(strings.ToLower(strings.ReplaceAll(thread.State, "_", " ")))
-	lines = append(lines, header)
-
-	if thread.Body != "" {
-		body := truncateVisible(thread.Body, width-6)
-		lines = append(lines, "    "+StyleSubtle.Render(body))
-	}
-
-	for _, c := range thread.Comments {
-		fileLabel := StyleSubtle.Render(c.Path)
-		if c.Line > 0 {
-			fileLabel += StyleSubtle.Render(fmt.Sprintf(":%d", c.Line))
-		}
-		lines = append(lines, "    "+fileLabel)
-		commentBody := truncateVisible(c.Body, width-8)
-		lines = append(lines, "      "+commentBody)
-	}
-	lines = append(lines, "")
-	return lines
 }
 
 // feedbackVerdict is the user's disposition on a single feedback item.
