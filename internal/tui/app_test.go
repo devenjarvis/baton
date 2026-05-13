@@ -3801,3 +3801,13 @@ func TestRefreshPRStatus_WrongRepoReturnsError(t *testing.T) {
 		t.Errorf("expected error to contain %q, got: %s", "internal", poll.err.Error())
 	}
 }
+
+func TestNewApp_InitsFeedbackTriage(t *testing.T) {
+	app := NewApp()
+	if app.feedbackTriage == nil {
+		t.Error("feedbackTriage should be initialized, got nil")
+	}
+	if len(app.feedbackTriage) != 0 {
+		t.Errorf("feedbackTriage should be empty on init, got len=%d", len(app.feedbackTriage))
+	}
+}
