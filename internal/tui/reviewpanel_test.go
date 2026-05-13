@@ -900,6 +900,56 @@ func TestRenderReviewHeader_NoGoalWhenNoPlan(t *testing.T) {
 	}
 }
 
+// TestRenderReviewSpecOverlay_ContainsAllSections verifies that the spec overlay
+// renders Goal, Spec, Verification, and Not in scope section content.
+func TestRenderReviewSpecOverlay_ContainsAllSections(t *testing.T) {
+	dir := t.TempDir()
+	sess := agent.NewSessionForTestWithPath("spec-sess", "fix-auth", dir)
+	sess.SetOriginalPrompt("Fix auth")
+
+	plan := `# Goal
+Fix the auth redirect bug.
+
+## Spec
+1. Users redirect correctly.
+2. Tokens validated.
+
+## Context
+internal/auth/handler.go:42
+
+## Tasks
+- [ ] write test
+- [ ] implement
+
+## Verification
+go test -race ./internal/auth
+
+## Not in scope
+OAuth2 support`
+
+	if err := sess.WritePlan(plan); err != nil {
+		t.Fatalf("WritePlan: %v", err)
+	}
+	planContent, _ := sess.CachedPlan()
+
+	output := renderReviewSpecOverlay(sess, planContent, 0, 120, 40)
+
+	for _, want := range []string{"Goal", "Spec", "Verification", "Not in scope"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("overlay must contain %q; got:\n%s", want, output)
+		}
+	}
+	if !strings.Contains(output, "Fix the auth redirect bug.") {
+		t.Errorf("overlay must contain Goal body text; got:\n%s", output)
+	}
+	if !strings.Contains(output, "go test -race") {
+		t.Errorf("overlay must contain Verification body text; got:\n%s", output)
+	}
+	if !strings.Contains(output, "OAuth2 support") {
+		t.Errorf("overlay must contain Not in scope body text; got:\n%s", output)
+	}
+}
+
 // TestRenderReviewPanel_PRDraftInFlight verifies that the spinner status line
 // and disabled p hint appear when prDraftInFlight is true.
 func TestRenderReviewPanel_PRDraftInFlight(t *testing.T) {

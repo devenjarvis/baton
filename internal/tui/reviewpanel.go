@@ -13,6 +13,7 @@ import (
 	"github.com/devenjarvis/baton/internal/diffmodel"
 	"github.com/devenjarvis/baton/internal/git"
 	"github.com/devenjarvis/baton/internal/tui/diff"
+	"github.com/devenjarvis/baton/internal/tui/mdrender"
 )
 
 // spinnerFrames is the braille spinner sequence used while a verdict is running.
@@ -668,6 +669,81 @@ func sortFileStatsByChurn(files []git.FileStat) {
 	sort.Slice(files, func(i, j int) bool {
 		return (files[i].Insertions + files[i].Deletions) > (files[j].Insertions + files[j].Deletions)
 	})
+}
+
+// renderReviewSpecOverlay renders the full-screen Spec overlay for the review
+// panel. It shows the Goal, Spec, Verification, and Not in scope sections from
+// the plan markdown, rendered via mdrender and scrolled by scrollOffset.
+// sess and plan are passed so callers can cache plan reads; if plan is empty
+// or the session has no plan, shows a brief "no plan available" message.
+func renderReviewSpecOverlay(sess *agent.Session, plan string, scrollOffset, width, height int) string {
+	titleStyle := lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true)
+	title := titleStyle.Render("SPEC") + "  " + StyleSubtle.Render("›") + "  " + sess.GetDisplayName()
+	header := title + "\n" + StyleSubtle.Render(strings.Repeat("─", width-2))
+	bodyH := height - 2 // title + divider
+	if bodyH < 1 {
+		bodyH = 1
+	}
+
+	if plan == "" {
+		msg := StyleSubtle.Render("(no plan available for this session)")
+		return header + "\n" + msg
+	}
+
+	sections := agent.ParsePlanSections(plan)
+	r := mdrender.New(planEditorChromaStyle)
+	contentW := width - 4
+
+	type namedSection struct {
+		heading string
+		body    string
+	}
+	ordered := []namedSection{
+		{"# Goal", sections.Goal},
+		{"## Spec", sections.Spec},
+		{"## Verification", sections.Verification},
+		{"## Not in scope", sections.NotInScope},
+	}
+
+	var allLines []string
+	for _, sec := range ordered {
+		if sec.body == "" {
+			continue
+		}
+		allLines = append(allLines, StyleSubtle.Render(sec.heading), "")
+		rendered := r.RenderLines(sec.body, contentW)
+		for _, l := range rendered {
+			allLines = append(allLines, "  "+l)
+		}
+		allLines = append(allLines, "")
+	}
+
+	if len(allLines) == 0 {
+		allLines = []string{StyleSubtle.Render("(no content)")}
+	}
+
+	// Clamp scroll offset.
+	if scrollOffset < 0 {
+		scrollOffset = 0
+	}
+	if scrollOffset >= len(allLines) {
+		scrollOffset = max(0, len(allLines)-1)
+	}
+
+	end := scrollOffset + bodyH
+	if end > len(allLines) {
+		end = len(allLines)
+	}
+	window := allLines[scrollOffset:end]
+	body := strings.Join(window, "\n")
+
+	// Footer hint.
+	footer := "\n" + StyleSubtle.Render(strings.Repeat("─", width-2)) + "\n" +
+		"  " + StyleSubtle.Render("pgdn/pgup") + " scroll  " +
+		StyleSubtle.Render("g/G") + " top/bottom  " +
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#f0c060")).Render("esc") + StyleSubtle.Render(" — back to review")
+
+	return header + "\n" + body + footer
 }
 
 // wrapText wraps s to maxWidth columns.

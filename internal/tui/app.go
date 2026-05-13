@@ -193,18 +193,20 @@ type App struct {
 	focusBreakShortWarning bool
 	focusBreakTimerUp      bool // break duration elapsed; waiting on user to resume
 	focusBreakAnimFrame    int
-	reviewDiffCache        map[string]*reviewDiffEntry                // keyed by session ID
-	reviewSession          *agent.Session                             // session currently open in review panel
-	reviewTaskCursor       int                                        // selected task row in the review task list
-	reviewDiffVP           viewport.Model                             // scroll state for the inline diff viewport
-	reviewDiffCacheByTask  map[int]*diffmodel.Model                   // parsed diff per task index; cleared with reviewDiffCache
-	shippingSession        *agent.Session                             // session currently open in shipping panel
-	feedbackTriage         map[string]map[string]*feedbackTriageEntry // keyed by sessionID → itemKey
-	shippingFeedbackCursor int                                        // cursor row in the feedback list pane
-	shippingDetailScroll   int                                        // scroll offset in the feedback detail pane
-	feedbackNote           feedbackNoteModal                          // overlay for adding a guidance note to a feedback item
-	planEditor             *planEditorModel                           // non-nil while panelFocus == focusPlanEditor
-	promptModal            promptModalModel                           // overlay for plan-first new-session prompt
+	reviewDiffCache         map[string]*reviewDiffEntry                // keyed by session ID
+	reviewSession           *agent.Session                             // session currently open in review panel
+	reviewTaskCursor        int                                        // selected task row in the review task list
+	reviewDiffVP            viewport.Model                             // scroll state for the inline diff viewport
+	reviewDiffCacheByTask   map[int]*diffmodel.Model                   // parsed diff per task index; cleared with reviewDiffCache
+	reviewSpecOverlayActive bool                                       // true while the ? Spec overlay is open
+	reviewSpecOverlayScroll int                                        // scroll offset for the Spec overlay (line index)
+	shippingSession         *agent.Session                             // session currently open in shipping panel
+	feedbackTriage          map[string]map[string]*feedbackTriageEntry // keyed by sessionID → itemKey
+	shippingFeedbackCursor  int                                        // cursor row in the feedback list pane
+	shippingDetailScroll    int                                        // scroll offset in the feedback detail pane
+	feedbackNote            feedbackNoteModal                          // overlay for adding a guidance note to a feedback item
+	planEditor              *planEditorModel                           // non-nil while panelFocus == focusPlanEditor
+	promptModal             promptModalModel                           // overlay for plan-first new-session prompt
 
 	// Wellness counters (written to log on quit).
 	agentsCreatedCount   int
@@ -1619,11 +1621,30 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Review panel key handling.
 		if a.dashboard.panelFocus == focusReview && a.reviewSession != nil {
+			// Spec overlay intercepts all keys while active.
+			if a.reviewSpecOverlayActive {
+				switch msg.String() {
+				case "esc":
+					a.reviewSpecOverlayActive = false
+				case "pgdown":
+					a.reviewSpecOverlayScroll++
+				case "pgup":
+					if a.reviewSpecOverlayScroll > 0 {
+						a.reviewSpecOverlayScroll--
+					}
+				case "g":
+					a.reviewSpecOverlayScroll = 0
+				case "G":
+					a.reviewSpecOverlayScroll = 9999 // clamped at render time
+				}
+				return a, nil
+			}
 			switch msg.String() {
 			case "esc":
 				// Return to focus mode; session stays InReview.
 				a.dashboard.panelFocus = focusList
 				a.reviewSession = nil
+				a.reviewSpecOverlayActive = false
 				return a, nil
 			case "d":
 				// Defer: back to ReadyForReview, return to focus.
@@ -1797,6 +1818,12 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, nil
 			case "G":
 				a.reviewDiffVP.GotoBottom()
+				return a, nil
+			case "?":
+				if a.reviewSession.HasPlan() {
+					a.reviewSpecOverlayActive = true
+					a.reviewSpecOverlayScroll = 0
+				}
 				return a, nil
 			}
 			// All other keys are no-ops in review panel.
@@ -3803,7 +3830,10 @@ func (a App) View() tea.View {
 		if a.dashboard.panelFocus == focusReview && a.reviewSession != nil {
 			entry := a.reviewDiffCache[a.reviewSession.ID]
 			var panelStr string
-			if a.prComposeModal.Active() {
+			if a.reviewSpecOverlayActive {
+				plan, _ := a.reviewSession.CachedPlan()
+				panelStr = renderReviewSpecOverlay(a.reviewSession, plan, a.reviewSpecOverlayScroll, a.width, a.height)
+			} else if a.prComposeModal.Active() {
 				panelStr = lipgloss.Place(a.width, a.height-1, lipgloss.Center, lipgloss.Center, a.prComposeModal.View())
 			} else {
 				panelStr = renderReviewPanel(a.reviewSession, entry, a.width, a.height, a.reviewTaskCursor, a.prDraftInFlight && a.prDraftSessionID == a.reviewSession.ID, a.reviewDiffVP.YOffset())
