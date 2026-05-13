@@ -1052,12 +1052,20 @@ func (s *Session) CachedPlan() (string, bool) {
 	fi, err := os.Stat(planPath)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			s.mu.Lock()
-			s.planCacheLoaded = true
-			s.planCachePresent = false
-			s.planCacheContent = ""
-			s.planCacheMTime = time.Time{}
-			s.mu.Unlock()
+			// Skip the write lock if the cache already reflects "absent" — the
+			// common case for Planning-phase sessions before a plan is written,
+			// where CachedPlan is called on every 100ms render tick.
+			s.mu.RLock()
+			alreadyAbsent := s.planCacheLoaded && !s.planCachePresent
+			s.mu.RUnlock()
+			if !alreadyAbsent {
+				s.mu.Lock()
+				s.planCacheLoaded = true
+				s.planCachePresent = false
+				s.planCacheContent = ""
+				s.planCacheMTime = time.Time{}
+				s.mu.Unlock()
+			}
 			return "", false
 		}
 		// Other stat error: return cached value if we have one so a transient
