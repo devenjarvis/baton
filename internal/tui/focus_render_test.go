@@ -208,42 +208,37 @@ func TestRenderFocusSessionCard_RepoPrefix(t *testing.T) {
 	}
 }
 
-// TestBuildingProgressBadge verifies the badge string for various todo states.
+// TestBuildingProgressBadge verifies renderCardProgressBar for various todo-count states.
 func TestBuildingProgressBadge(t *testing.T) {
 	tests := []struct {
-		name        string
-		todos       []agent.TodoItem
-		activeCount int
-		wantEmpty   bool
-		wantSubstr  string
+		name      string
+		done      int
+		total     int
+		wantEmpty bool
+		wantStr   string
 	}{
 		{
 			name:      "no todos returns empty",
-			todos:     nil,
+			done:      0,
+			total:     0,
 			wantEmpty: true,
 		},
 		{
-			name:        "2/5 with 1 active",
-			todos:       makeTodos(5, 2),
-			activeCount: 1,
-			wantSubstr:  "2/5",
+			name:    "2/5 shows correct counts",
+			done:    2,
+			total:   5,
+			wantStr: "2/5",
 		},
 		{
-			name:        "active count included",
-			todos:       makeTodos(3, 0),
-			activeCount: 2,
-			wantSubstr:  "2 active",
-		},
-		{
-			name:        "no active count omitted when zero",
-			todos:       makeTodos(3, 1),
-			activeCount: 0,
-			wantSubstr:  "1/3",
+			name:    "1/3 shows correct counts",
+			done:    1,
+			total:   3,
+			wantStr: "1/3",
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := buildingProgressBadge(tc.todos, tc.activeCount)
+			got := renderCardProgressBar(tc.done, tc.total, 20, ColorPrimary)
 			if tc.wantEmpty {
 				if got != "" {
 					t.Errorf("expected empty badge, got %q", got)
@@ -251,24 +246,11 @@ func TestBuildingProgressBadge(t *testing.T) {
 				return
 			}
 			plain := ansi.Strip(got)
-			if !strings.Contains(plain, tc.wantSubstr) {
-				t.Errorf("expected badge to contain %q, got %q", tc.wantSubstr, plain)
+			if !strings.Contains(plain, tc.wantStr) {
+				t.Errorf("expected badge to contain %q, got %q", tc.wantStr, plain)
 			}
 		})
 	}
-}
-
-// makeTodos builds a slice of n TodoItems with done of them marked completed.
-func makeTodos(n, done int) []agent.TodoItem {
-	items := make([]agent.TodoItem, n)
-	for i := range items {
-		if i < done {
-			items[i] = agent.TodoItem{Content: "task", Status: "completed"}
-		} else {
-			items[i] = agent.TodoItem{Content: "task", Status: "pending"}
-		}
-	}
-	return items
 }
 
 // TestSessionFocusStatus_BuildingWithTodosShowsProgressBadge verifies that
@@ -423,10 +405,8 @@ func TestRenderQueueRow_RepoPrefix(t *testing.T) {
 }
 
 // TestRenderFocusSessionCard_PlanBackedBuildingHasTaskProgressLine verifies
-// that a Building session with a plan and open tasks produces a 5-line card
-// where the description (lines 2–3) is preserved and the new line 4 shows
-// "▸ first open · next: second open", with the branch/elapsed row moved to
-// line 5.
+// that a Building session with a plan and open tasks produces a 4-line card
+// where line 2 shows "▸ first open task" (bold) and line 3 shows "↳ next: second open".
 func TestRenderFocusSessionCard_PlanBackedBuildingHasTaskProgressLine(t *testing.T) {
 	dir := t.TempDir()
 	sess := agent.NewSessionForTestWithPath("s", "my-session", dir)
@@ -444,24 +424,63 @@ func TestRenderFocusSessionCard_PlanBackedBuildingHasTaskProgressLine(t *testing
 	}
 
 	card := d.renderFocusSessionCard(sess, "", false, 100)
-	if len(card) != 5 {
-		t.Fatalf("expected 5-line card for plan-backed building session, got %d lines: %v", len(card), card)
+	if len(card) != 4 {
+		t.Fatalf("expected 4-line card for plan-backed building session, got %d lines: %v", len(card), card)
 	}
-	if !strings.Contains(ansi.Strip(card[1]), "implement oauth flow") {
-		t.Errorf("line 2 should show description (task summary), got %q", ansi.Strip(card[1]))
+	line2 := ansi.Strip(card[1])
+	if !strings.Contains(line2, "▸") {
+		t.Errorf("line 2 should contain ▸ prefix, got %q", line2)
 	}
-	line4 := ansi.Strip(card[3])
-	if !strings.Contains(line4, "write tests") {
-		t.Errorf("line 4 should contain first open task, got %q", line4)
+	if !strings.Contains(line2, "write tests") {
+		t.Errorf("line 2 should contain first open task, got %q", line2)
 	}
-	if !strings.Contains(line4, "next: open PR") {
-		t.Errorf("line 4 should contain 'next: open PR', got %q", line4)
+	line3 := ansi.Strip(card[2])
+	if !strings.Contains(line3, "↳ next:") {
+		t.Errorf("line 3 should contain ↳ next: prefix, got %q", line3)
+	}
+	if !strings.Contains(line3, "open PR") {
+		t.Errorf("line 3 should contain second open task, got %q", line3)
+	}
+}
+
+// TestRenderFocusSessionCard_PlanBackedBuilding_TodoOverridesPlan verifies that
+// when the session's primary agent has an in_progress TodoItem, that item's
+// content wins on line 2 over the plan's first uncompleted task.
+func TestRenderFocusSessionCard_PlanBackedBuilding_TodoOverridesPlan(t *testing.T) {
+	dir := t.TempDir()
+	sess := agent.NewSessionForTestWithPath("s", "my-session", dir)
+	sess.SetLifecyclePhase(agent.LifecycleInProgress)
+	if err := sess.WritePlan("- [ ] plan task one\n- [ ] plan task two\n"); err != nil {
+		t.Fatal(err)
+	}
+	ag := sess.AddTestAgent("a-1", false, agent.StatusActive)
+	ag.SetTodos([]agent.TodoItem{
+		{Content: "todo task from agent", ActiveForm: "Running todo task", Status: "in_progress"},
+		{Content: "next pending todo", Status: "pending"},
+	})
+
+	d := newDashboardModel()
+	d.items = []listItem{
+		{kind: listItemSession, repoPath: "/r", session: sess},
+		{kind: listItemAgent, repoPath: "/r", session: sess, agent: ag},
+	}
+
+	card := d.renderFocusSessionCard(sess, "", false, 100)
+	if len(card) != 4 {
+		t.Fatalf("expected 4-line card, got %d", len(card))
+	}
+	line2 := ansi.Strip(card[1])
+	if !strings.Contains(line2, "Running todo task") {
+		t.Errorf("line 2 should show in_progress todo's ActiveForm, got %q", line2)
+	}
+	if strings.Contains(line2, "plan task") {
+		t.Errorf("line 2 must not show plan task when todo overrides it, got %q", line2)
 	}
 }
 
 // TestRenderFocusSessionCard_PlanWithSingleOpenTaskDropsNextSuffix verifies
-// that when only one open task remains, the task-progress line shows "▸ task"
-// without a "next:" suffix.
+// that when only one open task remains, line 2 shows "▸ last task" and line 3
+// is blank (no "↳ next:" suffix), card is exactly 4 lines.
 func TestRenderFocusSessionCard_PlanWithSingleOpenTaskDropsNextSuffix(t *testing.T) {
 	dir := t.TempDir()
 	sess := agent.NewSessionForTestWithPath("s", "my-session", dir)
@@ -478,15 +497,16 @@ func TestRenderFocusSessionCard_PlanWithSingleOpenTaskDropsNextSuffix(t *testing
 	}
 
 	card := d.renderFocusSessionCard(sess, "", false, 100)
-	if len(card) != 5 {
-		t.Fatalf("expected 5-line card with single open task, got %d lines", len(card))
+	if len(card) != 4 {
+		t.Fatalf("expected 4-line card with single open task, got %d lines", len(card))
 	}
-	line4 := ansi.Strip(card[3])
-	if !strings.Contains(line4, "last task") {
-		t.Errorf("line 4 should contain open task name, got %q", line4)
+	line2 := ansi.Strip(card[1])
+	if !strings.Contains(line2, "last task") {
+		t.Errorf("line 2 should contain open task name, got %q", line2)
 	}
-	if strings.Contains(line4, "next:") {
-		t.Errorf("line 4 must not have 'next:' with single open task, got %q", line4)
+	line3 := ansi.Strip(card[2])
+	if strings.Contains(line3, "next:") {
+		t.Errorf("line 3 must not have 'next:' with single open task, got %q", line3)
 	}
 }
 
@@ -533,9 +553,13 @@ func TestRenderFocusSessionCard_NoPlanStaysFourLines(t *testing.T) {
 }
 
 // TestSessionFocusStatus_BuildingWithPlanShowsProgressBadge verifies that a
-// Building session backed by a plan file shows "▸ done/total · N active" on
-// the badge, not the plain "N active, M idle" fallback.
+// Building session backed by a plan file shows a progress bar with done/total,
+// not the plain "N active, M idle" fallback.
 func TestSessionFocusStatus_BuildingWithPlanShowsProgressBadge(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
 	dir := t.TempDir()
 	sess := agent.NewSessionForTestWithPath("s", "my-session", dir)
 	sess.SetLifecyclePhase(agent.LifecycleInProgress)
@@ -550,12 +574,23 @@ func TestSessionFocusStatus_BuildingWithPlanShowsProgressBadge(t *testing.T) {
 		{kind: listItemAgent, repoPath: "/r", session: sess, agent: ag},
 	}
 
-	badge := ansi.Strip(d.sessionFocusStatus(sess))
-	if !strings.Contains(badge, "1/3") {
-		t.Errorf("expected plan progress badge '1/3', got %q", badge)
+	badge := d.sessionFocusStatus(sess)
+	stripped := ansi.Strip(badge)
+	// Must contain the "1/3" count.
+	if !strings.Contains(stripped, "1/3") {
+		t.Errorf("expected plan progress badge '1/3', got %q", stripped)
 	}
-	if !strings.Contains(badge, "1 active") {
-		t.Errorf("expected '1 active' in plan badge, got %q", badge)
+	// Must contain a progress bar block rune (▌ or █ or ░).
+	if !strings.ContainsAny(badge, "▌█░") {
+		t.Errorf("expected progress bar glyph (▌/█/░) in badge, got %q", badge)
+	}
+	// Must NOT contain the legacy "▸ " prefix.
+	if strings.Contains(stripped, "▸ ") {
+		t.Errorf("legacy ▸ prefix must not appear in new badge, got %q", stripped)
+	}
+	// Must NOT contain "· N active" suffix.
+	if strings.Contains(stripped, "active") {
+		t.Errorf("legacy '· N active' suffix must not appear in new badge, got %q", stripped)
 	}
 }
 
@@ -637,5 +672,202 @@ func TestSessionFocusStatus_BuildingWithPlanAllDoneReviewablePrefersReviewBadge(
 	}
 	if strings.Contains(badge, "2/2") {
 		t.Errorf("plan progress badge must not appear when reviewable, got %q", badge)
+	}
+}
+
+// TestRenderCardProgressBar_DoneTotalAndColor verifies the renderCardProgressBar
+// helper contract:
+//
+//	(a) returns "" when total == 0
+//	(b) rendered string contains the "done/total" count suffix
+//	(c) ansi.StringWidth of the output equals the requested width
+//	(d) at 100% the rendered output uses ColorSuccess's hex
+//	(e) at <100% it uses the passed primary color's hex
+func TestRenderCardProgressBar_DoneTotalAndColor(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	// (a) total==0 → empty string
+	if got := renderCardProgressBar(0, 0, 20, ColorPrimary); got != "" {
+		t.Errorf("total==0: want \"\", got %q", got)
+	}
+
+	const width = 24
+	// (b) contains "2/7" count suffix
+	out := renderCardProgressBar(2, 7, width, ColorPrimary)
+	if !strings.Contains(ansi.Strip(out), "2/7") {
+		t.Errorf("expected \"2/7\" in output, got %q", ansi.Strip(out))
+	}
+
+	// (c) display width equals requested width
+	if w := ansi.StringWidth(out); w != width {
+		t.Errorf("display width = %d, want %d; raw=%q", w, width, out)
+	}
+
+	// (d) at 100% uses ColorSuccess (#10B981 → decimal 16;185;129 in ANSI).
+	full := renderCardProgressBar(7, 7, width, ColorPrimary)
+	// ColorSuccess = #10B981 → R=16, G=185, B=129.
+	if !strings.Contains(full, "16;185;129") {
+		t.Errorf("100%%: expected ColorSuccess (16;185;129) in output, got %q", full)
+	}
+
+	// (e) at <100% uses the passed primary color (#7C3AED → 124;58;237).
+	// ColorPrimary = #7C3AED → R=124, G=58, B=237.
+	if !strings.Contains(out, "124;58;237") {
+		t.Errorf("<100%%: expected ColorPrimary (124;58;237) in output, got %q", out)
+	}
+}
+
+// TestRenderFocusSessionCard_StatusGlyphMapping verifies that line 1 of each
+// card carries the correct status glyph for each lifecycle/agent-state combination.
+func TestRenderFocusSessionCard_StatusGlyphMapping(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	tests := []struct {
+		name      string
+		setup     func() (*agent.Session, []listItem)
+		wantGlyph string
+	}{
+		{
+			name: "error → ✗",
+			setup: func() (*agent.Session, []listItem) {
+				sess := agent.NewSessionForTest("s", "my-session")
+				sess.SetLifecyclePhase(agent.LifecycleInProgress)
+				ag := sess.AddTestAgent("a-1", false, agent.StatusError)
+				return sess, []listItem{
+					{kind: listItemSession, repoPath: "/r", session: sess},
+					{kind: listItemAgent, repoPath: "/r", session: sess, agent: ag},
+				}
+			},
+			wantGlyph: "✗",
+		},
+		{
+			name: "waiting → ⏸",
+			setup: func() (*agent.Session, []listItem) {
+				sess := agent.NewSessionForTest("s", "my-session")
+				sess.SetLifecyclePhase(agent.LifecycleInProgress)
+				ag := sess.AddTestAgent("a-1", false, agent.StatusWaiting)
+				return sess, []listItem{
+					{kind: listItemSession, repoPath: "/r", session: sess},
+					{kind: listItemAgent, repoPath: "/r", session: sess, agent: ag},
+				}
+			},
+			wantGlyph: "⏸",
+		},
+		{
+			name: "active → ⚡",
+			setup: func() (*agent.Session, []listItem) {
+				sess := agent.NewSessionForTest("s", "my-session")
+				sess.SetLifecyclePhase(agent.LifecycleInProgress)
+				ag := sess.AddTestAgent("a-1", false, agent.StatusActive)
+				return sess, []listItem{
+					{kind: listItemSession, repoPath: "/r", session: sess},
+					{kind: listItemAgent, repoPath: "/r", session: sess, agent: ag},
+				}
+			},
+			wantGlyph: "⚡",
+		},
+		{
+			name: "reviewable → ✓",
+			setup: func() (*agent.Session, []listItem) {
+				sess := agent.NewSessionForTest("s", "my-session")
+				sess.SetLifecyclePhase(agent.LifecycleInProgress)
+				ag := sess.AddTestAgent("a-1", false, agent.StatusIdle)
+				return sess, []listItem{
+					{kind: listItemSession, repoPath: "/r", session: sess},
+					{kind: listItemAgent, repoPath: "/r", session: sess, agent: ag},
+				}
+			},
+			wantGlyph: "✓",
+		},
+		{
+			name: "idle, no agents → ○",
+			setup: func() (*agent.Session, []listItem) {
+				sess := agent.NewSessionForTest("s", "my-session")
+				sess.SetLifecyclePhase(agent.LifecycleInProgress)
+				return sess, []listItem{
+					{kind: listItemSession, repoPath: "/r", session: sess},
+				}
+			},
+			wantGlyph: "○",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			sess, items := tc.setup()
+			d := newDashboardModel()
+			d.items = items
+			card := d.renderFocusSessionCard(sess, "", false, 100)
+			line1 := ansi.Strip(card[0])
+			if !strings.Contains(line1, tc.wantGlyph) {
+				t.Errorf("line 1 should contain glyph %q, got %q", tc.wantGlyph, line1)
+			}
+		})
+	}
+}
+
+// TestRenderFocusSessionCard_BranchChipAndElapsedGlyph verifies that line 4
+// contains a 🌿 chip before the branch name (with a background tint), ⏱ before
+// the elapsed token, and no chip when the branch is empty.
+func TestRenderFocusSessionCard_BranchChipAndElapsedGlyph(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	dir := t.TempDir()
+	sess := agent.NewSessionForTestWithPath("s", "my-session", dir)
+	sess.SetLifecyclePhase(agent.LifecycleInProgress)
+	sess.UpdateBranch("baton/add-dark-mode")
+	ag := sess.AddTestAgent("a-1", false, agent.StatusActive)
+
+	d := newDashboardModel()
+	d.items = []listItem{
+		{kind: listItemSession, repoPath: "/r", session: sess},
+		{kind: listItemAgent, repoPath: "/r", session: sess, agent: ag},
+	}
+
+	card := d.renderFocusSessionCard(sess, "", false, 120)
+	if len(card) != 4 {
+		t.Fatalf("expected 4-line card, got %d", len(card))
+	}
+
+	line4Raw := card[3]
+	line4 := ansi.Strip(line4Raw)
+
+	// 🌿 immediately before branch name.
+	if !strings.Contains(line4, "🌿") {
+		t.Errorf("line 4 should contain 🌿 glyph, got %q", line4)
+	}
+	if !strings.Contains(line4, "add-dark-mode") {
+		t.Errorf("line 4 should contain branch name, got %q", line4)
+	}
+
+	// ⏱ before the elapsed token.
+	if !strings.Contains(line4, "⏱") {
+		t.Errorf("line 4 should contain ⏱ glyph, got %q", line4)
+	}
+
+	// Branch chip carries a background color escape (48;2; = background TrueColor).
+	if !strings.Contains(line4Raw, "48;2;") {
+		t.Errorf("line 4 raw should contain background ANSI sequence (48;2;) for chip tint, got %q", line4Raw)
+	}
+
+	// No branch → no chip.
+	sessNoBranch := agent.NewSessionForTest("s2", "no-branch-session")
+	sessNoBranch.SetLifecyclePhase(agent.LifecycleInProgress)
+	ag2 := sessNoBranch.AddTestAgent("a-2", false, agent.StatusActive)
+	d2 := newDashboardModel()
+	d2.items = []listItem{
+		{kind: listItemSession, repoPath: "/r", session: sessNoBranch},
+		{kind: listItemAgent, repoPath: "/r", session: sessNoBranch, agent: ag2},
+	}
+	card2 := d2.renderFocusSessionCard(sessNoBranch, "", false, 120)
+	line4b := ansi.Strip(card2[3])
+	if strings.Contains(line4b, "🌿") {
+		t.Errorf("no-branch session should not render 🌿 chip, got %q", line4b)
 	}
 }

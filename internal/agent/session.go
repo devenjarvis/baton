@@ -45,14 +45,17 @@ type Session struct {
 	revising       bool  // true while a plan-revising subprocess is in flight; gates double-dispatch
 	reviseCancel   context.CancelFunc
 	reviseErr      error // last revise error, surfaced by the editor; cleared on successful revise
-	// Plan-content cache, keyed by the most recent successful WritePlan.
+	// Plan-content cache, keyed by the mtime of the last observed plan.md.
 	// Populated lazily by CachedPlan() on first read so resumed sessions
-	// also benefit. The dashboard hot path (per-render Planning card)
-	// reads this instead of os.ReadFile to avoid a stat+read+parse cycle
-	// at every tick.
+	// also benefit. The dashboard hot path (per-render Building card) stats
+	// plan.md each tick; if the mtime is unchanged it returns the cached
+	// content without a ReadFile. This lets the build agent's external
+	// checkbox edits (via Claude's Edit tool, bypassing WritePlan) show
+	// through within one tick.
 	planCacheLoaded  bool
 	planCachePresent bool
 	planCacheContent string
+	planCacheMTime   time.Time
 }
 
 // newSession creates a session with the given worktree. New sessions land in
@@ -1009,13 +1012,17 @@ func (s *Session) WritePlan(content string) error {
 	}
 	committed = true
 
-	// Update the in-memory cache so the dashboard render path can skip
-	// os.Stat + os.ReadFile on subsequent ticks. Locking is brief; we
-	// only enter after the file write has succeeded.
+	// Record mtime alongside content so CachedPlan's mtime check skips
+	// the ReadFile on the immediate next tick.
+	var mtime time.Time
+	if fi, err2 := os.Stat(planPath); err2 == nil {
+		mtime = fi.ModTime()
+	}
 	s.mu.Lock()
 	s.planCacheLoaded = true
 	s.planCachePresent = true
 	s.planCacheContent = content
+	s.planCacheMTime = mtime
 	s.mu.Unlock()
 
 	return nil
@@ -1028,58 +1035,77 @@ func (s *Session) HasPlan() bool {
 }
 
 // CachedPlan returns the most recently written plan content along with a
-// flag indicating whether a plan exists. The cache is primed by WritePlan
-// (and indirectly by RestorePrevPlan, which calls WritePlan); on a
-// resumed session that was created before the cache existed, the first
-// call lazily loads from disk. Use this in hot paths like the dashboard
-// render loop instead of HasPlan() + ReadPlan(), which together do a
-// stat + read on every TUI tick.
+// flag indicating whether a plan exists. The cache is keyed by the mtime of
+// plan.md: each call stats the file; if the mtime is unchanged the cached
+// content is returned without a ReadFile. This lets external edits (e.g. the
+// build agent toggling checkboxes via Claude's Edit tool, bypassing WritePlan)
+// show through within one 100ms dashboard tick.
 //
-// Returns ("", false) when no plan file exists. Read errors are not
-// surfaced — callers in render hot paths can't usefully react to them
-// and the plain ReadPlan() path is still available for callers that need
-// to handle errors explicitly.
+// Returns ("", false) when no plan file exists. Read errors are not surfaced —
+// callers in render hot paths can't usefully react to them.
 func (s *Session) CachedPlan() (string, bool) {
+	planPath := s.PlanPath()
+	if planPath == "" {
+		return "", false
+	}
+
+	fi, err := os.Stat(planPath)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			// Skip the write lock if the cache already reflects "absent" — the
+			// common case for Planning-phase sessions before a plan is written,
+			// where CachedPlan is called on every 100ms render tick.
+			s.mu.RLock()
+			alreadyAbsent := s.planCacheLoaded && !s.planCachePresent
+			s.mu.RUnlock()
+			if !alreadyAbsent {
+				s.mu.Lock()
+				s.planCacheLoaded = true
+				s.planCachePresent = false
+				s.planCacheContent = ""
+				s.planCacheMTime = time.Time{}
+				s.mu.Unlock()
+			}
+			return "", false
+		}
+		// Other stat error: return cached value if we have one so a transient
+		// I/O hiccup doesn't blank the dashboard.
+		s.mu.RLock()
+		content, present := s.planCacheContent, s.planCachePresent
+		s.mu.RUnlock()
+		return content, present
+	}
+
+	mtime := fi.ModTime()
+
 	s.mu.RLock()
-	if s.planCacheLoaded {
+	if s.planCacheLoaded && mtime.Equal(s.planCacheMTime) {
 		content, present := s.planCacheContent, s.planCachePresent
 		s.mu.RUnlock()
 		return content, present
 	}
 	s.mu.RUnlock()
 
-	// Lazy load. Drop the read lock before doing I/O so a concurrent
-	// WritePlan can populate the cache while we read; if it does, we
-	// just observe its write on the next call.
-	planPath := s.PlanPath()
-	if planPath == "" {
-		return "", false
-	}
+	// mtime changed (or first call): read the file outside any lock.
 	data, err := os.ReadFile(planPath)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			s.mu.Lock()
-			if !s.planCacheLoaded {
-				s.planCacheLoaded = true
-				s.planCachePresent = false
-				s.planCacheContent = ""
-			}
-			s.mu.Unlock()
-			return "", false
-		}
-		// Any other error: don't poison the cache. Callers in render
-		// paths see ("", false) and fall back to their no-plan branch.
-		return "", false
+		// Don't poison the cache on a transient read error.
+		s.mu.RLock()
+		content, present := s.planCacheContent, s.planCachePresent
+		s.mu.RUnlock()
+		return content, present
 	}
 	content := string(data)
 
 	s.mu.Lock()
-	if !s.planCacheLoaded {
+	// Only update if this mtime is at least as recent as what we have,
+	// so a concurrent WritePlan with a later mtime is never regressed.
+	if !mtime.Before(s.planCacheMTime) {
 		s.planCacheLoaded = true
 		s.planCachePresent = true
 		s.planCacheContent = content
+		s.planCacheMTime = mtime
 	} else {
-		// A WritePlan landed during our read; trust the cache.
 		content = s.planCacheContent
 	}
 	present := s.planCachePresent

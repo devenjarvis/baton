@@ -413,6 +413,40 @@ func (d dashboardModel) buildingSessions() []listItem {
 	return result
 }
 
+// renderCardProgressBar returns a progress bar + muted "done/total" suffix
+// right-padded to exactly width display cells. Returns "" when total == 0.
+// At 100% the bar is colored ColorSuccess; otherwise it uses primary.
+func renderCardProgressBar(done, total, width int, primary lipgloss.Color) string {
+	if total == 0 {
+		return ""
+	}
+	pct := float64(done) / float64(total)
+	suffix := StyleSubtle.Render(fmt.Sprintf("%d/%d", done, total))
+	suffixWidth := ansi.StringWidth(suffix)
+	// Reserve at least 1 cell for the bar (plus a separating space).
+	barWidth := width - suffixWidth - 1
+	if barWidth < 1 {
+		barWidth = 1
+	}
+	bar := progress.New(
+		progress.WithoutPercentage(),
+		progress.WithColorFunc(func(_, _ float64) color.Color {
+			if done == total && total > 0 {
+				return ColorSuccess
+			}
+			return primary
+		}),
+	)
+	bar.SetWidth(barWidth)
+	rendered := bar.ViewAs(pct) + " " + suffix
+	// Pad or trim to exactly width cells so callers can right-align predictably.
+	got := ansi.StringWidth(rendered)
+	if got < width {
+		rendered += strings.Repeat(" ", width-got)
+	}
+	return rendered
+}
+
 // sessionFocusStatus returns a styled inline status badge for a session row in
 // the unified SESSIONS list. Priority: Error > Waiting > May Need Input >
 // idle-but-reviewable > finished (DoneAt set) > normal (N active, M idle).
@@ -461,18 +495,26 @@ func (d dashboardModel) sessionFocusStatus(sess *agent.Session) string {
 		return lipgloss.NewStyle().Foreground(ColorSuccess).Render("✓ finished — awaiting prompt")
 	}
 	if sess.LifecyclePhase() == agent.LifecycleInProgress {
-		if plan, present := sess.CachedPlan(); present {
-			if total, done := planTaskCounts(plan); total > 0 {
-				badge := fmt.Sprintf("▸ %d/%d", done, total)
-				if activeCount > 0 {
-					badge += fmt.Sprintf(" · %d active", activeCount)
+		const barWidth = 20
+		// Check todos first to stay in sync with focusTaskDescription's priority:
+		// when both todos and a plan exist, the badge and the task text on lines
+		// 2–3 should count the same source.
+		if ag := sess.PrimaryAgent(); ag != nil {
+			todos := ag.Todos()
+			if len(todos) > 0 {
+				total := len(todos)
+				done := 0
+				for _, t := range todos {
+					if t.Status == "completed" {
+						done++
+					}
 				}
-				return StyleSubtle.Render(badge)
+				return renderCardProgressBar(done, total, barWidth, ColorPrimary)
 			}
 		}
-		if ag := sess.PrimaryAgent(); ag != nil {
-			if badge := buildingProgressBadge(ag.Todos(), activeCount); badge != "" {
-				return badge
+		if plan, present := sess.CachedPlan(); present {
+			if total, done := planTaskCounts(plan); total > 0 {
+				return renderCardProgressBar(done, total, barWidth, ColorPrimary)
 			}
 		}
 	}
@@ -546,17 +588,55 @@ func (d dashboardModel) sessionFocusStripeColor(sess *agent.Session) lipgloss.Co
 	}
 }
 
-// renderFocusSessionCard returns 4 lines for a session card in focus mode, or
-// 5 lines when a Building session has unfinished plan tasks. Each line begins
-// with a colored vertical stripe (▎) whose color encodes the dominant session
-// state via sessionFocusStripeColor; the selected card brightens the stripe to
-// ColorSecondary.
+// sessionStatusGlyph returns a single-rune glyph and color that mirrors the
+// dominant session state. Used on line 1 of the card, between the stripe and
+// the session name, so the reader can identify state at a glance even when ANSI
+// colors are unavailable. planningPhase callers pass true to suppress the glyph
+// when the right-side badge already begins with one.
+func (d dashboardModel) sessionStatusGlyph(sess *agent.Session) (glyph string, col lipgloss.Color) {
+	var hasError, hasWaiting, hasIdleAsking, hasActive bool
+	for _, item := range d.items {
+		if item.kind != listItemAgent || item.agent == nil || item.agent.IsShell || item.session != sess {
+			continue
+		}
+		switch item.agent.Status() {
+		case agent.StatusError:
+			hasError = true
+		case agent.StatusWaiting:
+			hasWaiting = true
+		case agent.StatusActive:
+			hasActive = true
+		case agent.StatusIdle:
+			if item.agent.AskingQuestion() {
+				hasIdleAsking = true
+			}
+		}
+	}
+	switch {
+	case hasError:
+		return "✗", ColorError
+	case hasWaiting:
+		return "⏸", ColorWaiting
+	case hasIdleAsking:
+		return "?", ColorWarning
+	case sess.IsReviewable() || !sess.DoneAt().IsZero():
+		return "✓", ColorSuccess
+	case hasActive:
+		return "⚡", ColorSecondary
+	default:
+		return "○", ColorMuted
+	}
+}
+
+// renderFocusSessionCard returns exactly 4 lines for a session card in focus mode.
+// Each line begins with a colored vertical stripe (▎) whose color encodes the
+// dominant session state via sessionFocusStripeColor; the selected card
+// brightens the stripe to ColorSecondary.
 //
-// Line 1: <stripe> <name (bold, ColorText)>     ... right-aligned <status badge>
-// Line 2: <stripe>   <description line 1 (muted; italic if pending)>
-// Line 3: <stripe>   <description line 2 or empty>  (always reserved)
-// Line 4: <stripe>   ▸ <first open task> [· next: <second open>]  (plan-backed building only)
-// Line 4/5: <stripe>   <branch [· detail]>      ... right-aligned <elapsed>
+// Line 1: <stripe> <glyph> <name (bold, ColorText)>   ... right-aligned <status badge/progress bar>
+// Line 2: <stripe>   ▸ <active task (bold)>   (building) | <description (muted/italic)> (planning/other)
+// Line 3: <stripe>   ↳ next: <next task (muted-italic)>   (building) | <description line 2 or empty>
+// Line 4: <stripe>   [🌿 branch chip] [detail]      ... right-aligned ⏱ <elapsed>
 func (d dashboardModel) renderFocusSessionCard(sess *agent.Session, repoName string, selected bool, width int) []string {
 	stripeColor := d.sessionFocusStripeColor(sess)
 	if selected {
@@ -589,6 +669,13 @@ func (d dashboardModel) renderFocusSessionCard(sess *agent.Session, repoName str
 	} else {
 		badge = d.sessionFocusStatus(sess)
 	}
+	// Status glyph: prepend between stripe and name for non-planning cards.
+	// Planning cards suppress the glyph because the badge already leads with ✎/✗/○.
+	if !planningPhase {
+		glyph, glyphColor := d.sessionStatusGlyph(sess)
+		glyphStyled := lipgloss.NewStyle().Foreground(glyphColor).Render(glyph)
+		nameStyled = glyphStyled + " " + nameStyled
+	}
 	line1 := rightAlign(stripe+" "+nameStyled, badge, width)
 
 	// --- Lines 2 and 3: description (always two lines) ---
@@ -605,14 +692,46 @@ func (d dashboardModel) renderFocusSessionCard(sess *agent.Session, repoName str
 	} else {
 		descLine1, descLine2, descPending = focusTaskDescription(sess, descBudget)
 	}
-	descStyle := StyleSubtle
-	if descPending {
-		descStyle = lipgloss.NewStyle().Foreground(ColorMuted).Italic(true)
-	}
-	line2 := stripe + indent + descStyle.Render(descLine1)
-	line3 := stripe + indent
-	if descLine2 != "" {
-		line3 = stripe + indent + descStyle.Render(descLine2)
+	var line2, line3 string
+	buildingPhase := phase == agent.LifecycleInProgress && !sess.IsReviewable()
+	if planningPhase {
+		descStyle := StyleSubtle
+		if descPending {
+			descStyle = lipgloss.NewStyle().Foreground(ColorMuted).Italic(true)
+		}
+		line2 = stripe + indent + descStyle.Render(descLine1)
+		line3 = stripe + indent
+		if descLine2 != "" {
+			line3 = stripe + indent + descStyle.Render(descLine2)
+		}
+	} else if buildingPhase {
+		// Active task: ▸ <bold text>. Subtract 2 cells for the "▸ " prefix so
+		// the total line stays within descBudget.
+		activeLine := ""
+		if descLine1 != "" {
+			activeBudget := descBudget - 2
+			if activeBudget < 0 {
+				activeBudget = 0
+			}
+			activeLine = lipgloss.NewStyle().Bold(true).Render("▸ " + truncateVisible(descLine1, activeBudget))
+		}
+		line2 = stripe + indent + activeLine
+		// Next task: ↳ next: <muted-italic text>. Subtract 8 cells for "↳ next: ".
+		line3 = stripe + indent
+		if descLine2 != "" {
+			nextBudget := descBudget - 8
+			if nextBudget < 0 {
+				nextBudget = 0
+			}
+			nextStyle := lipgloss.NewStyle().Foreground(ColorMuted).Italic(true)
+			line3 = stripe + indent + nextStyle.Render("↳ next: "+truncateVisible(descLine2, nextBudget))
+		}
+	} else {
+		line2 = stripe + indent + StyleSubtle.Render(descLine1)
+		line3 = stripe + indent
+		if descLine2 != "" {
+			line3 = stripe + indent + StyleSubtle.Render(descLine2)
+		}
 	}
 
 	// --- Line 4: branch [· detail], right-aligned elapsed ---
@@ -636,28 +755,39 @@ func (d dashboardModel) renderFocusSessionCard(sess *agent.Session, repoName str
 			waitingReason = item.agent.WaitingReason()
 		}
 	}
-	bottomLeftText := branch
+	// Build the detail string (idle time or waiting reason) shown after the chip.
+	var detailStr string
 	switch {
 	case waitingReason != "":
-		if branch != "" {
-			bottomLeftText = branch + " · " + waitingReason
-		} else {
-			bottomLeftText = waitingReason
-		}
+		detailStr = waitingReason
 	case anyAgent && allIdle && !sess.LastOutputTime().IsZero():
-		idleStr := fmt.Sprintf("idle %dm", int(time.Since(sess.LastOutputTime()).Minutes()))
-		if branch != "" {
-			bottomLeftText = branch + " · " + idleStr
-		} else {
-			bottomLeftText = idleStr
+		detailStr = fmt.Sprintf("idle %dm", int(time.Since(sess.LastOutputTime()).Minutes()))
+	}
+
+	// Build the left part of line 4 using a branch chip when a branch is set.
+	chip := renderBranchChip(branch)
+	var bottomLeft string
+	if chip != "" {
+		chipWidth := lipgloss.Width(chip)
+		// Reserve space: stripe(1) + indent(3) + chip + space + detail + some room for elapsed.
+		detailBudget := width - stripeIndentWidth - chipWidth - 13
+		if detailBudget < 0 {
+			detailBudget = 0
 		}
+		var detailRendered string
+		if detailStr != "" && detailBudget > 1 {
+			detailRendered = " " + StyleSubtle.Render(truncateVisible(detailStr, detailBudget))
+		}
+		bottomLeft = stripe + indent + chip + detailRendered
+	} else {
+		// No branch: fall back to plain subtle text (waiting reason or idle).
+		bottomLeftText := detailStr
+		bottomBudget := width - 12
+		if bottomBudget < 1 {
+			bottomBudget = 1
+		}
+		bottomLeft = stripe + indent + StyleSubtle.Render(truncateVisible(bottomLeftText, bottomBudget))
 	}
-	bottomBudget := width - 12
-	if bottomBudget < 1 {
-		bottomBudget = 1
-	}
-	bottomLeftText = truncateVisible(bottomLeftText, bottomBudget)
-	bottomLeft := stripe + indent + StyleSubtle.Render(bottomLeftText)
 
 	totalMins := int(sess.Elapsed().Minutes())
 	var elapsedStr string
@@ -666,13 +796,24 @@ func (d dashboardModel) renderFocusSessionCard(sess *agent.Session, repoName str
 	} else {
 		elapsedStr = fmt.Sprintf("%dm", totalMins)
 	}
-	line4 := rightAlign(bottomLeft, StyleSubtle.Render(elapsedStr), width)
+	line4 := rightAlign(bottomLeft, StyleSubtle.Render("⏱ "+elapsedStr), width)
 
-	if progress := planProgressLine(sess, descBudget); progress != "" {
-		progressLine := stripe + indent + StyleSubtle.Render(progress)
-		return []string{line1, line2, line3, progressLine, line4}
-	}
 	return []string{line1, line2, line3, line4}
+}
+
+// renderBranchChip returns a visually-tinted chip string for a branch name,
+// prefixed with 🌿. The chip has a 1-cell horizontal padding on each side and
+// a dark background (#1F2937, matching the status bar). Returns "" for an
+// empty branch so callers can omit it cleanly.
+func renderBranchChip(branch string) string {
+	if branch == "" {
+		return ""
+	}
+	return lipgloss.NewStyle().
+		Foreground(ColorText).
+		Background(lipgloss.Color("#1F2937")).
+		Padding(0, 1).
+		Render("🌿 " + branch)
 }
 
 // planningStatusBadge renders the right-aligned status badge for a Planning
@@ -811,64 +952,11 @@ func secondUncompletedTask(plan string) string {
 	return ""
 }
 
-// planProgressLine returns the text content for the optional task-progress
-// line on a Building session card ("▸ first open · next: second open"),
-// truncated to budget display cells. Returns "" when the line should be
-// omitted: session is not LifecycleInProgress, it is reviewable (all tasks
-// done), it has no plan, the plan has no task lines, or all tasks are already
-// done (firstUncompletedTask returns ""). The first-open-task approximation is
-// intentional — deriving the in-flight task from git commits would require
-// per-tick git I/O that the plan cache avoids.
-func planProgressLine(sess *agent.Session, budget int) string {
-	if sess.LifecyclePhase() != agent.LifecycleInProgress {
-		return ""
-	}
-	if sess.IsReviewable() {
-		return ""
-	}
-	plan, present := sess.CachedPlan()
-	if !present {
-		return ""
-	}
-	first := firstUncompletedTask(plan)
-	if first == "" {
-		return ""
-	}
-	text := "▸ " + first
-	if second := secondUncompletedTask(plan); second != "" {
-		text += " · next: " + second
-	}
-	return truncateVisible(text, budget)
-}
-
-// buildingProgressBadge returns a styled "▸ done/total · N active" badge for
-// a Building-phase session that has received ≥1 TodoWrite. Returns "" when
-// todos is empty so the caller can fall back to the normal "N active, M idle"
-// string. Status conditions (error/waiting/asking) must preempt this badge —
-// the caller is responsible for that guard.
-func buildingProgressBadge(todos []agent.TodoItem, activeCount int) string {
-	if len(todos) == 0 {
-		return ""
-	}
-	total := len(todos)
-	done := 0
-	for _, t := range todos {
-		if t.Status == "completed" {
-			done++
-		}
-	}
-	badge := fmt.Sprintf("▸ %d/%d", done, total)
-	if activeCount > 0 {
-		badge += fmt.Sprintf(" · %d active", activeCount)
-	}
-	return StyleSubtle.Render(badge)
-}
-
 // focusTaskDescription chooses the description lines for a session card in
 // focus mode and reports whether they should render in pending (italic) style.
-// For Building-phase sessions that have received ≥1 TodoWrite, line1 shows the
-// active task's activeForm and line2 shows the next pending task. Otherwise
-// the text is word-wrapped into two lines by wrapTwoLines.
+// For Building-phase sessions, line1 is the active task text (raw, no "▸ " prefix
+// — the render layer adds that) and line2 is the next task text (raw, no "↳ next: "
+// prefix). Priority: in_progress TodoItem > plan firstUncompletedTask > fallback.
 func focusTaskDescription(sess *agent.Session, budget int) (line1, line2 string, pending bool) {
 	if sess.LifecyclePhase() == agent.LifecycleInProgress && !sess.IsReviewable() {
 		if ag := sess.PrimaryAgent(); ag != nil {
@@ -895,13 +983,18 @@ func focusTaskDescription(sess *agent.Session, budget int) (line1, line2 string,
 					nextPending = ""
 				}
 				if activeText != "" {
-					l1 := truncateVisible("▸ "+activeText, budget)
-					var l2 string
-					if nextPending != "" {
-						l2 = truncateVisible("next: "+nextPending, budget)
-					}
+					l1 := truncateVisible(activeText, budget)
+					l2 := truncateVisible(nextPending, budget)
 					return l1, l2, false
 				}
+			}
+		}
+		// No todos: fall back to plan checkboxes.
+		if plan, present := sess.CachedPlan(); present {
+			first := firstUncompletedTask(plan)
+			if first != "" {
+				second := secondUncompletedTask(plan)
+				return truncateVisible(first, budget), truncateVisible(second, budget), false
 			}
 		}
 	}
