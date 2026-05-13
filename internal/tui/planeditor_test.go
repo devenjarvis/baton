@@ -374,6 +374,53 @@ func TestPlanEditor_FoldedSectionsCollapseToMarker(t *testing.T) {
 	}
 }
 
+// TestPlanEditor_TabTogglesFoldAtViewportTop verifies that pressing tab in
+// scroll mode toggles the fold of whichever section contains the viewport top.
+func TestPlanEditor_TabTogglesFoldAtViewportTop(t *testing.T) {
+	sess, _ := newEditorTestSession(t)
+	const plan = "# Goal\nGoal body\n\n## Spec\nspec body\n\n## Context\nctx body\n"
+	if err := sess.WritePlan(plan); err != nil {
+		t.Fatalf("WritePlan: %v", err)
+	}
+	editor := newPlanEditor(sess, "", 80, 30)
+
+	// Initially: Goal expanded, Spec expanded, Context collapsed.
+	if editor.folds["Goal"] {
+		t.Fatal("Goal should be expanded by default")
+	}
+	if editor.folds["Spec"] {
+		t.Fatal("Spec should be expanded by default")
+	}
+	if !editor.folds["Context"] {
+		t.Fatal("Context should be collapsed by default")
+	}
+
+	// Viewport top is at scrollOff=0 → Goal section; pressing tab collapses it.
+	editor.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	if !editor.folds["Goal"] {
+		t.Errorf("after tab at Goal, folds[Goal] = false, want true (collapsed)")
+	}
+
+	// Move viewport to Spec's heading display line, then tab toggles Spec.
+	lines := editor.displayLines()
+	specDisplayLine := -1
+	for i, l := range lines {
+		stripped := testutil.StripANSI(l)
+		if strings.Contains(stripped, "Spec") && strings.Contains(stripped, "##") {
+			specDisplayLine = i
+			break
+		}
+	}
+	if specDisplayLine < 0 {
+		t.Fatal("could not find Spec heading in displayLines")
+	}
+	editor.scrollOff = specDisplayLine
+	editor.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	if !editor.folds["Spec"] {
+		t.Errorf("after tab at Spec, folds[Spec] = false, want true (collapsed)")
+	}
+}
+
 // TestPlanEditor_ScrollModeStylesHeadings asserts that scroll-mode rendering
 // actually emits ANSI styling for known markdown constructs. Without this,
 // a regression that silently nil-checks the renderer or short-circuits
