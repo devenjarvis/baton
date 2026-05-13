@@ -1732,6 +1732,35 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.reviewTaskCursor--
 				}
 				return a, nil
+			case "f":
+				// Toggle the user-flag on the cursor row. The flag survives
+				// panel close/re-open and is folded into the `b` rework prompt
+				// alongside any AI concerns/fails.
+				entry := a.reviewDiffCache[a.reviewSession.ID]
+				if entry == nil {
+					return a, nil
+				}
+				group := reviewTaskGroupAtCursor(entry, a.reviewTaskCursor)
+				if group == nil {
+					// Synthetic Overview row (no plan, no commits): nothing to flag.
+					return a, nil
+				}
+				idx := group.taskIndex
+				if entry.verdicts == nil {
+					entry.verdicts = make(map[int]*taskVerdictRecord)
+				}
+				rec := entry.verdicts[idx]
+				if rec == nil {
+					rec = &taskVerdictRecord{state: verdictPending}
+					entry.verdicts[idx] = rec
+				}
+				rec.userFlagged = !rec.userFlagged
+				return a, nil
+			case "b":
+				// Back to build: spawn a new agent in the existing worktree with
+				// a prompt built from the AI reviewer's concerns/fails plus any
+				// rows the user flagged with `f`. Session returns to InProgress.
+				return a.addressReviewFeedback(a.reviewSession)
 			case "enter", "space":
 				// Drill into the selected task's diff. Opens the diff browser
 				// filtered to the commits for that task; esc returns to the
@@ -4408,6 +4437,155 @@ func buildFeedbackPrompt(entry *prCacheEntry) string {
 	return "The following issues need to be addressed on this PR:\n\n" + b.String() + "Please fix each issue, commit your changes, and push."
 }
 
+// addressReviewFeedback spawns a new agent in the session's existing worktree
+// with a prompt synthesized from the review panel's AI verdicts and user flags,
+// then transitions the session back to LifecycleInProgress. The reviewDiffCache
+// entry is cleared so the next entry into review re-runs the AI reviewer on the
+// new commit history. Mirrors addressFeedback (the shipping→build path) but
+// draws from in-panel verdicts rather than PR state.
+func (a *App) addressReviewFeedback(sess *agent.Session) (tea.Model, tea.Cmd) {
+	if sess == nil {
+		return a, nil
+	}
+	entry := a.reviewDiffCache[sess.ID]
+	prompt := buildReviewReworkPrompt(entry)
+	if prompt == "" {
+		a.setError("no tasks flagged or marked concerns/fail")
+		return a, nil
+	}
+	repoPath := a.repoPathForSession(sess.ID)
+	if repoPath == "" {
+		a.setError("no repo found for session")
+		return a, nil
+	}
+	mgr := a.managers[repoPath]
+	if mgr == nil {
+		a.setError("session manager not found")
+		return a, nil
+	}
+	resolved := a.resolvedCache[repoPath]
+	fixedW := a.dashboard.fixedTermWidth()
+	fixedH := a.dashboard.fixedTermHeight()
+	if fixedW <= 0 || fixedH <= 0 {
+		a.setError("terminal size not yet known; try again")
+		return a, nil
+	}
+	cfg := agent.Config{
+		Rows:              fixedH,
+		Cols:              fixedW,
+		BypassPermissions: resolved.BypassPermissions,
+		AgentProgram:      resolved.AgentProgram,
+		AgentModel:        resolved.AgentModel,
+		BuildSystemPrompt: resolved.BuildSystemPrompt,
+		Task:              prompt,
+	}
+	sessID := sess.ID
+	// Drop the panel and the cached diff/verdicts: when the user returns to
+	// review after the rework round, fetchReviewDiffCmd will re-parse the plan
+	// and re-run verdicts over the augmented commit history.
+	a.reviewSession = nil
+	a.reviewTaskCursor = 0
+	delete(a.reviewDiffCache, sessID)
+	a.dashboard.panelFocus = focusList
+	return a, func() tea.Msg {
+		ag, err := mgr.AddAgent(sessID, cfg)
+		if err != nil {
+			return createResultMsg{err: err}
+		}
+		sess.SetLifecyclePhase(agent.LifecycleInProgress)
+		return createResultMsg{sessionID: sessID, agentID: ag.ID}
+	}
+}
+
+// buildReviewReworkPrompt synthesizes a builder-agent prompt from the per-task
+// verdicts and user flags in entry. Returns "" when no task qualifies (no flag
+// set and no AI verdict of concerns/fail), so the caller can surface an error.
+//
+// The prompt instructs the agent to use `[task N]` commit prefixes so a
+// subsequent review groups round-2 commits under the same task index — this is
+// what keeps the build↔review round-trip coherent.
+func buildReviewReworkPrompt(entry *reviewDiffEntry) string {
+	if entry == nil || entry.verdicts == nil {
+		return ""
+	}
+	// Build a taskIndex → text lookup, including the special index 0 used for
+	// commits without a `[task N]` prefix.
+	taskText := map[int]string{0: "Other changes"}
+	for _, t := range entry.tasks {
+		taskText[t.Index] = t.Text
+	}
+
+	type entryRow struct {
+		idx        int
+		text       string
+		flagged    bool
+		hasVerdict bool
+		kind       agent.VerdictKind
+		rationale  string
+	}
+	rows := make([]entryRow, 0, len(entry.verdicts))
+	for idx, rec := range entry.verdicts {
+		if rec == nil {
+			continue
+		}
+		hasVerdict := rec.state == verdictDone &&
+			(rec.verdict.Kind == agent.VerdictConcerns || rec.verdict.Kind == agent.VerdictFail)
+		if !rec.userFlagged && !hasVerdict {
+			continue
+		}
+		text, ok := taskText[idx]
+		if !ok {
+			text = fmt.Sprintf("(task %d)", idx)
+		}
+		rows = append(rows, entryRow{
+			idx:        idx,
+			text:       text,
+			flagged:    rec.userFlagged,
+			hasVerdict: hasVerdict,
+			kind:       rec.verdict.Kind,
+			rationale:  strings.TrimSpace(rec.verdict.Rationale),
+		})
+	}
+	if len(rows) == 0 {
+		return ""
+	}
+	// Stable ordering: by task index ascending, with "Other changes" (index 0)
+	// last so it doesn't lead the list when present.
+	sort.SliceStable(rows, func(i, j int) bool {
+		a, b := rows[i].idx, rows[j].idx
+		if a == 0 {
+			return false
+		}
+		if b == 0 {
+			return true
+		}
+		return a < b
+	})
+
+	var b strings.Builder
+	b.WriteString("The following tasks need rework based on the review:\n\n")
+	for _, r := range rows {
+		if r.idx > 0 {
+			fmt.Fprintf(&b, "## Task %d: %s\n", r.idx, r.text)
+		} else {
+			b.WriteString("## Other changes\n")
+		}
+		if r.hasVerdict {
+			fmt.Fprintf(&b, "AI reviewer verdict: %s\n", r.kind)
+			if r.rationale != "" {
+				fmt.Fprintf(&b, "Rationale: %s\n", r.rationale)
+			}
+		}
+		if r.flagged {
+			b.WriteString("Flagged by you: yes\n")
+		}
+		b.WriteByte('\n')
+	}
+	b.WriteString("Please address each task above. Re-read `.claude/plan.md` for full context.\n")
+	b.WriteString("When you commit fixes, prefix each commit subject with `[task N]` matching the task numbers above so the next review groups commits correctly. For \"Other changes\", commit without a `[task N]` prefix.\n")
+	return b.String()
+}
+
 // mergePRCmd returns a Cmd that merges the PR for the given session using the
 // repo-configured merge method (default squash). The caller is responsible for
 // any merge-readiness gating before invoking this.
@@ -4584,6 +4762,10 @@ type taskVerdictRecord struct {
 	state   verdictState
 	verdict agent.ReviewVerdict
 	err     error
+	// userFlagged is set when the human reviewer presses `f` on this row to
+	// override the AI verdict — the task gets included in the next
+	// review→build feedback prompt regardless of what the AI returned.
+	userFlagged bool
 }
 
 // taskReviewGroup holds one plan task's commits and their resolved diff stats.

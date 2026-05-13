@@ -29,6 +29,11 @@ func verdictBadge(rec *taskVerdictRecord) (icon, label string, style lipgloss.St
 	if rec == nil {
 		return "⋯", "Pending", StyleSubtle
 	}
+	// User flag wins over the AI verdict: the human reviewer is explicitly
+	// asking for rework on this task.
+	if rec.userFlagged {
+		return "⚑", "flagged", lipgloss.NewStyle().Foreground(ColorWarning)
+	}
 	switch rec.state {
 	case verdictPending:
 		return "⋯", "Pending", StyleSubtle
@@ -199,6 +204,8 @@ func renderReviewPanel(sess *agent.Session, entry *reviewDiffEntry, width, heigh
 	hints := "  " +
 		pHint +
 		"   " + lipgloss.NewStyle().Foreground(lipgloss.Color("#7ec8e3")).Render("t") + StyleSubtle.Render(" — open agent terminal") +
+		"   " + lipgloss.NewStyle().Foreground(ColorWarning).Render("b") + StyleSubtle.Render(" — back to build") +
+		"   " + StyleSubtle.Render("f — flag task") +
 		"   " + StyleSubtle.Render("c — mark complete") +
 		"   " + StyleSubtle.Render("e — open in editor") +
 		"   " + StyleSubtle.Render("d — defer") +
@@ -285,7 +292,11 @@ func renderTaskListPane(entry *reviewDiffEntry, width, height, cursor int) []str
 		}
 	}
 
-	cursorStyle := lipgloss.NewStyle().Background(lipgloss.Color("#2a2a3a")).Bold(true)
+	// Selection affordance: a vertical bar in primary color on each side of the
+	// cursor row. We reserve 2 columns globally (one per side) so moving the
+	// cursor never reflows text — both selected and unselected rows have the
+	// same content budget.
+	cursorBar := lipgloss.NewStyle().Foreground(ColorPrimary).Render("│")
 	subtleGreen := StyleSuccess
 	subtleRed := StyleError
 
@@ -339,8 +350,10 @@ func renderTaskListPane(entry *reviewDiffEntry, width, height, cursor int) []str
 		iconW := ansi.StringWidth(iconStr)
 		labelW := len(label)
 		statW := ansi.StringWidth(statStr)
-		// 2 prefix spaces + icon + space + label + space + ... + 2 sep + stat
-		overhead := 2 + iconW + 1 + labelW + 1 + 2 + statW
+		// 1 outer space + 1 border + icon + space + label + space + ... + 2 sep
+		// + stat + 1 border + 1 outer space. The +4 over the prior layout
+		// reserves columns for the cursor border on both sides.
+		overhead := 4 + iconW + 1 + labelW + 1 + 2 + statW
 		maxTextW := width - overhead
 		if maxTextW < 4 {
 			maxTextW = 4
@@ -351,7 +364,7 @@ func renderTaskListPane(entry *reviewDiffEntry, width, height, cursor int) []str
 		rowText := iconStr + " " + StyleSubtle.Render(label) + " " + textStr
 		if statStr != "" {
 			usedW := iconW + 1 + labelW + 1 + ansi.StringWidth(textStr)
-			padW := width - 2 - usedW - 2 - statW
+			padW := width - 4 - usedW - 2 - statW
 			if padW < 1 {
 				padW = 1
 			}
@@ -359,13 +372,14 @@ func renderTaskListPane(entry *reviewDiffEntry, width, height, cursor int) []str
 		}
 
 		if selected {
-			padW := width - 2 - ansi.StringWidth(rowText)
-			if padW < 0 {
-				padW = 0
+			contentW := width - 4
+			if w := ansi.StringWidth(rowText); w < contentW {
+				rowText += strings.Repeat(" ", contentW-w)
 			}
-			rowText = cursorStyle.Render(rowText + strings.Repeat(" ", padW))
+			lines = append(lines, " "+cursorBar+rowText+cursorBar+" ")
+		} else {
+			lines = append(lines, "  "+rowText)
 		}
-		lines = append(lines, "  "+rowText)
 	}
 
 	return lines
