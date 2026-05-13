@@ -269,9 +269,9 @@ func TestPlanEditor_ScrollAndEditModeUseSameWidth(t *testing.T) {
 
 // TestPlanEditor_DisplayLineCountAgreesWithRenderer asserts that the editor's
 // scroll-mode display lines exactly match a direct mdrender call on the same
-// content+width. If this drifts apart the i/esc toggle no longer guarantees
-// "scroll position preserved" — the post-wrap row count would change between
-// modes, scrolling the user past content unexpectedly.
+// content+width when no sections are folded. Folding intentionally elides
+// content lines; this test pins the wrap-parity invariant for the fully-
+// expanded case so the i/esc mode toggle guarantees "scroll position preserved".
 func TestPlanEditor_DisplayLineCountAgreesWithRenderer(t *testing.T) {
 	prev := lipgloss.ColorProfile()
 	lipgloss.SetColorProfile(termenv.TrueColor)
@@ -289,11 +289,312 @@ func TestPlanEditor_DisplayLineCountAgreesWithRenderer(t *testing.T) {
 	}
 	editor := newPlanEditor(sess, "", 60, 30)
 
+	// Expand all folds before comparing: folding intentionally elides content
+	// lines, so the line-count invariant only holds when nothing is folded.
+	for k := range editor.folds {
+		editor.folds[k] = false
+	}
+	editor.invalidateDisplayCache()
+
 	scrollLines := editor.displayLines()
 	directLines := mdrender.New("monokai").RenderLines(editor.textarea.Value(), editor.contentWidth())
 	if len(scrollLines) != len(directLines) {
 		t.Errorf("editor.displayLines()=%d vs direct mdrender.RenderLines=%d — scroll and edit modes will desync",
 			len(scrollLines), len(directLines))
+	}
+}
+
+// TestPlanEditor_ParsesCanonicalSectionsAndAppliesDefaults verifies that
+// parsePlanSections finds all eight canonical H1/H2 headings and that
+// defaultSectionFolded gives the right initial fold state: Goal (H1), Spec, and
+// Tasks are expanded; every other H2 is collapsed.
+func TestPlanEditor_ParsesCanonicalSectionsAndAppliesDefaults(t *testing.T) {
+	sess, _ := newEditorTestSession(t)
+	const plan = "# Goal\nGoal body\n\n## Spec\nspec\n\n## Context\nctx\n\n## Reuse\nreuse\n\n## Risks\nrisks\n\n## Tasks\n- [ ] t1\n\n## Verification\nverify\n\n## Not in scope\nnot\n"
+	if err := sess.WritePlan(plan); err != nil {
+		t.Fatalf("WritePlan: %v", err)
+	}
+	editor := newPlanEditor(sess, "", 80, 30)
+	if len(editor.sections) != 8 {
+		t.Fatalf("sections count = %d, want 8", len(editor.sections))
+	}
+	if editor.sections[0].heading != "Goal" || editor.sections[0].level != 1 {
+		t.Errorf("sections[0] = {%q, level %d}, want Goal level 1", editor.sections[0].heading, editor.sections[0].level)
+	}
+	if editor.sections[1].heading != "Spec" {
+		t.Errorf("sections[1].heading = %q, want Spec", editor.sections[1].heading)
+	}
+	if editor.sections[0].headingLine != 0 {
+		t.Errorf("sections[0].headingLine = %d, want 0", editor.sections[0].headingLine)
+	}
+	expanded := []string{"Goal", "Spec", "Tasks"}
+	for _, name := range expanded {
+		if editor.folds[name] {
+			t.Errorf("folds[%q] = true, want false (expanded by default)", name)
+		}
+	}
+	collapsed := []string{"Context", "Reuse", "Risks", "Verification", "Not in scope"}
+	for _, name := range collapsed {
+		if !editor.folds[name] {
+			t.Errorf("folds[%q] = false, want true (collapsed by default)", name)
+		}
+	}
+}
+
+// TestPlanEditor_FoldedSectionsCollapseToMarker verifies that a collapsed
+// section renders as a single line containing the ▶ glyph, the heading, and a
+// "N lines" suffix, while its content is hidden; expanded sections show their
+// content and use the ▼ glyph.
+func TestPlanEditor_FoldedSectionsCollapseToMarker(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	sess, _ := newEditorTestSession(t)
+	const plan = "# Goal\nGoal body\n\n## Context\nctx line 1\nctx line 2\nctx line 3\n"
+	if err := sess.WritePlan(plan); err != nil {
+		t.Fatalf("WritePlan: %v", err)
+	}
+	editor := newPlanEditor(sess, "", 80, 30)
+
+	rendered := testutil.StripANSI(strings.Join(editor.displayLines(), "\n"))
+
+	// Goal (H1) is expanded — body should be visible and ▼ present.
+	if !strings.Contains(rendered, "Goal body") {
+		t.Errorf("Goal body missing from rendered output:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "▼") {
+		t.Errorf("expand glyph ▼ missing from rendered output:\n%s", rendered)
+	}
+	// Context (H2) is collapsed by default — heading + lines count visible, content hidden.
+	if !strings.Contains(rendered, "▶") {
+		t.Errorf("collapse glyph ▶ missing from rendered output:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Context") {
+		t.Errorf("Context heading missing from rendered output:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "3 lines") {
+		t.Errorf("line-count suffix '3 lines' missing:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "ctx line 1") {
+		t.Errorf("collapsed section content 'ctx line 1' should be hidden:\n%s", rendered)
+	}
+}
+
+// TestPlanEditor_FoldedSectionMidPlanCountsBlankLine verifies that a blank line
+// before the next heading is counted as a hidden line (it's real content, not a
+// strings.Split artifact). The trailing-blank strip applies only to the last
+// section whose nextLine == len(srcLines).
+func TestPlanEditor_FoldedSectionMidPlanCountsBlankLine(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	sess, _ := newEditorTestSession(t)
+	// Context has 2 content lines + 1 blank before Tasks — should show 3 lines.
+	const plan = "# Goal\n\n## Context\nctx 1\nctx 2\n\n## Tasks\ntask\n"
+	if err := sess.WritePlan(plan); err != nil {
+		t.Fatalf("WritePlan: %v", err)
+	}
+	editor := newPlanEditor(sess, "", 80, 30)
+	rendered := testutil.StripANSI(strings.Join(editor.displayLines(), "\n"))
+	if !strings.Contains(rendered, "3 lines") {
+		t.Errorf("mid-plan collapsed section should show '3 lines' (including blank before next heading):\n%s", rendered)
+	}
+}
+
+// TestPlanEditor_TabTogglesFoldAtViewportTop verifies that pressing tab in
+// scroll mode toggles the fold of whichever section contains the viewport top.
+func TestPlanEditor_TabTogglesFoldAtViewportTop(t *testing.T) {
+	sess, _ := newEditorTestSession(t)
+	const plan = "# Goal\nGoal body\n\n## Spec\nspec body\n\n## Context\nctx body\n"
+	if err := sess.WritePlan(plan); err != nil {
+		t.Fatalf("WritePlan: %v", err)
+	}
+	editor := newPlanEditor(sess, "", 80, 30)
+
+	// Initially: Goal expanded, Spec expanded, Context collapsed.
+	if editor.folds["Goal"] {
+		t.Fatal("Goal should be expanded by default")
+	}
+	if editor.folds["Spec"] {
+		t.Fatal("Spec should be expanded by default")
+	}
+	if !editor.folds["Context"] {
+		t.Fatal("Context should be collapsed by default")
+	}
+
+	// Viewport top is at scrollOff=0 → Goal section; pressing tab collapses it.
+	editor.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	if !editor.folds["Goal"] {
+		t.Errorf("after tab at Goal, folds[Goal] = false, want true (collapsed)")
+	}
+
+	// Move viewport to Spec's heading display line, then tab toggles Spec.
+	lines := editor.displayLines()
+	specDisplayLine := -1
+	for i, l := range lines {
+		stripped := testutil.StripANSI(l)
+		if strings.Contains(stripped, "Spec") && !strings.Contains(stripped, "Goal") {
+			specDisplayLine = i
+			break
+		}
+	}
+	if specDisplayLine < 0 {
+		t.Fatal("could not find Spec heading in displayLines")
+	}
+	editor.scrollOff = specDisplayLine
+	editor.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	if !editor.folds["Spec"] {
+		t.Errorf("after tab at Spec, folds[Spec] = false, want true (collapsed)")
+	}
+}
+
+// TestPlanEditor_BracketsJumpBetweenSections verifies that ] and [ step the
+// viewport to the next and previous section headings respectively, clamping at
+// the ends.
+func TestPlanEditor_BracketsJumpBetweenSections(t *testing.T) {
+	sess, _ := newEditorTestSession(t)
+	// Use non-default folds: all expanded so we get display lines between sections.
+	const plan = "# Goal\nGoal body\n\n## Spec\nspec body\n\n## Tasks\ntask body\n"
+	if err := sess.WritePlan(plan); err != nil {
+		t.Fatalf("WritePlan: %v", err)
+	}
+	// height=8 gives bodyHeight=3, so clampScroll allows scrolling (content > viewport).
+	editor := newPlanEditor(sess, "", 80, 8)
+	// Expand all sections so navigation has multiple display lines to cross.
+	for k := range editor.folds {
+		editor.folds[k] = false
+	}
+	editor.invalidateDisplayCache()
+	editor.scrollOff = 0
+
+	lines := editor.displayLines()
+	if len(lines) == 0 {
+		t.Fatal("no display lines")
+	}
+
+	// Find display-line indices for ## Spec and ## Tasks headings.
+	specLine, tasksLine := -1, -1
+	for i, l := range lines {
+		stripped := testutil.StripANSI(l)
+		if strings.Contains(stripped, "## Spec") && specLine < 0 {
+			specLine = i
+		}
+		if strings.Contains(stripped, "## Tasks") && tasksLine < 0 {
+			tasksLine = i
+		}
+	}
+	if specLine < 0 || tasksLine < 0 {
+		t.Fatalf("couldn't find section headings; specLine=%d tasksLine=%d\nlines:\n%s",
+			specLine, tasksLine, strings.Join(lines, "\n"))
+	}
+
+	// ] from top → Spec heading.
+	editor.Update(tea.KeyPressMsg{Code: ']', Text: "]"})
+	if editor.scrollOff != specLine {
+		t.Errorf("] from 0: scrollOff = %d, want %d (Spec)", editor.scrollOff, specLine)
+	}
+
+	// ] again → Tasks heading.
+	editor.Update(tea.KeyPressMsg{Code: ']', Text: "]"})
+	if editor.scrollOff != tasksLine {
+		t.Errorf("] from Spec: scrollOff = %d, want %d (Tasks)", editor.scrollOff, tasksLine)
+	}
+
+	// ] at last section → no change.
+	editor.Update(tea.KeyPressMsg{Code: ']', Text: "]"})
+	if editor.scrollOff != tasksLine {
+		t.Errorf("] at last section: scrollOff = %d, want %d (clamp)", editor.scrollOff, tasksLine)
+	}
+
+	// [ twice → back to top (Goal heading).
+	editor.Update(tea.KeyPressMsg{Code: '[', Text: "["})
+	if editor.scrollOff != specLine {
+		t.Errorf("[ from Tasks: scrollOff = %d, want %d (Spec)", editor.scrollOff, specLine)
+	}
+	editor.Update(tea.KeyPressMsg{Code: '[', Text: "["})
+	if editor.scrollOff != 0 {
+		t.Errorf("[ from Spec: scrollOff = %d, want 0 (Goal)", editor.scrollOff)
+	}
+}
+
+// TestPlanEditor_ShiftZTogglesAllFolds verifies that pressing Z collapses every
+// section when any is expanded, and expands every section when all are
+// collapsed.
+func TestPlanEditor_ShiftZTogglesAllFolds(t *testing.T) {
+	sess, _ := newEditorTestSession(t)
+	const plan = "# Goal\nGoal body\n\n## Spec\nspec\n\n## Context\nctx\n\n## Reuse\nreuse\n\n## Risks\nrisks\n\n## Tasks\n- [ ] t1\n\n## Verification\nverify\n\n## Not in scope\nnot\n"
+	if err := sess.WritePlan(plan); err != nil {
+		t.Fatalf("WritePlan: %v", err)
+	}
+	editor := newPlanEditor(sess, "", 80, 30)
+
+	// Default: Goal/Spec/Tasks expanded, others collapsed. Press Z → all collapsed.
+	editor.Update(tea.KeyPressMsg{Code: 'Z', Text: "Z"})
+	for _, s := range editor.sections {
+		if !editor.folds[s.heading] {
+			t.Errorf("after first Z, folds[%q] = false, want true (all collapsed)", s.heading)
+		}
+	}
+
+	// All collapsed. Press Z again → all expanded.
+	editor.Update(tea.KeyPressMsg{Code: 'Z', Text: "Z"})
+	for _, s := range editor.sections {
+		if editor.folds[s.heading] {
+			t.Errorf("after second Z, folds[%q] = true, want false (all expanded)", s.heading)
+		}
+	}
+}
+
+// TestPlanEditor_ReloadPreservesFoldsByHeading verifies that after Reload(),
+// existing fold state is preserved for headings that survive the edit, and
+// new headings get their default fold policy.
+func TestPlanEditor_ReloadPreservesFoldsByHeading(t *testing.T) {
+	sess, _ := newEditorTestSession(t)
+	const plan1 = "# Goal\n## Spec\n## Tasks\n"
+	if err := sess.WritePlan(plan1); err != nil {
+		t.Fatalf("WritePlan: %v", err)
+	}
+	editor := newPlanEditor(sess, "", 80, 30)
+
+	// Manually collapse Spec (user action).
+	editor.folds["Spec"] = true
+
+	// Write a new plan with an extra section.
+	const plan2 = "# Goal\n## Spec\n## Tasks\n## Extra\n"
+	if err := sess.WritePlan(plan2); err != nil {
+		t.Fatalf("WritePlan plan2: %v", err)
+	}
+	editor.Reload()
+
+	if !editor.folds["Spec"] {
+		t.Error("folds[Spec] should remain true after Reload (user-collapsed)")
+	}
+	if editor.folds["Goal"] {
+		t.Error("folds[Goal] should remain false after Reload (H1 default)")
+	}
+	if editor.folds["Tasks"] {
+		t.Error("folds[Tasks] should remain false after Reload (default expanded)")
+	}
+	if !editor.folds["Extra"] {
+		t.Error("folds[Extra] should be true after Reload (new H2 default-collapsed)")
+	}
+}
+
+// TestPlanEditor_ScrollFooterIncludesFoldHints verifies that the footer row in
+// scroll mode mentions the fold-navigation key bindings.
+func TestPlanEditor_ScrollFooterIncludesFoldHints(t *testing.T) {
+	sess, _ := newEditorTestSession(t)
+	if err := sess.WritePlan("# Goal\nsome content\n"); err != nil {
+		t.Fatalf("WritePlan: %v", err)
+	}
+	editor := newPlanEditor(sess, "", 80, 30)
+	view := testutil.StripANSI(editor.View())
+	for _, want := range []string{"tab", "fold", "[", "]", "Z", "toggle all"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("footer hint %q missing from view:\n%s", want, view)
+		}
 	}
 }
 
