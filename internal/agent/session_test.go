@@ -1460,3 +1460,86 @@ func TestSession_CachedPlan_RestorePrevPlanRefreshesCache(t *testing.T) {
 		t.Errorf("after RestorePrevPlan, cache = %q, want %q", plan, v1)
 	}
 }
+
+func TestParsePlanSections(t *testing.T) {
+	fullPlan := `# Goal
+Fix the auth redirect bug.
+
+## Spec
+1. Users are redirected correctly.
+2. Tokens are validated.
+
+## Context
+internal/auth/handler.go:42
+
+## Reuse
+existing middleware helpers
+
+## Risks
+Token expiry edge case
+
+## Tasks
+- [ ] write handler test
+- [ ] implement redirect
+
+## Verification
+go test -race ./internal/auth
+
+## Not in scope
+OAuth2 support`
+
+	t.Run("full plan returns all four sections", func(t *testing.T) {
+		s := ParsePlanSections(fullPlan)
+		if s.Goal != "Fix the auth redirect bug." {
+			t.Errorf("Goal = %q, want %q", s.Goal, "Fix the auth redirect bug.")
+		}
+		if !strings.Contains(s.Spec, "Users are redirected correctly.") {
+			t.Errorf("Spec missing expected content, got %q", s.Spec)
+		}
+		if !strings.Contains(s.Verification, "go test -race ./internal/auth") {
+			t.Errorf("Verification missing expected content, got %q", s.Verification)
+		}
+		if !strings.Contains(s.NotInScope, "OAuth2 support") {
+			t.Errorf("NotInScope missing expected content, got %q", s.NotInScope)
+		}
+	})
+
+	t.Run("missing Verification returns empty string", func(t *testing.T) {
+		plan := "# Goal\nDo a thing.\n\n## Spec\nSome spec.\n\n## Tasks\n- [ ] task\n"
+		s := ParsePlanSections(plan)
+		if s.Verification != "" {
+			t.Errorf("Verification = %q, want empty", s.Verification)
+		}
+		if s.Goal != "Do a thing." {
+			t.Errorf("Goal = %q, want %q", s.Goal, "Do a thing.")
+		}
+	})
+
+	t.Run("only Goal populates Goal, rest empty", func(t *testing.T) {
+		plan := "# Goal\nOnly the goal here.\n"
+		s := ParsePlanSections(plan)
+		if s.Goal != "Only the goal here." {
+			t.Errorf("Goal = %q, want %q", s.Goal, "Only the goal here.")
+		}
+		if s.Spec != "" {
+			t.Errorf("Spec = %q, want empty", s.Spec)
+		}
+		if s.Verification != "" {
+			t.Errorf("Verification = %q, want empty", s.Verification)
+		}
+		if s.NotInScope != "" {
+			t.Errorf("NotInScope = %q, want empty", s.NotInScope)
+		}
+	})
+
+	t.Run("heading lines excluded from body", func(t *testing.T) {
+		plan := "# Goal\nGoal text.\n\n## Spec\nSpec text.\n"
+		s := ParsePlanSections(plan)
+		if strings.Contains(s.Goal, "# Goal") {
+			t.Errorf("Goal body contains heading, got %q", s.Goal)
+		}
+		if strings.Contains(s.Spec, "## Spec") {
+			t.Errorf("Spec body contains heading, got %q", s.Spec)
+		}
+	})
+}

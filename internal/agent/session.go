@@ -881,6 +881,81 @@ func ParsePlanTasks(plan string) []PlanTask {
 	return tasks
 }
 
+// PlanSections holds the named sections extracted from a plan markdown document.
+type PlanSections struct {
+	Goal, Spec, Verification, NotInScope string
+}
+
+// ParsePlanSections extracts Goal, Spec, Verification, and Not in scope bodies
+// from plan markdown. It uses a simple state machine: each recognized heading
+// (`# Goal`, `## Spec`, `## Verification`, `## Not in scope`) switches the
+// active section; lines between headings accumulate into the corresponding
+// field. The heading lines themselves are excluded. Body text is trimmed of
+// trailing whitespace.
+func ParsePlanSections(plan string) PlanSections {
+	type field int
+	const (
+		fieldNone field = iota
+		fieldGoal
+		fieldSpec
+		fieldVerification
+		fieldNotInScope
+	)
+
+	var (
+		cur    field
+		goal   []string
+		spec   []string
+		verif  []string
+		notin  []string
+	)
+
+	for _, line := range strings.Split(plan, "\n") {
+		trimmed := strings.TrimSpace(line)
+		switch trimmed {
+		case "# Goal":
+			cur = fieldGoal
+			continue
+		case "## Spec":
+			cur = fieldSpec
+			continue
+		case "## Verification":
+			cur = fieldVerification
+			continue
+		case "## Not in scope":
+			cur = fieldNotInScope
+			continue
+		default:
+			// Any other heading (## Context, ## Reuse, etc.) ends the current section.
+			if strings.HasPrefix(trimmed, "# ") || strings.HasPrefix(trimmed, "## ") {
+				cur = fieldNone
+				continue
+			}
+		}
+
+		switch cur {
+		case fieldGoal:
+			goal = append(goal, line)
+		case fieldSpec:
+			spec = append(spec, line)
+		case fieldVerification:
+			verif = append(verif, line)
+		case fieldNotInScope:
+			notin = append(notin, line)
+		}
+	}
+
+	join := func(lines []string) string {
+		return strings.TrimSpace(strings.Join(lines, "\n"))
+	}
+	return PlanSections{
+		Goal:         join(goal),
+		Spec:         join(spec),
+		Verification: join(verif),
+		NotInScope:   join(notin),
+	}
+}
+
 // taskSubjectRE matches "[task N]" at the start of a commit subject where N is
 // a positive integer. Case-insensitive so "[Task 3]" is also accepted.
 var taskSubjectRE = regexp.MustCompile(`(?i)^\[task\s+(\d+)\]`)
