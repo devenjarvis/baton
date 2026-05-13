@@ -811,8 +811,8 @@ func TestRenderFocusSessionCard_StatusGlyphMapping(t *testing.T) {
 }
 
 // TestRenderFocusSessionCard_BranchChipAndElapsedGlyph verifies that line 4
-// contains a 🌿 chip before the branch name (with a background tint), ⏱ before
-// the elapsed token, and no chip when the branch is empty.
+// contains a ⎇ label before the branch name (no background tint), ⏱ before
+// the elapsed token, and no label when the branch is empty.
 func TestRenderFocusSessionCard_BranchChipAndElapsedGlyph(t *testing.T) {
 	prev := lipgloss.ColorProfile()
 	lipgloss.SetColorProfile(termenv.TrueColor)
@@ -838,9 +838,9 @@ func TestRenderFocusSessionCard_BranchChipAndElapsedGlyph(t *testing.T) {
 	line4Raw := card[3]
 	line4 := ansi.Strip(line4Raw)
 
-	// 🌿 immediately before branch name.
-	if !strings.Contains(line4, "🌿") {
-		t.Errorf("line 4 should contain 🌿 glyph, got %q", line4)
+	// ⎇ immediately before branch name (no background fill).
+	if !strings.Contains(line4, "⎇") {
+		t.Errorf("line 4 should contain ⎇ glyph, got %q", line4)
 	}
 	if !strings.Contains(line4, "add-dark-mode") {
 		t.Errorf("line 4 should contain branch name, got %q", line4)
@@ -851,12 +851,12 @@ func TestRenderFocusSessionCard_BranchChipAndElapsedGlyph(t *testing.T) {
 		t.Errorf("line 4 should contain ⏱ glyph, got %q", line4)
 	}
 
-	// Branch chip carries a background color escape (48;2; = background TrueColor).
-	if !strings.Contains(line4Raw, "48;2;") {
-		t.Errorf("line 4 raw should contain background ANSI sequence (48;2;) for chip tint, got %q", line4Raw)
+	// Branch label must NOT carry a background color escape (48;2; = background TrueColor).
+	if strings.Contains(line4Raw, "48;2;") {
+		t.Errorf("line 4 raw must NOT contain background ANSI sequence (48;2;) — branch is now a plain label, got %q", line4Raw)
 	}
 
-	// No branch → no chip.
+	// No branch → no label.
 	sessNoBranch := agent.NewSessionForTest("s2", "no-branch-session")
 	sessNoBranch.SetLifecyclePhase(agent.LifecycleInProgress)
 	ag2 := sessNoBranch.AddTestAgent("a-2", false, agent.StatusActive)
@@ -867,7 +867,7 @@ func TestRenderFocusSessionCard_BranchChipAndElapsedGlyph(t *testing.T) {
 	}
 	card2 := d2.renderFocusSessionCard(sessNoBranch, "", false, 120)
 	line4b := ansi.Strip(card2[3])
-	if strings.Contains(line4b, "🌿") {
-		t.Errorf("no-branch session should not render 🌿 chip, got %q", line4b)
+	if strings.Contains(line4b, "⎇") {
+		t.Errorf("no-branch session should not render ⎇ label, got %q", line4b)
 	}
 }
