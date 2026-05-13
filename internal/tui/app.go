@@ -1627,10 +1627,11 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case "esc":
 					a.reviewSpecOverlayActive = false
 				case "pgdown":
-					a.reviewSpecOverlayScroll++
+					a.reviewSpecOverlayScroll += a.height - 4
 				case "pgup":
-					if a.reviewSpecOverlayScroll > 0 {
-						a.reviewSpecOverlayScroll--
+					a.reviewSpecOverlayScroll -= a.height - 4
+					if a.reviewSpecOverlayScroll < 0 {
+						a.reviewSpecOverlayScroll = 0
 					}
 				case "g":
 					a.reviewSpecOverlayScroll = 0
@@ -5107,6 +5108,23 @@ func (a App) fetchReviewDiffCmd(sess *agent.Session) tea.Cmd {
 // correctly. Call this whenever the task cursor changes or when the review panel
 // is first entered. Also resets the scroll to the top.
 func (a *App) refreshReviewDiffViewport() {
+	// Compute diffH using the same layout formula as buildRightPane so that
+	// PageDown/PageUp clamp correctly instead of operating on a zero-height viewport.
+	headerLines := len(renderReviewHeader(a.reviewSession, a.width))
+	footerH := 3
+	bodyH := a.height - headerLines - footerH
+	if bodyH < 4 {
+		bodyH = 4
+	}
+	maxSummaryH := bodyH / 3
+	if maxSummaryH < 4 {
+		maxSummaryH = 4
+	}
+	diffH := bodyH - maxSummaryH - 1
+	if diffH < 1 {
+		diffH = 1
+	}
+	a.reviewDiffVP.SetHeight(diffH)
 	a.reviewDiffVP.GotoTop()
 	if a.reviewSession == nil {
 		a.reviewDiffVP.SetContent("")
