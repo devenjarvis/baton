@@ -555,6 +555,68 @@ func TestGetPRBySHA_FollowsUpWithGet(t *testing.T) {
 	}
 }
 
+func TestGetPRDetail_RetriesOn5xx(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/o/r/pulls":
+			_, _ = fmt.Fprintln(w, `[{"number":1,"state":"open","head":{"ref":"f"},"base":{"ref":"main"}}]`)
+		case "/repos/o/r/pulls/1":
+			n := calls.Add(1)
+			if n == 1 {
+				http.Error(w, "down", http.StatusServiceUnavailable)
+				return
+			}
+			_, _ = fmt.Fprintln(w, `{"number":1,"mergeable_state":"clean","state":"open","head":{"ref":"f"},"base":{"ref":"main"}}`)
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	pr, err := c.GetPR(context.Background(), "o", "r", "f")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if pr == nil {
+		t.Fatal("expected PR, got nil")
+	}
+	if pr.MergeableState != "clean" {
+		t.Errorf("MergeableState = %q, want \"clean\"", pr.MergeableState)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("expected 2 detail attempts (1 retry), got %d", got)
+	}
+}
+
+func TestGetPRDetail_UnknownState(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/o/r/pulls":
+			_, _ = fmt.Fprintln(w, `[{"number":1,"state":"open","head":{"ref":"f"},"base":{"ref":"main"}}]`)
+		case "/repos/o/r/pulls/1":
+			// mergeable_state omitted — GitHub still computing
+			_, _ = fmt.Fprintln(w, `{"number":1,"state":"open","head":{"ref":"f"},"base":{"ref":"main"}}`)
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	pr, err := c.GetPR(context.Background(), "o", "r", "f")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if pr == nil {
+		t.Fatal("expected PR, got nil")
+	}
+	if pr.MergeableState != "" {
+		t.Errorf("MergeableState = %q, want \"\"", pr.MergeableState)
+	}
+}
+
 func TestPrToState_MergeableState(t *testing.T) {
 	t.Run("dirty state", func(t *testing.T) {
 		pr := &gh.PullRequest{
