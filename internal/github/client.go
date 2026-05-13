@@ -183,11 +183,10 @@ func (c *Client) GetPR(ctx context.Context, owner, repo, branch string) (*PRStat
 		return nil, nil
 	}
 
-	detail, err := c.getPRDetail(ctx, owner, repo, prs[0].GetNumber())
-	if err != nil {
-		return prToState(prs[0]), nil
+	if detail, err := c.getPRDetail(ctx, owner, repo, prs[0].GetNumber()); err == nil {
+		return prToState(detail), nil
 	}
-	return prToState(detail), nil
+	return prToState(prs[0]), nil
 }
 
 // GetPRBySHA finds the open PR associated with a commit SHA. This is invariant
@@ -227,11 +226,10 @@ func (c *Client) GetPRBySHA(ctx context.Context, owner, repo, sha string) (*PRSt
 			continue
 		}
 		if pr.GetState() == "open" {
-			detail, err := c.getPRDetail(ctx, owner, repo, pr.GetNumber())
-			if err != nil {
-				return prToState(pr), nil
+			if detail, err := c.getPRDetail(ctx, owner, repo, pr.GetNumber()); err == nil {
+				return prToState(detail), nil
 			}
-			return prToState(detail), nil
+			return prToState(pr), nil
 		}
 	}
 	return nil, nil
@@ -412,11 +410,10 @@ func (c *Client) CreatePR(ctx context.Context, owner, repo, head, base, title, b
 	if err != nil {
 		return nil, fmt.Errorf("creating PR: %w", err)
 	}
-	detail, err := c.getPRDetail(ctx, owner, repo, pr.GetNumber())
-	if err != nil {
-		return prToState(pr), nil
+	if detail, err := c.getPRDetail(ctx, owner, repo, pr.GetNumber()); err == nil {
+		return prToState(detail), nil
 	}
-	return prToState(detail), nil
+	return prToState(pr), nil
 }
 
 // GetReviewThreads returns review threads for a PR grouped by reviewer.
