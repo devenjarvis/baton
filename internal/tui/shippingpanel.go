@@ -171,6 +171,69 @@ func renderReviewThread(thread github.ReviewThread, width int) []string {
 	return lines
 }
 
+// feedbackVerdict is the user's disposition on a single feedback item.
+type feedbackVerdict int
+
+const (
+	feedbackNeutral   feedbackVerdict = iota
+	feedbackApproved                  // user agreed; item will be addressed
+	feedbackDisagreed                 // user disputes; item framed as advisory
+)
+
+// feedbackTriageEntry holds the verdict and optional guidance note for one item.
+type feedbackTriageEntry struct {
+	Verdict feedbackVerdict
+	Note    string
+}
+
+// feedbackItem is a flattened view of a single piece of review feedback.
+type feedbackItem struct {
+	Reviewer  string
+	State     string
+	Path      string
+	Line      int
+	Body      string
+	CommentID int64
+	IsInline  bool
+}
+
+// feedbackItems flattens review threads into an ordered slice of feedback items.
+// For each thread: one body item (when non-empty), then one item per inline comment.
+func feedbackItems(threads []github.ReviewThread) []feedbackItem {
+	var items []feedbackItem
+	for _, t := range threads {
+		if strings.TrimSpace(t.Body) != "" {
+			items = append(items, feedbackItem{
+				Reviewer: t.Reviewer,
+				State:    t.State,
+				Body:     t.Body,
+				IsInline: false,
+			})
+		}
+		for _, c := range t.Comments {
+			items = append(items, feedbackItem{
+				Reviewer:  t.Reviewer,
+				State:     t.State,
+				Path:      c.Path,
+				Line:      c.Line,
+				Body:      c.Body,
+				CommentID: c.ID,
+				IsInline:  true,
+			})
+		}
+	}
+	return items
+}
+
+// feedbackItemKey returns the stable triage map key for an item.
+// Inline comments use "comment:<id>"; thread bodies use "thread:<reviewer>".
+func feedbackItemKey(item feedbackItem) string {
+	if item.IsInline {
+		return fmt.Sprintf("comment:%d", item.CommentID)
+	}
+	return "thread:" + item.Reviewer
+}
+
 // shippingHints returns the action hint line for the shipping panel footer.
 func shippingHints(mergeReady bool) string {
 	mKey := lipgloss.NewStyle().Foreground(lipgloss.Color("#5ab58a")).Render("m")

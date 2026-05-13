@@ -115,6 +115,66 @@ func TestRenderShippingPanel_UnknownMergeable(t *testing.T) {
 	}
 }
 
+func TestFeedbackItems_FlattensThreadsAndComments(t *testing.T) {
+	threads := []github.ReviewThread{
+		{
+			Reviewer: "alice",
+			State:    "CHANGES_REQUESTED",
+			Body:     "please fix",
+			Comments: []github.ReviewComment{
+				{ID: 101, Path: "a.go", Body: "nit one", Line: 5},
+				{ID: 202, Path: "b.go", Body: "nit two", Line: 10},
+			},
+		},
+	}
+	items := feedbackItems(threads)
+	if len(items) != 3 {
+		t.Fatalf("expected 3 items, got %d: %+v", len(items), items)
+	}
+	// First: thread body item.
+	if items[0].Body != "please fix" || items[0].IsInline || items[0].Reviewer != "alice" {
+		t.Errorf("item[0] unexpected: %+v", items[0])
+	}
+	if k := feedbackItemKey(items[0]); k != "thread:alice" {
+		t.Errorf("item[0] key = %q, want thread:alice", k)
+	}
+	// Second: inline comment 101.
+	if !items[1].IsInline || items[1].CommentID != 101 {
+		t.Errorf("item[1] unexpected: %+v", items[1])
+	}
+	if k := feedbackItemKey(items[1]); k != "comment:101" {
+		t.Errorf("item[1] key = %q, want comment:101", k)
+	}
+	// Third: inline comment 202.
+	if !items[2].IsInline || items[2].CommentID != 202 {
+		t.Errorf("item[2] unexpected: %+v", items[2])
+	}
+	if k := feedbackItemKey(items[2]); k != "comment:202" {
+		t.Errorf("item[2] key = %q, want comment:202", k)
+	}
+}
+
+func TestFeedbackItems_SkipsEmptyThreadBody(t *testing.T) {
+	threads := []github.ReviewThread{
+		{
+			Reviewer: "bob",
+			State:    "APPROVED",
+			Body:     "  ",
+			Comments: []github.ReviewComment{
+				{ID: 5, Path: "x.go", Body: "nice", Line: 1},
+			},
+		},
+	}
+	items := feedbackItems(threads)
+	// Only the inline comment, not the whitespace-only body.
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item (body skipped), got %d", len(items))
+	}
+	if items[0].CommentID != 5 {
+		t.Errorf("expected inline comment ID 5, got %+v", items[0])
+	}
+}
+
 func TestRenderCheckRow_DurationFormat(t *testing.T) {
 	run := github.CheckRun{
 		Name:       "my-check",
