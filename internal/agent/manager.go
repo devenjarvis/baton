@@ -132,6 +132,11 @@ var (
 	haikuSummaryBackoff           = []time.Duration{1 * time.Second, 3 * time.Second}
 )
 
+// ErrSessionNotFound is returned by KillSession when the given session ID is
+// not present in the manager. Callers that tolerate concurrent cleanup races
+// should use errors.Is to suppress it.
+var ErrSessionNotFound = errors.New("session not found")
+
 // NewManager creates a new agent manager for the given repo.
 //
 // The manager owns a hook.Server listening on <repoPath>/.baton/hook.sock that
@@ -1382,7 +1387,7 @@ func (m *Manager) KillSession(sessionID string) error {
 	m.mu.RUnlock()
 
 	if sess == nil {
-		return fmt.Errorf("session %s not found", sessionID)
+		return ErrSessionNotFound
 	}
 
 	// Cancel any in-flight plan-drafting subprocess so the goroutine drains

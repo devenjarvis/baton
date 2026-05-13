@@ -2057,6 +2057,32 @@ func TestReviewPanel_TKey_NoAgents_ShowsError(t *testing.T) {
 	}
 }
 
+// TestReviewPanel_ComposeModalRendersOverPanel verifies that when the
+// prComposeModal is active while panelFocus == focusReview, View() renders the
+// modal centered over the panel instead of the bare review panel.
+func TestReviewPanel_ComposeModalRendersOverPanel(t *testing.T) {
+	sessR := agent.NewSessionForTest("s", "ship-it")
+	sessR.SetLifecyclePhase(agent.LifecycleInReview)
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.reviewSession = sessR
+	app.dashboard.panelFocus = focusReview
+	app.prComposeModal.SetSize(120, 39)
+	_ = app.prComposeModal.Open("My PR Title", "My PR Body", false)
+
+	v := app.View()
+	if !strings.Contains(v.Content, "My PR Title") {
+		t.Errorf("expected view to contain %q, got content: %q", "My PR Title", v.Content)
+	}
+	if !strings.Contains(v.Content, "CREATE PR") {
+		t.Errorf("expected view to contain %q, got content: %q", "CREATE PR", v.Content)
+	}
+}
+
 // TestReviewPanel_PKey_NoPR_DoesNotOrphan verifies that pressing "p" with no
 // PR cached starts the draft flow (shows progress text) and does NOT make the
 // session unreachable. The session must still be in LifecycleInReview so
@@ -2073,9 +2099,10 @@ func TestReviewPanel_PKey_NoPR_DoesNotOrphan(t *testing.T) {
 	app = model.(App)
 
 	// Pressing p with no open PR now starts the push+draft pipeline.
-	// The status message should indicate progress, not an error.
-	if !strings.Contains(app.err, "Pushing") {
-		t.Errorf("expected progress message containing 'Pushing', got %q", app.err)
+	// The in-flight flag must be set; no error banner should appear.
+	if !app.prDraftInFlight || app.prDraftSessionID != sessR.ID {
+		t.Errorf("expected prDraftInFlight=true and prDraftSessionID=%q, got inFlight=%v sessionID=%q",
+			sessR.ID, app.prDraftInFlight, app.prDraftSessionID)
 	}
 
 	// Press ESC to close the panel — session stays InReview.
@@ -2228,9 +2255,10 @@ func TestPipeline_PKey_NoPRStartsDraft(t *testing.T) {
 
 	model, _ := app.Update(tea.KeyPressMsg{Code: 'p', Text: "p"})
 	app = model.(App)
-	// p with no cached PR starts the draft flow — progress message should appear.
-	if !strings.Contains(app.err, "Pushing") {
-		t.Errorf("expected progress message containing 'Pushing', got %q", app.err)
+	// p with no cached PR starts the draft flow — in-flight flag must be set.
+	if !app.prDraftInFlight || app.prDraftSessionID != sess.ID {
+		t.Errorf("expected prDraftInFlight=true and prDraftSessionID=%q, got inFlight=%v sessionID=%q",
+			sess.ID, app.prDraftInFlight, app.prDraftSessionID)
 	}
 }
 
@@ -2700,6 +2728,201 @@ func TestPRPollMsg_ExternalCloseCleansSession(t *testing.T) {
 	}
 	if got2.closingSessions["sess-closed"] {
 		t.Error("closingSessions should be cleared after killResultMsg")
+	}
+}
+
+// TestPRPollMsg_ExternalOpenPRPromotesBuildingToShipping verifies that a
+// session in LifecycleInProgress transitions to LifecycleShipping when the PR
+// poller discovers an open PR opened outside baton.
+func TestPRPollMsg_ExternalOpenPRPromotesBuildingToShipping(t *testing.T) {
+	dir := t.TempDir()
+	sess := agent.NewSessionForTest("sess-build", "branch")
+	sess.SetLifecyclePhase(agent.LifecycleInProgress)
+
+	mgr := agent.NewManager(dir, config.Resolve(nil, nil))
+	defer mgr.Shutdown()
+	mgr.AddSessionForTest(sess)
+
+	app := NewApp()
+	app.managers[dir] = mgr
+	app.cfg = &config.Config{Repos: []config.Repo{{Path: dir}}}
+
+	msg := prPollMsg{
+		sessionID: "sess-build",
+		pr:        &github.PRState{State: "open", Number: 7},
+	}
+	app.Update(msg)
+
+	if sess.LifecyclePhase() != agent.LifecycleShipping {
+		t.Errorf("session lifecycle = %v, want LifecycleShipping", sess.LifecyclePhase())
+	}
+}
+
+// TestPRPollMsg_ExternalOpenPRPromotesReadyForReviewToShipping verifies that a
+// session in LifecycleReadyForReview transitions to LifecycleShipping when the
+// PR poller discovers an open PR.
+func TestPRPollMsg_ExternalOpenPRPromotesReadyForReviewToShipping(t *testing.T) {
+	dir := t.TempDir()
+	sess := agent.NewSessionForTest("sess-rfr", "branch")
+	sess.SetLifecyclePhase(agent.LifecycleReadyForReview)
+
+	mgr := agent.NewManager(dir, config.Resolve(nil, nil))
+	defer mgr.Shutdown()
+	mgr.AddSessionForTest(sess)
+
+	app := NewApp()
+	app.managers[dir] = mgr
+	app.cfg = &config.Config{Repos: []config.Repo{{Path: dir}}}
+
+	msg := prPollMsg{
+		sessionID: "sess-rfr",
+		pr:        &github.PRState{State: "open", Number: 7},
+	}
+	app.Update(msg)
+
+	if sess.LifecyclePhase() != agent.LifecycleShipping {
+		t.Errorf("session lifecycle = %v, want LifecycleShipping", sess.LifecyclePhase())
+	}
+}
+
+// TestPRPollMsg_ExternalOpenPRPromotesInReviewToShipping_ClosesReviewPanel
+// verifies that a session in LifecycleInReview transitions to LifecycleShipping
+// and that the review panel closes if it was open for that session.
+func TestPRPollMsg_ExternalOpenPRPromotesInReviewToShipping_ClosesReviewPanel(t *testing.T) {
+	dir := t.TempDir()
+	sess := agent.NewSessionForTest("sess-ir", "branch")
+	sess.SetLifecyclePhase(agent.LifecycleInReview)
+
+	mgr := agent.NewManager(dir, config.Resolve(nil, nil))
+	defer mgr.Shutdown()
+	mgr.AddSessionForTest(sess)
+
+	app := NewApp()
+	app.reviewSession = sess
+	app.dashboard.panelFocus = focusReview
+	app.managers[dir] = mgr
+	app.cfg = &config.Config{Repos: []config.Repo{{Path: dir}}}
+
+	msg := prPollMsg{
+		sessionID: "sess-ir",
+		pr:        &github.PRState{State: "open", Number: 7},
+	}
+	model, _ := app.Update(msg)
+	got := model.(App)
+
+	if sess.LifecyclePhase() != agent.LifecycleShipping {
+		t.Errorf("session lifecycle = %v, want LifecycleShipping", sess.LifecyclePhase())
+	}
+	if got.dashboard.panelFocus != focusList {
+		t.Errorf("panelFocus = %v, want focusList", got.dashboard.panelFocus)
+	}
+	if got.reviewSession != nil {
+		t.Error("reviewSession should be nil after auto-promotion closes the panel")
+	}
+}
+
+// TestPRPollMsg_PlanningNotPromoted verifies that a session in
+// LifecyclePlanning does not transition when an open PR is discovered.
+func TestPRPollMsg_PlanningNotPromoted(t *testing.T) {
+	dir := t.TempDir()
+	sess := agent.NewSessionForTest("sess-plan", "branch")
+	// LifecyclePlanning is the default; set explicitly for clarity.
+	sess.SetLifecyclePhase(agent.LifecyclePlanning)
+
+	mgr := agent.NewManager(dir, config.Resolve(nil, nil))
+	defer mgr.Shutdown()
+	mgr.AddSessionForTest(sess)
+
+	app := NewApp()
+	app.managers[dir] = mgr
+	app.cfg = &config.Config{Repos: []config.Repo{{Path: dir}}}
+
+	msg := prPollMsg{
+		sessionID: "sess-plan",
+		pr:        &github.PRState{State: "open", Number: 7},
+	}
+	app.Update(msg)
+
+	if sess.LifecyclePhase() != agent.LifecyclePlanning {
+		t.Errorf("session lifecycle = %v, want LifecyclePlanning (no skip-ahead)", sess.LifecyclePhase())
+	}
+}
+
+// TestPRPollMsg_DraftingNotPromoted verifies that a session in
+// LifecycleDrafting does not transition when an open PR is discovered.
+func TestPRPollMsg_DraftingNotPromoted(t *testing.T) {
+	dir := t.TempDir()
+	sess := agent.NewSessionForTest("sess-draft", "branch")
+	sess.SetLifecyclePhase(agent.LifecycleDrafting)
+
+	mgr := agent.NewManager(dir, config.Resolve(nil, nil))
+	defer mgr.Shutdown()
+	mgr.AddSessionForTest(sess)
+
+	app := NewApp()
+	app.managers[dir] = mgr
+	app.cfg = &config.Config{Repos: []config.Repo{{Path: dir}}}
+
+	msg := prPollMsg{
+		sessionID: "sess-draft",
+		pr:        &github.PRState{State: "open", Number: 7},
+	}
+	app.Update(msg)
+
+	if sess.LifecyclePhase() != agent.LifecycleDrafting {
+		t.Errorf("session lifecycle = %v, want LifecycleDrafting (no skip-ahead)", sess.LifecyclePhase())
+	}
+}
+
+// TestPRPollMsg_AlreadyShippingNoOpOnOpenPR verifies that a session already in
+// LifecycleShipping is not re-transitioned (no-op) when an open PR arrives.
+func TestPRPollMsg_AlreadyShippingNoOpOnOpenPR(t *testing.T) {
+	dir := t.TempDir()
+	sess := agent.NewSessionForTest("sess-ship", "branch")
+	sess.SetLifecyclePhase(agent.LifecycleShipping)
+
+	mgr := agent.NewManager(dir, config.Resolve(nil, nil))
+	defer mgr.Shutdown()
+	mgr.AddSessionForTest(sess)
+
+	app := NewApp()
+	app.managers[dir] = mgr
+	app.cfg = &config.Config{Repos: []config.Repo{{Path: dir}}}
+
+	msg := prPollMsg{
+		sessionID: "sess-ship",
+		pr:        &github.PRState{State: "open", Number: 7},
+	}
+	app.Update(msg)
+
+	if sess.LifecyclePhase() != agent.LifecycleShipping {
+		t.Errorf("session lifecycle = %v, want LifecycleShipping (unchanged)", sess.LifecyclePhase())
+	}
+}
+
+// TestPRPollMsg_CompleteNotPromoted verifies that a session in
+// LifecycleComplete is not re-transitioned when an open PR arrives.
+func TestPRPollMsg_CompleteNotPromoted(t *testing.T) {
+	dir := t.TempDir()
+	sess := agent.NewSessionForTest("sess-done", "branch")
+	sess.SetLifecyclePhase(agent.LifecycleComplete)
+
+	mgr := agent.NewManager(dir, config.Resolve(nil, nil))
+	defer mgr.Shutdown()
+	mgr.AddSessionForTest(sess)
+
+	app := NewApp()
+	app.managers[dir] = mgr
+	app.cfg = &config.Config{Repos: []config.Repo{{Path: dir}}}
+
+	msg := prPollMsg{
+		sessionID: "sess-done",
+		pr:        &github.PRState{State: "open", Number: 7},
+	}
+	app.Update(msg)
+
+	if sess.LifecyclePhase() != agent.LifecycleComplete {
+		t.Errorf("session lifecycle = %v, want LifecycleComplete (unchanged)", sess.LifecyclePhase())
 	}
 }
 

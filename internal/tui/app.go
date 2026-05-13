@@ -76,11 +76,11 @@ type killResultMsg struct {
 	err       error
 }
 
-// filterNotFound returns nil if err's message contains "not found", otherwise
+// filterNotFound returns nil if err wraps agent.ErrSessionNotFound, otherwise
 // returns err unchanged. Used to suppress benign double-cleanup races where two
 // concurrent paths both try to KillSession the same session.
 func filterNotFound(err error) error {
-	if err != nil && strings.Contains(err.Error(), "not found") {
+	if errors.Is(err, agent.ErrSessionNotFound) {
 		return nil
 	}
 	return err
@@ -1096,6 +1096,19 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			threads: msg.threads,
 			stack:   msg.stack,
 		}
+		// Auto-promote to Shipping when an open PR is discovered externally.
+		if msg.pr != nil && msg.pr.State == "open" {
+			if sess := a.sessionByID(msg.sessionID); sess != nil {
+				switch sess.LifecyclePhase() {
+				case agent.LifecycleInProgress, agent.LifecycleReadyForReview, agent.LifecycleInReview:
+					sess.SetLifecyclePhase(agent.LifecycleShipping)
+					if a.reviewSession != nil && a.reviewSession.ID == msg.sessionID {
+						a.dashboard.panelFocus = focusList
+						a.reviewSession = nil
+					}
+				}
+			}
+		}
 		// Detect PR merge/close and trigger async session cleanup.
 		var cmds []tea.Cmd
 		if msg.pr != nil && (msg.pr.State == "merged" || msg.pr.State == "closed") {
@@ -1104,20 +1117,29 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if mgr := a.managers[repoPath]; mgr != nil {
 					if sess := mgr.GetSession(msg.sessionID); sess != nil {
 						if sess.LifecyclePhase() == agent.LifecycleShipping {
-							// Close the shipping panel if this session is currently open in it.
-							if a.shippingSession != nil && a.shippingSession.ID == msg.sessionID {
-								a.shippingSession = nil
-								a.dashboard.panelFocus = focusList
-							}
 							sessID := msg.sessionID
-							a.closingSessions[sessID] = true
-							cmds = append(cmds, func() tea.Msg {
-								return killResultMsg{
-									scope:     killScopeSession,
-									sessionID: sessID,
-									err:       filterNotFound(mgr.KillSession(sessID)),
+							if !a.closingSessions[sessID] {
+								sess.SetLifecyclePhase(agent.LifecycleComplete)
+								// Close the shipping panel if this session is currently open in it.
+								if a.shippingSession != nil && a.shippingSession.ID == sessID {
+									a.shippingSession = nil
+									a.dashboard.panelFocus = focusList
 								}
-							})
+								var agentIDs []string
+								for _, ag := range sess.Agents() {
+									agentIDs = append(agentIDs, ag.ID)
+									a.closingAgents[ag.ID] = true
+								}
+								a.closingSessions[sessID] = true
+								cmds = append(cmds, func() tea.Msg {
+									return killResultMsg{
+										scope:     killScopeSession,
+										sessionID: sessID,
+										agentIDs:  agentIDs,
+										err:       filterNotFound(mgr.KillSession(sessID)),
+									}
+								})
+							}
 						}
 					}
 				}
@@ -1161,8 +1183,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		mgr := a.managers[repoPath]
-		if mgr == nil || mgr.GetSession(msg.sessionID) == nil {
+		sess := mgr.GetSession(msg.sessionID)
+		if mgr == nil || sess == nil || a.closingSessions[msg.sessionID] {
 			return a, nil
+		}
+		sess.SetLifecyclePhase(agent.LifecycleComplete)
+		var agentIDs []string
+		for _, ag := range sess.Agents() {
+			agentIDs = append(agentIDs, ag.ID)
+			a.closingAgents[ag.ID] = true
 		}
 		sessID := msg.sessionID
 		a.closingSessions[sessID] = true
@@ -1170,6 +1199,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return killResultMsg{
 				scope:     killScopeSession,
 				sessionID: sessID,
+				agentIDs:  agentIDs,
 				err:       filterNotFound(mgr.KillSession(sessID)),
 			}
 		}
@@ -1605,7 +1635,6 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.prDraftInFlight = true
 					a.prDraftSessionID = sess.ID
 					repoPath := a.repoPathForSession(sess.ID)
-					a.setError("Pushing branch and drafting PR…")
 					return a, a.startPRDraftCmd(sess, repoPath, true)
 				}
 				return a, nil
@@ -1631,8 +1660,14 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return a, nil
 				}
 				mgr := a.managers[repoPath]
-				if mgr == nil || mgr.GetSession(sess.ID) == nil {
+				if mgr == nil || mgr.GetSession(sess.ID) == nil || a.closingSessions[sess.ID] {
 					return a, nil
+				}
+				sess.SetLifecyclePhase(agent.LifecycleComplete)
+				var agentIDs []string
+				for _, ag := range sess.Agents() {
+					agentIDs = append(agentIDs, ag.ID)
+					a.closingAgents[ag.ID] = true
 				}
 				sessID := sess.ID
 				a.closingSessions[sessID] = true
@@ -1640,6 +1675,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return killResultMsg{
 						scope:     killScopeSession,
 						sessionID: sessID,
+						agentIDs:  agentIDs,
 						err:       filterNotFound(mgr.KillSession(sessID)),
 					}
 				}
@@ -2242,7 +2278,6 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.prDraftInFlight = true
 					a.prDraftSessionID = sess.ID
 					repoPath := a.cursorSelectedRepoPath()
-					a.setError("Pushing branch and drafting PR…")
 					return a, a.startPRDraftCmd(sess, repoPath, false)
 				}
 			}
@@ -3654,7 +3689,13 @@ func (a App) View() tea.View {
 	case ViewDashboard:
 		if a.dashboard.panelFocus == focusReview && a.reviewSession != nil {
 			entry := a.reviewDiffCache[a.reviewSession.ID]
-			v := tea.NewView(renderReviewPanel(a.reviewSession, entry, a.width, a.height, a.reviewTaskCursor, a.prDraftInFlight && a.prDraftSessionID == a.reviewSession.ID))
+			var panelStr string
+			if a.prComposeModal.Active() {
+				panelStr = lipgloss.Place(a.width, a.height-1, lipgloss.Center, lipgloss.Center, a.prComposeModal.View())
+			} else {
+				panelStr = renderReviewPanel(a.reviewSession, entry, a.width, a.height, a.reviewTaskCursor, a.prDraftInFlight && a.prDraftSessionID == a.reviewSession.ID)
+			}
+			v := tea.NewView(panelStr)
 			v.AltScreen = true
 			return v
 		}
@@ -4744,52 +4785,80 @@ func (a *App) startPRDraftCmd(sess *agent.Session, repoPath string, transitionSh
 			return prDraftReadyMsg{sessionID: sessionID, err: fmt.Errorf("parse remote url: %w", err)}
 		}
 
-		// Push the branch (first push sets upstream tracking).
-		if pushErr := git.Push(worktreePath, branch); pushErr != nil {
-			return prDraftReadyMsg{sessionID: sessionID, err: fmt.Errorf("push branch: %w", pushErr)}
-		}
-
-		// Determine base branch.
+		// Determine base branch (local, no network).
 		base := sess.Worktree.BaseBranch
 		if base == "" {
 			base = "main"
 		}
+		worktree := sess.Worktree
 
-		// Gather commits against base for the drafter context.
-		commits := ""
-		if cs, logErr := git.LogCommitsAgainstBase(sess.Worktree); logErr == nil && len(cs) > 0 {
-			var sb strings.Builder
-			for _, c := range cs {
-				sb.WriteString(c.Subject)
-				sb.WriteString("\n")
-				if c.Body != "" {
-					sb.WriteString(c.Body)
-					sb.WriteString("\n")
-				}
+		// Push and draft concurrently; total latency = max(push, drafter).
+		// innerCtx is cancelled by push failure so a fast push error (e.g. auth
+		// failure) immediately aborts the expensive Haiku subprocess rather than
+		// waiting out the full 90s parent timeout.
+		innerCtx, innerCancel := context.WithCancel(ctx)
+		defer innerCancel()
+
+		var (
+			pushErr  error
+			draftErr error
+			draft    *agent.PRDraft
+			wg       sync.WaitGroup
+		)
+
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			if err := git.Push(worktreePath, branch); err != nil {
+				pushErr = fmt.Errorf("push branch: %w", err)
+				innerCancel()
 			}
-			commits = strings.TrimSpace(sb.String())
+		}()
+		go func() {
+			defer wg.Done()
+			commits := ""
+			if cs, logErr := git.LogCommitsAgainstBase(worktree); logErr == nil && len(cs) > 0 {
+				var sb strings.Builder
+				for _, c := range cs {
+					sb.WriteString(c.Subject)
+					sb.WriteString("\n")
+					if c.Body != "" {
+						sb.WriteString(c.Body)
+						sb.WriteString("\n")
+					}
+				}
+				commits = strings.TrimSpace(sb.String())
+			}
+
+			diffstat := ""
+			if stats, statsErr := git.GetDiffStats(repoPath, worktree); statsErr == nil {
+				diffstat = fmt.Sprintf("%d file(s) changed, +%d -%d lines",
+					stats.Files, stats.Insertions, stats.Deletions)
+			}
+
+			template := git.FindPRTemplate(worktreePath)
+
+			taskPrompt := sess.TaskSummary()
+			if taskPrompt == "" {
+				taskPrompt = sess.GetDisplayName()
+			}
+
+			drafter := agent.DefaultPRDrafter()
+			var err error
+			draft, err = drafter(innerCtx, commits, diffstat, taskPrompt, template)
+			if err != nil {
+				draftErr = fmt.Errorf("draft PR: %w", err)
+			}
+		}()
+		wg.Wait()
+
+		// If push failed, drafter may have been cancelled via innerCtx — return
+		// only the push error; the drafter error is expected noise in that case.
+		if pushErr != nil {
+			return prDraftReadyMsg{sessionID: sessionID, err: pushErr}
 		}
-
-		// Diff stats for context.
-		diffstat := ""
-		if stats, statsErr := git.GetDiffStats(repoPath, sess.Worktree); statsErr == nil {
-			diffstat = fmt.Sprintf("%d file(s) changed, +%d -%d lines",
-				stats.Files, stats.Insertions, stats.Deletions)
-		}
-
-		// PR template (optional).
-		template := git.FindPRTemplate(worktreePath)
-
-		// Session's original task prompt for drafter context.
-		taskPrompt := sess.TaskSummary()
-		if taskPrompt == "" {
-			taskPrompt = sess.GetDisplayName()
-		}
-
-		drafter := agent.DefaultPRDrafter()
-		draft, err := drafter(ctx, commits, diffstat, taskPrompt, template)
-		if err != nil {
-			return prDraftReadyMsg{sessionID: sessionID, err: fmt.Errorf("draft PR: %w", err)}
+		if draftErr != nil {
+			return prDraftReadyMsg{sessionID: sessionID, err: draftErr}
 		}
 
 		return prDraftReadyMsg{
