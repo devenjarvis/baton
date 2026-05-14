@@ -303,6 +303,32 @@ func TestRepoPicker_ManageMode_FilterEmptyGatesSAndD(t *testing.T) {
 	}
 }
 
+func TestRepoPicker_ManageMode_TitleAndDetailsRenderManageCopy(t *testing.T) {
+	m := fixtureRepoPickerManage()
+	out := m.View()
+	if !strings.Contains(out, "MANAGE REPOS") {
+		t.Errorf("expected 'MANAGE REPOS' in view output, got:\n%s", out)
+	}
+	// Should NOT show "NEW SESSION IN…" in manage mode.
+	if strings.Contains(out, "NEW SESSION IN") {
+		t.Errorf("manage mode should not show 'NEW SESSION IN' title, got:\n%s", out)
+	}
+	// Details pane should show manage hints, not session hints.
+	if !strings.Contains(out, "enter switch") {
+		t.Errorf("expected 'enter switch' in details pane, got:\n%s", out)
+	}
+}
+
+func TestRepoPicker_ManageMode_DetailsShowsConfirmAfterFirstD(t *testing.T) {
+	m := fixtureRepoPickerManage()
+	// First d: sets pendingRemoveIdx
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'd', Text: "d"})
+	out := m.View()
+	if !strings.Contains(out, "d again to confirm") {
+		t.Errorf("expected confirm prompt after first d, got:\n%s", out)
+	}
+}
+
 func TestRepoPicker_NavigationClampsAtBounds(t *testing.T) {
 	m := fixtureRepoPicker()
 	// Push past the top.

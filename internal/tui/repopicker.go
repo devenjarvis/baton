@@ -246,7 +246,11 @@ func (m repoPickerModel) View() string {
 
 // renderList renders the left panel with the filtered repo list.
 func (m repoPickerModel) renderList(width int) string {
-	title := StyleTitle.Render("NEW SESSION IN…")
+	titleText := "NEW SESSION IN…"
+	if m.mode == repoPickerModeManage {
+		titleText = "MANAGE REPOS"
+	}
+	title := StyleTitle.Render(titleText)
 	sepWidth := width - 2
 	if sepWidth < 0 {
 		sepWidth = 0
@@ -382,7 +386,17 @@ func (m repoPickerModel) renderDetails(width int) string {
 	lines = append(lines, "")
 	lines = append(lines, StyleSubtle.Render(countLabel))
 	lines = append(lines, "")
-	lines = append(lines, StyleSubtle.Render("Press enter to start a session in this repo"))
+
+	if m.mode == repoPickerModeManage {
+		if m.pendingRemoveIdx == m.selected {
+			lines = append(lines, StyleWarning.Render("delete "+repo.DisplayName()+"?"))
+			lines = append(lines, StyleSubtle.Render("d again to confirm · any other key to cancel"))
+		} else {
+			lines = append(lines, StyleSubtle.Render("enter switch · s settings · d remove"))
+		}
+	} else {
+		lines = append(lines, StyleSubtle.Render("Press enter to start a session in this repo"))
+	}
 	return strings.Join(lines, "\n")
 }
 
