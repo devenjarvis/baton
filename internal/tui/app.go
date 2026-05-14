@@ -3058,12 +3058,16 @@ func (a App) updateRepoPicker(msg tea.Msg) (tea.Model, tea.Cmd) {
 				filepath.Base(msg.path), mgr.AgentCount()))
 			return a, nil
 		}
+		origRepos := make([]config.Repo, len(a.cfg.Repos))
+		copy(origRepos, a.cfg.Repos)
 		if err := config.RemoveRepo(a.cfg, msg.path); err != nil {
 			a.setError(err.Error())
 			return a, nil
 		}
 		if err := config.Save(a.cfg); err != nil {
+			a.cfg.Repos = origRepos
 			a.setError(err.Error())
+			return a, nil
 		}
 		delete(a.managers, msg.path)
 		delete(a.repoSettings, msg.path)
