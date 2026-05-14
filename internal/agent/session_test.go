@@ -291,20 +291,25 @@ func TestKillLastAgentAutoClosesSession(t *testing.T) {
 	}
 }
 
-func TestNaturalExitAutoClosesSession(t *testing.T) {
+// TestNaturalExitDoesNotCloseSession pins the lifecycle-pipeline contract:
+// when agents exit naturally (clean exit) the session must stay in the
+// manager so the user can advance it to REVIEWING → SHIPPING. Sessions are
+// only removed by explicit actions (KillSession, merge, Detach cleanup).
+// Worktree must also persist — removing it would break the review panel.
+func TestNaturalExitDoesNotCloseSession(t *testing.T) {
 	repo := setupTestRepo(t)
 	mgr := NewManager(repo, defaultTestSettings())
 	defer mgr.Shutdown()
 
 	cfg := Config{Task: "test", Rows: 24, Cols: 80}
-	sess, _, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+	sess, ag1, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
 		return exec.Command("bash", "-c", "echo done")
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	_, err = mgr.AddAgentWithCommand(sess.ID, cfg, func(name string) *exec.Cmd {
+	ag2, err := mgr.AddAgentWithCommand(sess.ID, cfg, func(name string) *exec.Cmd {
 		return exec.Command("bash", "-c", "echo done")
 	})
 	if err != nil {
@@ -314,25 +319,38 @@ func TestNaturalExitAutoClosesSession(t *testing.T) {
 	wtPath := sess.Worktree.Path
 	sessID := sess.ID
 
-	// Wait for both agents to exit naturally and session to auto-close.
+	// Wait for both agents to exit naturally.
 	deadline := time.After(5 * time.Second)
-	gotSessionClosed := false
-	for !gotSessionClosed {
+	doneCount := 0
+	for doneCount < 2 {
 		select {
 		case e := <-mgr.Events():
-			if e.Type == EventSessionClosed && e.SessionID == sessID {
-				gotSessionClosed = true
+			if e.Type == EventDone && e.SessionID == sessID {
+				doneCount++
 			}
 		case <-deadline:
-			t.Fatal("timed out waiting for EventSessionClosed")
+			t.Fatal("timed out waiting for both agents to exit")
 		}
 	}
 
-	if mgr.GetSession(sessID) != nil {
-		t.Error("session should be removed after all agents exit naturally")
+	_ = ag1
+	_ = ag2
+
+	// Session must remain — the user needs to advance it via 'm' (review) or
+	// explicit kill. Auto-closing on natural exit was removed because it races
+	// with TestManager_AgentCount_ExcludesExitedAgents and breaks the pipeline.
+	if mgr.GetSession(sessID) == nil {
+		t.Error("session must remain in manager after agents exit naturally")
 	}
-	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
-		t.Error("worktree should be removed after session auto-close")
+	if sess.AgentCount() != 2 {
+		t.Errorf("both agents must stay in session map after natural exit, got AgentCount=%d", sess.AgentCount())
+	}
+	if sess.LiveAgentCount() != 0 {
+		t.Errorf("live count must be 0 after both agents exit, got LiveAgentCount=%d", sess.LiveAgentCount())
+	}
+	// Worktree must persist for review panel use.
+	if _, err := os.Stat(wtPath); os.IsNotExist(err) {
+		t.Error("worktree must persist after agents exit naturally")
 	}
 }
 
