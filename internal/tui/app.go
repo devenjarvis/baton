@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -172,36 +173,40 @@ type App struct {
 	audioPlayer     *audio.Player
 
 	// Wellness state.
-	appStart               time.Time // set once at init; never reset; used for total session duration in wellness log
-	sessionStart           time.Time // per-block work timer; reset on each break completion
-	lastReviewAt           time.Time
-	agentLimitModalActive  bool
-	focusSessionMinutes    int          // cached from resolved global settings
-	focusBreakMinutes      int          // cached from resolved global settings
-	focusPlanningIdx       int          // index into planningSessions()
-	focusBuildingIdx       int          // index into buildingSessions()
-	focusReviewIdx         int          // index into reviewQueueSessions()
-	focusShippingIdx       int          // index into shippingSessions()
-	focusCursorSection     focusSection // which section the pipeline cursor is on
-	focusLaunchAgent       *agent.Agent
-	focusLaunchSession     *agent.Session
-	focusBacklogWarning    bool // first n at backlog limit shows warning; second proceeds
-	focusBreakMode         bool
-	focusBreakStart        time.Time // wall-clock; monotonic stripped so suspend counts toward elapsed
-	focusBlockCount        int
-	focusBreakShortWarning bool
-	focusBreakTimerUp      bool // break duration elapsed; waiting on user to resume
-	focusBreakAnimFrame    int
-	reviewDiffCache        map[string]*reviewDiffEntry                // keyed by session ID
-	reviewSession          *agent.Session                             // session currently open in review panel
-	reviewTaskCursor       int                                        // selected task row in the review task list
-	shippingSession        *agent.Session                             // session currently open in shipping panel
-	feedbackTriage         map[string]map[string]*feedbackTriageEntry // keyed by sessionID → itemKey
-	shippingFeedbackCursor int                                        // cursor row in the feedback list pane
-	shippingDetailScroll   int                                        // scroll offset in the feedback detail pane
-	feedbackNote           feedbackNoteModal                          // overlay for adding a guidance note to a feedback item
-	planEditor             *planEditorModel                           // non-nil while panelFocus == focusPlanEditor
-	promptModal            promptModalModel                           // overlay for plan-first new-session prompt
+	appStart                time.Time // set once at init; never reset; used for total session duration in wellness log
+	sessionStart            time.Time // per-block work timer; reset on each break completion
+	lastReviewAt            time.Time
+	agentLimitModalActive   bool
+	focusSessionMinutes     int          // cached from resolved global settings
+	focusBreakMinutes       int          // cached from resolved global settings
+	focusPlanningIdx        int          // index into planningSessions()
+	focusBuildingIdx        int          // index into buildingSessions()
+	focusReviewIdx          int          // index into reviewQueueSessions()
+	focusShippingIdx        int          // index into shippingSessions()
+	focusCursorSection      focusSection // which section the pipeline cursor is on
+	focusLaunchAgent        *agent.Agent
+	focusLaunchSession      *agent.Session
+	focusBacklogWarning     bool // first n at backlog limit shows warning; second proceeds
+	focusBreakMode          bool
+	focusBreakStart         time.Time // wall-clock; monotonic stripped so suspend counts toward elapsed
+	focusBlockCount         int
+	focusBreakShortWarning  bool
+	focusBreakTimerUp       bool // break duration elapsed; waiting on user to resume
+	focusBreakAnimFrame     int
+	reviewDiffCache         map[string]*reviewDiffEntry                // keyed by session ID
+	reviewSession           *agent.Session                             // session currently open in review panel
+	reviewTaskCursor        int                                        // selected task row in the review task list
+	reviewDiffVP            viewport.Model                             // scroll state for the inline diff viewport
+	reviewDiffCacheByTask   map[int]*diffmodel.Model                   // parsed diff per task index; cleared with reviewDiffCache
+	reviewSpecOverlayActive bool                                       // true while the ? Spec overlay is open
+	reviewSpecOverlayScroll int                                        // scroll offset for the Spec overlay (line index)
+	shippingSession         *agent.Session                             // session currently open in shipping panel
+	feedbackTriage          map[string]map[string]*feedbackTriageEntry // keyed by sessionID → itemKey
+	shippingFeedbackCursor  int                                        // cursor row in the feedback list pane
+	shippingDetailScroll    int                                        // scroll offset in the feedback detail pane
+	feedbackNote            feedbackNoteModal                          // overlay for adding a guidance note to a feedback item
+	planEditor              *planEditorModel                           // non-nil while panelFocus == focusPlanEditor
+	promptModal             promptModalModel                           // overlay for plan-first new-session prompt
 
 	// Wellness counters (written to log on quit).
 	agentsCreatedCount   int
@@ -243,22 +248,24 @@ type App struct {
 
 func NewApp() App {
 	return App{
-		view:            ViewDashboard,
-		dashboard:       newDashboardModel(),
-		managers:        make(map[string]*agent.Manager),
-		repoSettings:    make(map[string]*config.RepoSettings),
-		resolvedCache:   make(map[string]config.ResolvedSettings),
-		lastKnownStatus: make(map[string]agent.Status),
-		diffStatsCache:  make(map[string]*diffStatsEntry),
-		reviewDiffCache: make(map[string]*reviewDiffEntry),
-		prCache:         make(map[string]*prCacheEntry),
-		prPollStates:    make(map[string]*prSessionState),
-		closingAgents:   make(map[string]bool),
-		closingSessions: make(map[string]bool),
-		feedbackTriage:  make(map[string]map[string]*feedbackTriageEntry),
-		feedbackNote:    newFeedbackNoteModal(),
-		promptModal:     newPromptModal(),
-		prComposeModal:  newPRComposeModal(),
+		view:                  ViewDashboard,
+		dashboard:             newDashboardModel(),
+		managers:              make(map[string]*agent.Manager),
+		repoSettings:          make(map[string]*config.RepoSettings),
+		resolvedCache:         make(map[string]config.ResolvedSettings),
+		lastKnownStatus:       make(map[string]agent.Status),
+		diffStatsCache:        make(map[string]*diffStatsEntry),
+		reviewDiffCache:       make(map[string]*reviewDiffEntry),
+		reviewDiffVP:          viewport.New(),
+		reviewDiffCacheByTask: make(map[int]*diffmodel.Model),
+		prCache:               make(map[string]*prCacheEntry),
+		prPollStates:          make(map[string]*prSessionState),
+		closingAgents:         make(map[string]bool),
+		closingSessions:       make(map[string]bool),
+		feedbackTriage:        make(map[string]map[string]*feedbackTriageEntry),
+		feedbackNote:          newFeedbackNoteModal(),
+		promptModal:           newPromptModal(),
+		prComposeModal:        newPRComposeModal(),
 	}
 }
 
@@ -1228,6 +1235,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case reviewDiffMsg:
 		if msg.err == nil && msg.entry != nil {
 			a.reviewDiffCache[msg.sessionID] = msg.entry
+			// Refresh the inline diff viewport when data arrives for the open session.
+			if a.reviewSession != nil && a.reviewSession.ID == msg.sessionID && len(msg.entry.groups) > 0 {
+				a.refreshReviewDiffViewport()
+			}
 			// If the entry has task groups, dispatch a reviewer per group.
 			if len(msg.entry.groups) > 0 {
 				repoPath := a.repoPathForSession(msg.sessionID)
@@ -1611,11 +1622,31 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Review panel key handling.
 		if a.dashboard.panelFocus == focusReview && a.reviewSession != nil {
+			// Spec overlay intercepts all keys while active.
+			if a.reviewSpecOverlayActive {
+				switch msg.String() {
+				case "esc":
+					a.reviewSpecOverlayActive = false
+				case "pgdown":
+					a.reviewSpecOverlayScroll += a.height - 4
+				case "pgup":
+					a.reviewSpecOverlayScroll -= a.height - 4
+					if a.reviewSpecOverlayScroll < 0 {
+						a.reviewSpecOverlayScroll = 0
+					}
+				case "g":
+					a.reviewSpecOverlayScroll = 0
+				case "G":
+					a.reviewSpecOverlayScroll = 9999 // clamped at render time
+				}
+				return a, nil
+			}
 			switch msg.String() {
 			case "esc":
 				// Return to focus mode; session stays InReview.
 				a.dashboard.panelFocus = focusList
 				a.reviewSession = nil
+				a.reviewSpecOverlayActive = false
 				return a, nil
 			case "d":
 				// Defer: back to ReadyForReview, return to focus.
@@ -1727,9 +1758,10 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "j", "down":
 				// Move cursor down in the task list.
 				if entry := a.reviewDiffCache[a.reviewSession.ID]; entry != nil {
-					max := reviewTaskCount(entry) - 1
-					if a.reviewTaskCursor < max {
+					maxIdx := reviewTaskCount(entry) - 1
+					if a.reviewTaskCursor < maxIdx {
 						a.reviewTaskCursor++
+						a.refreshReviewDiffViewport()
 					}
 				}
 				return a, nil
@@ -1737,6 +1769,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Move cursor up in the task list.
 				if a.reviewTaskCursor > 0 {
 					a.reviewTaskCursor--
+					a.refreshReviewDiffViewport()
 				}
 				return a, nil
 			case "f":
@@ -1768,30 +1801,31 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// rows the user flagged with `f`. Session returns to InProgress.
 				return a.addressReviewFeedback(a.reviewSession)
 			case "enter", "space":
-				// Drill into the selected task's diff. Opens the diff browser
-				// filtered to the commits for that task; esc returns to the
-				// task list (handled by diffCloseMsg).
-				entry := a.reviewDiffCache[a.reviewSession.ID]
-				if entry == nil || len(entry.groups) == 0 {
-					return a, nil
+				// Inline diff is shown in the right pane; enter/space are no-ops here.
+				return a, nil
+			case "pgdown":
+				a.reviewDiffVP.PageDown()
+				return a, nil
+			case "pgup":
+				a.reviewDiffVP.PageUp()
+				return a, nil
+			case "ctrl+d":
+				a.reviewDiffVP.HalfPageDown()
+				return a, nil
+			case "ctrl+u":
+				a.reviewDiffVP.HalfPageUp()
+				return a, nil
+			case "g":
+				a.reviewDiffVP.GotoTop()
+				return a, nil
+			case "G":
+				a.reviewDiffVP.GotoBottom()
+				return a, nil
+			case "?":
+				if a.reviewSession.HasPlan() {
+					a.reviewSpecOverlayActive = true
+					a.reviewSpecOverlayScroll = 0
 				}
-				group := reviewTaskGroupAtCursor(entry, a.reviewTaskCursor)
-				if group == nil || group.rawDiff == "" {
-					return a, nil
-				}
-				m, err := diffmodel.Parse(group.rawDiff)
-				if err != nil {
-					a.setError(err.Error())
-					return a, nil
-				}
-				taskLabel := a.reviewSession.GetDisplayName()
-				if group.taskIndex > 0 {
-					taskLabel += fmt.Sprintf(" · task %d", group.taskIndex)
-				} else {
-					taskLabel += " · other changes"
-				}
-				a.view = ViewDiff
-				a.diff = newDiffModel(taskLabel, m, a.width, a.height-1)
 				return a, nil
 			}
 			// All other keys are no-ops in review panel.
@@ -2017,11 +2051,13 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				sess.SetLifecyclePhase(agent.LifecycleInReview)
 				a.reviewSession = sess
 				a.reviewTaskCursor = 0
+				a.reviewDiffCacheByTask = make(map[int]*diffmodel.Model)
 				a.dashboard.panelFocus = focusReview
 				// Fetch diff stats if not already cached.
 				if _, ok := a.reviewDiffCache[sess.ID]; !ok {
 					return a, a.fetchReviewDiffCmd(sess)
 				}
+				a.refreshReviewDiffViewport()
 				return a, nil
 			case "n":
 				if a.cfg != nil && len(a.cfg.Repos) > 1 {
@@ -3542,10 +3578,12 @@ func (a *App) activateFocusCursor() (tea.Cmd, bool) {
 		sess.SetLifecyclePhase(agent.LifecycleInReview)
 		a.reviewSession = sess
 		a.reviewTaskCursor = 0
+		a.reviewDiffCacheByTask = make(map[int]*diffmodel.Model)
 		a.dashboard.panelFocus = focusReview
 		if _, ok := a.reviewDiffCache[sess.ID]; !ok {
 			return a.fetchReviewDiffCmd(sess), true
 		}
+		a.refreshReviewDiffViewport()
 		return nil, true
 	case focusSectionShipping:
 		a.shippingSession = sess
@@ -3794,10 +3832,13 @@ func (a App) View() tea.View {
 		if a.dashboard.panelFocus == focusReview && a.reviewSession != nil {
 			entry := a.reviewDiffCache[a.reviewSession.ID]
 			var panelStr string
-			if a.prComposeModal.Active() {
+			if a.reviewSpecOverlayActive {
+				plan, _ := a.reviewSession.CachedPlan()
+				panelStr = renderReviewSpecOverlay(a.reviewSession, plan, a.reviewSpecOverlayScroll, a.width, a.height)
+			} else if a.prComposeModal.Active() {
 				panelStr = lipgloss.Place(a.width, a.height-1, lipgloss.Center, lipgloss.Center, a.prComposeModal.View())
 			} else {
-				panelStr = renderReviewPanel(a.reviewSession, entry, a.width, a.height, a.reviewTaskCursor, a.prDraftInFlight && a.prDraftSessionID == a.reviewSession.ID)
+				panelStr = renderReviewPanel(a.reviewSession, entry, a.width, a.height, a.reviewTaskCursor, a.prDraftInFlight && a.prDraftSessionID == a.reviewSession.ID, a.reviewDiffVP.View())
 			}
 			v := tea.NewView(panelStr)
 			v.AltScreen = true
@@ -4676,6 +4717,7 @@ func (a *App) addressReviewFeedback(sess *agent.Session) (tea.Model, tea.Cmd) {
 	a.reviewSession = nil
 	a.reviewTaskCursor = 0
 	delete(a.reviewDiffCache, sessID)
+	a.reviewDiffCacheByTask = make(map[int]*diffmodel.Model)
 	a.dashboard.panelFocus = focusList
 	return a, func() tea.Msg {
 		ag, err := mgr.AddAgent(sessID, cfg)
@@ -5060,6 +5102,63 @@ func (a App) fetchReviewDiffCmd(sess *agent.Session) tea.Cmd {
 
 		return reviewDiffMsg{sessionID: sessID, entry: entry}
 	}
+}
+
+// refreshReviewDiffViewport updates the inline diff viewport content for the
+// currently selected task. This ensures scroll clamping (PageDown/PageUp) works
+// correctly. Call this whenever the task cursor changes or when the review panel
+// is first entered. Also resets the scroll to the top.
+func (a *App) refreshReviewDiffViewport() {
+	// Compute layout dimensions mirroring renderReviewPanel's wide-mode formula so
+	// that SetHeight/SetWidth are correct and View()/PageDown/PageUp clamp properly.
+	headerLines := len(renderReviewHeader(a.reviewSession, a.width))
+	footerH := 3
+	bodyH := a.height - headerLines - footerH
+	if bodyH < 4 {
+		bodyH = 4
+	}
+	maxSummaryH := bodyH / 3
+	if maxSummaryH < 4 {
+		maxSummaryH = 4
+	}
+	diffH := bodyH - maxSummaryH - 1
+	if diffH < 1 {
+		diffH = 1
+	}
+	rightW := a.width*6/10 - 5
+	if rightW < 20 {
+		rightW = 20
+	}
+	a.reviewDiffVP.SetHeight(diffH)
+	a.reviewDiffVP.SetWidth(rightW)
+	a.reviewDiffVP.GotoTop()
+	if a.reviewSession == nil {
+		a.reviewDiffVP.SetContent("")
+		return
+	}
+	entry := a.reviewDiffCache[a.reviewSession.ID]
+	if entry == nil {
+		a.reviewDiffVP.SetContent("")
+		return
+	}
+	group := reviewTaskGroupAtCursor(entry, a.reviewTaskCursor)
+	if group == nil || group.rawDiff == "" {
+		a.reviewDiffVP.SetContent("(no diff for this task)")
+		return
+	}
+	// Use cache to avoid re-parsing on each keystroke.
+	idx := a.reviewTaskCursor
+	m, ok := a.reviewDiffCacheByTask[idx]
+	if !ok {
+		var err error
+		m, err = diffmodel.Parse(group.rawDiff)
+		if err != nil || m == nil {
+			a.reviewDiffVP.SetContent("(no diff for this task)")
+			return
+		}
+		a.reviewDiffCacheByTask[idx] = m
+	}
+	a.reviewDiffVP.SetContent(renderAllFilesUnified(m, rightW))
 }
 
 // populateNoDiffVerdicts stamps verdictNoDiff on every plan task in entry that

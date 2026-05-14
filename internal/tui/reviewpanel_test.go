@@ -249,7 +249,7 @@ func TestRenderReviewPanel_TwoPaneLayout(t *testing.T) {
 		},
 	}
 
-	output := renderReviewPanel(sess, entry, 140, 30, 0, false)
+	output := renderReviewPanel(sess, entry, 140, 30, 0, false, "")
 
 	if !strings.Contains(output, "PLAN TASKS") {
 		t.Error("must contain PLAN TASKS from left pane")
@@ -286,7 +286,7 @@ func TestRenderReviewPanel_NarrowWidthStacks(t *testing.T) {
 		},
 	}
 
-	output := renderReviewPanel(sess, entry, 70, 30, 0, false)
+	output := renderReviewPanel(sess, entry, 70, 30, 0, false, "")
 
 	if !strings.Contains(output, "PLAN TASKS") {
 		t.Error("must contain PLAN TASKS from list pane")
@@ -316,7 +316,7 @@ func TestRenderReviewPanel_ShowsOriginalPrompt(t *testing.T) {
 		aggregate: &git.DiffStats{Files: 2, Insertions: 213, Deletions: 34},
 	}
 
-	output := renderReviewPanel(sess, entry, 120, 40, 0, false)
+	output := renderReviewPanel(sess, entry, 120, 40, 0, false, "")
 
 	if !strings.Contains(output, "Fix the auth bug") {
 		t.Error("review panel must show the original prompt")
@@ -331,7 +331,7 @@ func TestRenderReviewPanel_NilDiffEntry(t *testing.T) {
 	sess.SetOriginalPrompt("Fix the auth bug")
 
 	// nil entry — should not panic
-	output := renderReviewPanel(sess, nil, 120, 40, 0, false)
+	output := renderReviewPanel(sess, nil, 120, 40, 0, false, "")
 	if !strings.Contains(output, "Fix the auth bug") {
 		t.Error("must still show prompt even with nil diff entry")
 	}
@@ -355,7 +355,7 @@ func TestRenderReviewPanel_UsesThemeColors(t *testing.T) {
 		},
 	}
 
-	output := renderReviewPanel(sess, entry, 120, 30, 0, false)
+	output := renderReviewPanel(sess, entry, 120, 30, 0, false, "")
 
 	// The pass verdict icon should carry the ColorSuccess ANSI escape.
 	expectedPrefix := StyleSuccess.Render("✓")
@@ -417,7 +417,7 @@ func TestRenderReviewPanel_NoPlanShowsOverview(t *testing.T) {
 		aggregate: &git.DiffStats{Files: 2, Insertions: 30, Deletions: 2},
 	}
 
-	output := renderReviewPanel(sess, entry, 120, 30, 0, false)
+	output := renderReviewPanel(sess, entry, 120, 30, 0, false, "")
 
 	if !strings.Contains(output, "Overview") {
 		t.Error("must show 'Overview' row in list pane for no-plan session")
@@ -457,7 +457,7 @@ func TestRenderReviewPanel_FooterAdvertisesAllActions(t *testing.T) {
 	sess.SetOriginalPrompt("Fix the auth bug")
 	sess.MarkDone()
 
-	output := renderReviewPanel(sess, nil, 120, 40, 0, false)
+	output := renderReviewPanel(sess, nil, 120, 40, 0, false, "")
 
 	for _, want := range []string{
 		"open PR",
@@ -500,7 +500,7 @@ func TestRenderReviewPanel_TaskListShown(t *testing.T) {
 		},
 	}
 
-	output := renderReviewPanel(sess, entry, 120, 40, 0, false)
+	output := renderReviewPanel(sess, entry, 120, 40, 0, false, "")
 
 	if !strings.Contains(output, "PLAN TASKS") {
 		t.Error("task list view must show PLAN TASKS header")
@@ -708,7 +708,7 @@ func TestRenderReviewPanel_NoDiffFoundBadge(t *testing.T) {
 	sess.SetOriginalPrompt("Fix the auth bug")
 	sess.MarkDone()
 
-	output := renderReviewPanel(sess, entry, 120, 40, 0, false)
+	output := renderReviewPanel(sess, entry, 120, 40, 0, false, "")
 
 	if !strings.Contains(output, "Write tests") {
 		t.Error("must render a row for task 2 even though it has no commits")
@@ -851,6 +851,135 @@ func TestVerdictBadge(t *testing.T) {
 	}
 }
 
+// TestRenderReviewHeader_GoalLineFromPlan verifies that the review header includes
+// a Goal: line populated from the plan's # Goal section when the session has a plan.
+func TestRenderReviewHeader_GoalLineFromPlan(t *testing.T) {
+	dir := t.TempDir()
+	sess := agent.NewSessionForTestWithPath("sess-goal", "fix-auth", dir)
+	sess.SetOriginalPrompt("Fix the auth redirect bug")
+	sess.MarkDone()
+
+	plan := "# Goal\nFix the auth redirect bug.\n\n## Spec\n1. Users redirect correctly.\n"
+	if err := sess.WritePlan(plan); err != nil {
+		t.Fatalf("WritePlan: %v", err)
+	}
+
+	lines := renderReviewHeader(sess, 120)
+	out := strings.Join(lines, "\n")
+
+	foundGoalLine := false
+	for _, l := range lines {
+		stripped := ansi.Strip(l)
+		if strings.HasPrefix(strings.TrimSpace(stripped), "Goal:") {
+			foundGoalLine = true
+			if !strings.Contains(stripped, "Fix the auth redirect bug.") {
+				t.Errorf("Goal: line does not contain goal text, got: %q", stripped)
+			}
+			break
+		}
+	}
+	if !foundGoalLine {
+		t.Errorf("renderReviewHeader must include a 'Goal:' line when session has a plan; got:\n%s", out)
+	}
+}
+
+// TestRenderReviewHeader_NoGoalWhenNoPlan verifies that the review header has no
+// Goal: line when the session has no plan.
+func TestRenderReviewHeader_NoGoalWhenNoPlan(t *testing.T) {
+	sess := agent.NewSessionForTest("sess-noplan", "fix-auth")
+	sess.SetOriginalPrompt("Fix the auth redirect bug")
+	sess.MarkDone()
+
+	lines := renderReviewHeader(sess, 120)
+	out := strings.Join(lines, "\n")
+
+	for _, l := range lines {
+		if strings.Contains(ansi.Strip(l), "Goal:") {
+			t.Errorf("renderReviewHeader must not include a 'Goal:' line when session has no plan; got:\n%s", out)
+		}
+	}
+}
+
+// TestRenderReviewPanel_HintsIncludeSpecAndScroll verifies that the footer hints
+// include ? (spec) and pgdn/pgup (scroll), and no longer show "view task diff".
+func TestRenderReviewPanel_HintsIncludeSpecAndScroll(t *testing.T) {
+	sess := agent.NewSessionForTest("sess-hints", "fix-auth")
+	sess.SetOriginalPrompt("Fix auth")
+	sess.MarkDone()
+
+	entry := &reviewDiffEntry{
+		tasks: []agent.PlanTask{{Index: 1, Text: "Fix handler"}},
+		groups: []taskReviewGroup{{
+			taskIndex: 1,
+			commits:   []git.Commit{{Hash: "abc1234", Subject: "[task 1] fix"}},
+			rawDiff:   "diff --git a/a.go b/a.go\nindex 1234567..abcdefg 100644\n--- a/a.go\n+++ b/a.go\n@@ -1,2 +1,3 @@\n package main\n+// marker\n func A() {}\n",
+		}},
+		verdicts: map[int]*taskVerdictRecord{1: {state: verdictPending}},
+	}
+
+	output := renderReviewPanel(sess, entry, 140, 40, 0, false, "")
+
+	if !strings.Contains(output, "?") {
+		t.Error("footer must include '?' hint for spec overlay")
+	}
+	if !strings.Contains(output, "pgdn") {
+		t.Error("footer must include 'pgdn' hint for scroll")
+	}
+	if strings.Contains(output, "view task diff") {
+		t.Error("footer must not include 'view task diff' hint (removed in favor of inline diff)")
+	}
+}
+
+// TestRenderReviewSpecOverlay_ContainsAllSections verifies that the spec overlay
+// renders Goal, Spec, Verification, and Not in scope section content.
+func TestRenderReviewSpecOverlay_ContainsAllSections(t *testing.T) {
+	dir := t.TempDir()
+	sess := agent.NewSessionForTestWithPath("spec-sess", "fix-auth", dir)
+	sess.SetOriginalPrompt("Fix auth")
+
+	plan := `# Goal
+Fix the auth redirect bug.
+
+## Spec
+1. Users redirect correctly.
+2. Tokens validated.
+
+## Context
+internal/auth/handler.go:42
+
+## Tasks
+- [ ] write test
+- [ ] implement
+
+## Verification
+go test -race ./internal/auth
+
+## Not in scope
+OAuth2 support`
+
+	if err := sess.WritePlan(plan); err != nil {
+		t.Fatalf("WritePlan: %v", err)
+	}
+	planContent, _ := sess.CachedPlan()
+
+	output := renderReviewSpecOverlay(sess, planContent, 0, 120, 40)
+
+	for _, want := range []string{"Goal", "Spec", "Verification", "Not in scope"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("overlay must contain %q; got:\n%s", want, output)
+		}
+	}
+	if !strings.Contains(output, "Fix the auth redirect bug.") {
+		t.Errorf("overlay must contain Goal body text; got:\n%s", output)
+	}
+	if !strings.Contains(output, "go test -race") {
+		t.Errorf("overlay must contain Verification body text; got:\n%s", output)
+	}
+	if !strings.Contains(output, "OAuth2 support") {
+		t.Errorf("overlay must contain Not in scope body text; got:\n%s", output)
+	}
+}
+
 // TestRenderReviewPanel_PRDraftInFlight verifies that the spinner status line
 // and disabled p hint appear when prDraftInFlight is true.
 func TestRenderReviewPanel_PRDraftInFlight(t *testing.T) {
@@ -858,7 +987,7 @@ func TestRenderReviewPanel_PRDraftInFlight(t *testing.T) {
 	sess.SetOriginalPrompt("Fix the auth bug")
 	sess.MarkDone()
 
-	output := renderReviewPanel(sess, nil, 120, 40, 0, true)
+	output := renderReviewPanel(sess, nil, 120, 40, 0, true, "")
 
 	if !strings.Contains(output, "Pushing branch and drafting PR") {
 		t.Error("in-flight state must show draft spinner line")
@@ -868,5 +997,118 @@ func TestRenderReviewPanel_PRDraftInFlight(t *testing.T) {
 	}
 	if strings.Contains(output, "create or open PR") {
 		t.Error("in-flight state must not show normal p hint")
+	}
+}
+
+// TestRenderReviewPanel_InlineDiffPresent verifies that when a task group has a
+// non-empty rawDiff, the wide-mode review panel renders an inline diff showing
+// both the verdict label and a diff hunk header.
+func TestRenderReviewPanel_InlineDiffPresent(t *testing.T) {
+	rawDiff := "diff --git a/internal/auth/handler.go b/internal/auth/handler.go\n" +
+		"index 1234567..abcdefg 100644\n" +
+		"--- a/internal/auth/handler.go\n" +
+		"+++ b/internal/auth/handler.go\n" +
+		"@@ -10,5 +10,6 @@ func Handle(w http.ResponseWriter, r *http.Request) {\n" +
+		" \ttoken := r.Header.Get(\"Authorization\")\n" +
+		" \tif token == \"\" {\n" +
+		" \t\thttp.Redirect(w, r, \"/login\", http.StatusFound)\n" +
+		"+\t\treturn\n" +
+		" \t}\n" +
+		" }\n"
+	sess := agent.NewSessionForTest("sess-diff", "fix-auth")
+	sess.SetOriginalPrompt("Fix auth redirect")
+	sess.MarkDone()
+
+	entry := &reviewDiffEntry{
+		tasks: []agent.PlanTask{{Index: 1, Text: "Fix handler", Done: false}},
+		groups: []taskReviewGroup{{
+			taskIndex: 1,
+			commits:   []git.Commit{{Hash: "abc1234", Subject: "[task 1] fix handler"}},
+			stats:     &git.DiffStats{Files: 1, Insertions: 1, Deletions: 0},
+			rawDiff:   rawDiff,
+		}},
+		verdicts: map[int]*taskVerdictRecord{
+			1: {state: verdictDone, verdict: agent.ReviewVerdict{Kind: agent.VerdictPass}},
+		},
+	}
+
+	output := renderReviewPanel(sess, entry, 140, 40, 0, false, "")
+
+	if !strings.Contains(output, "pass") {
+		t.Error("must contain verdict label 'pass'")
+	}
+	if !strings.Contains(output, "@@") {
+		t.Errorf("inline diff must contain hunk header '@@'; got:\n%s", output)
+	}
+}
+
+// TestReviewPanel_CursorMoveSwapsDiff verifies that moving the cursor from task 1
+// to task 2 causes the inline diff area to render task 2's diff and not task 1's.
+func TestReviewPanel_CursorMoveSwapsDiff(t *testing.T) {
+	rawDiff1 := "diff --git a/a.go b/a.go\nindex 1234567..abcdefg 100644\n--- a/a.go\n+++ b/a.go\n@@ -1,3 +1,4 @@\n package main\n \n+// task-one-marker\n func A() {}\n"
+	rawDiff2 := "diff --git a/b.go b/b.go\nindex 1234567..abcdefg 100644\n--- a/b.go\n+++ b/b.go\n@@ -1,3 +1,4 @@\n package main\n \n+// task-two-marker\n func B() {}\n"
+
+	sess := agent.NewSessionForTest("sess-cursor", "fix-auth")
+	sess.SetOriginalPrompt("Fix auth")
+	sess.MarkDone()
+
+	entry := &reviewDiffEntry{
+		tasks: []agent.PlanTask{
+			{Index: 1, Text: "Task one", Done: false},
+			{Index: 2, Text: "Task two", Done: false},
+		},
+		groups: []taskReviewGroup{
+			{taskIndex: 1, commits: []git.Commit{{Hash: "aaa1111"}}, rawDiff: rawDiff1},
+			{taskIndex: 2, commits: []git.Commit{{Hash: "bbb2222"}}, rawDiff: rawDiff2},
+		},
+		verdicts: map[int]*taskVerdictRecord{
+			1: {state: verdictPending},
+			2: {state: verdictPending},
+		},
+	}
+
+	// cursor=0 → task 1's diff
+	out0 := renderReviewPanel(sess, entry, 140, 40, 0, false, "")
+	if !strings.Contains(out0, "task-one-marker") {
+		t.Errorf("cursor=0: expected task-one-marker in output; got:\n%s", out0)
+	}
+	if strings.Contains(out0, "task-two-marker") {
+		t.Errorf("cursor=0: must not contain task-two-marker; got:\n%s", out0)
+	}
+
+	// cursor=1 → task 2's diff
+	out1 := renderReviewPanel(sess, entry, 140, 40, 1, false, "")
+	if !strings.Contains(out1, "task-two-marker") {
+		t.Errorf("cursor=1: expected task-two-marker in output; got:\n%s", out1)
+	}
+	if strings.Contains(out1, "task-one-marker") {
+		t.Errorf("cursor=1: must not contain task-one-marker; got:\n%s", out1)
+	}
+}
+
+// TestRenderReviewPanel_NoDiffPlaceholder verifies that when a task group has an
+// empty rawDiff, the inline diff area shows the "(no diff for this task)" placeholder.
+func TestRenderReviewPanel_NoDiffPlaceholder(t *testing.T) {
+	sess := agent.NewSessionForTest("sess-nodiff", "fix-auth")
+	sess.SetOriginalPrompt("Fix auth redirect")
+	sess.MarkDone()
+
+	entry := &reviewDiffEntry{
+		tasks: []agent.PlanTask{{Index: 1, Text: "Fix handler", Done: false}},
+		groups: []taskReviewGroup{{
+			taskIndex: 1,
+			commits:   []git.Commit{{Hash: "abc1234", Subject: "[task 1] fix handler"}},
+			stats:     &git.DiffStats{Files: 0, Insertions: 0, Deletions: 0},
+			rawDiff:   "",
+		}},
+		verdicts: map[int]*taskVerdictRecord{
+			1: {state: verdictNoDiff},
+		},
+	}
+
+	// Must not panic and must show the placeholder.
+	output := renderReviewPanel(sess, entry, 140, 40, 0, false, "")
+	if !strings.Contains(output, "(no diff for this task)") {
+		t.Errorf("must show '(no diff for this task)' placeholder; got:\n%s", output)
 	}
 }

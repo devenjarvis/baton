@@ -14,6 +14,7 @@ import (
 	"github.com/devenjarvis/baton/internal/agent"
 	"github.com/devenjarvis/baton/internal/audio"
 	"github.com/devenjarvis/baton/internal/config"
+	"github.com/devenjarvis/baton/internal/git"
 	"github.com/devenjarvis/baton/internal/github"
 )
 
@@ -4014,5 +4015,105 @@ func TestNewApp_InitsFeedbackTriage(t *testing.T) {
 	}
 	if len(app.feedbackTriage) != 0 {
 		t.Errorf("feedbackTriage should be empty on init, got len=%d", len(app.feedbackTriage))
+	}
+}
+
+// TestReviewPanel_EnterDoesNotChangeView verifies that pressing enter or space
+// while focusReview is active does not transition to ViewDiff. The inline diff
+// is now shown inline, so the fullscreen hop is removed.
+func TestReviewPanel_EnterDoesNotChangeView(t *testing.T) {
+	sessR := agent.NewSessionForTest("r", "review-r")
+	sessR.SetLifecyclePhase(agent.LifecycleInReview)
+	sessR.SetOriginalPrompt("Fix auth")
+	sessR.MarkDone()
+
+	entry := &reviewDiffEntry{
+		tasks: []agent.PlanTask{{Index: 1, Text: "Fix handler", Done: false}},
+		groups: []taskReviewGroup{{
+			taskIndex: 1,
+			commits:   []git.Commit{{Hash: "abc1234", Subject: "[task 1] fix handler"}},
+			rawDiff:   "diff --git a/a.go b/a.go\nindex 1234567..abcdefg 100644\n--- a/a.go\n+++ b/a.go\n@@ -1,3 +1,4 @@\n package main\n \n+// marker\n func A() {}\n",
+		}},
+		verdicts: map[int]*taskVerdictRecord{
+			1: {state: verdictPending},
+		},
+	}
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.reviewSession = sessR
+	app.dashboard.panelFocus = focusReview
+	app.reviewDiffCache[sessR.ID] = entry
+
+	for _, key := range []string{"enter", "space"} {
+		msg := tea.KeyPressMsg{Code: tea.KeyEnter, Text: key}
+		if key == "space" {
+			msg = tea.KeyPressMsg{Code: tea.KeySpace, Text: " "}
+		}
+		model, _ := app.Update(msg)
+		updated := model.(App)
+		if updated.view != ViewDashboard {
+			t.Errorf("%s: expected view=ViewDashboard, got %v", key, updated.view)
+		}
+		if updated.dashboard.panelFocus != focusReview {
+			t.Errorf("%s: expected panelFocus=focusReview, got %v", key, updated.dashboard.panelFocus)
+		}
+	}
+}
+
+// TestReviewPanel_ScrollBindingsAdvanceViewport verifies that pressing pgdown
+// while focusReview is active advances the inline diff viewport's scroll position,
+// confirming the viewport is interactable via the scroll key bindings wired in the
+// focusReview key handler.
+func TestReviewPanel_ScrollBindingsAdvanceViewport(t *testing.T) {
+	// Build a diff with enough added lines to exceed the viewport height at 40 rows.
+	var sb strings.Builder
+	sb.WriteString("diff --git a/a.go b/a.go\nindex 1234567..abcdefg 100644\n--- a/a.go\n+++ b/a.go\n@@ -1,3 +1,53 @@\n package main\n \n")
+	for range 50 {
+		sb.WriteString("+// scroll-test-line\n")
+	}
+	sb.WriteString(" func A() {}\n")
+	rawDiff := sb.String()
+
+	sessR := agent.NewSessionForTest("scroll-vp", "review-scroll")
+	sessR.SetLifecyclePhase(agent.LifecycleInReview)
+	sessR.SetOriginalPrompt("Fix auth")
+	sessR.MarkDone()
+
+	entry := &reviewDiffEntry{
+		tasks: []agent.PlanTask{{Index: 1, Text: "Fix handler", Done: false}},
+		groups: []taskReviewGroup{{
+			taskIndex: 1,
+			commits:   []git.Commit{{Hash: "abc1234", Subject: "[task 1] fix handler"}},
+			rawDiff:   rawDiff,
+		}},
+		verdicts: map[int]*taskVerdictRecord{
+			1: {state: verdictPending},
+		},
+	}
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.reviewSession = sessR
+	app.dashboard.panelFocus = focusReview
+	app.reviewDiffCache[sessR.ID] = entry
+	// Load diff content and set viewport dimensions before sending scroll keys.
+	app.refreshReviewDiffViewport()
+
+	if !app.reviewDiffVP.AtTop() {
+		t.Fatal("expected viewport at top before scrolling")
+	}
+
+	// pgdown must advance the viewport away from the top.
+	model, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
+	updated := model.(App)
+
+	if updated.reviewDiffVP.AtTop() {
+		t.Error("pgdown: inline diff viewport did not scroll; viewport must advance when diff content exceeds viewport height")
+	}
+	if updated.dashboard.panelFocus != focusReview {
+		t.Error("pgdown: panelFocus must remain focusReview")
 	}
 }
