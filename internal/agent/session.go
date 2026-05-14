@@ -57,6 +57,12 @@ type Session struct {
 	planCacheContent string
 	planCacheMTime   time.Time
 
+	// Commit-task progress cache. Refreshed on KindStop events for
+	// LifecycleInProgress sessions via RefreshCommitTaskCount; read on the
+	// render path via CommitTaskCount without any shell-out.
+	commitTaskDone   int
+	commitTaskMaxIdx int
+
 	// cleanupOnce makes Session.Cleanup idempotent. Both watchAgent (via
 	// closeSession on natural exit) and Shutdown's teardown loop can call
 	// Cleanup against the same session; without this guard the second caller
@@ -1337,6 +1343,58 @@ func (s *Session) RestorePrevPlan() (string, bool, error) {
 	// so we surface the read/write success even if the cleanup misses.
 	_ = os.Remove(s.PrevPlanPath())
 	return prev, true, nil
+}
+
+// CommitTaskCount returns the cached count of distinct [task N] indices and
+// the maximum task index seen in commits ahead of the base branch. Both values
+// are zero until RefreshCommitTaskCount is called at least once.
+func (s *Session) CommitTaskCount() (done, maxIdx int) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.commitTaskDone, s.commitTaskMaxIdx
+}
+
+// RefreshCommitTaskCount reads commits ahead of the base branch (via
+// git.LogCommitsAgainstBase), groups them by [task N] prefix, and caches the
+// resulting (distinct count, max index) pair. Callers that want to avoid a
+// shell-out on the render path should call this from a background goroutine and
+// read the cached result via CommitTaskCount.
+//
+// Returns nil and writes (0, 0) when the session's Worktree is nil or its path
+// is empty, so dashboard tests with synthetic sessions render without error.
+func (s *Session) RefreshCommitTaskCount() error {
+	if s.Worktree == nil || s.Worktree.Path == "" {
+		return nil
+	}
+	commits, err := git.LogCommitsAgainstBase(s.Worktree)
+	if err != nil {
+		return err
+	}
+	groups := GroupCommitsByTask(commits)
+	done := 0
+	maxIdx := 0
+	for _, g := range groups {
+		if g.TaskIndex > 0 {
+			done++
+			if g.TaskIndex > maxIdx {
+				maxIdx = g.TaskIndex
+			}
+		}
+	}
+	s.mu.Lock()
+	s.commitTaskDone = done
+	s.commitTaskMaxIdx = maxIdx
+	s.mu.Unlock()
+	return nil
+}
+
+// SetCommitTaskCountForTest injects a cached commit-task count for testing.
+// Test-only: do not call from production code.
+func (s *Session) SetCommitTaskCountForTest(done, maxIdx int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.commitTaskDone = done
+	s.commitTaskMaxIdx = maxIdx
 }
 
 // ensureClaudeIgnored appends ".claude/" to the worktree's root .gitignore
