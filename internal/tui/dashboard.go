@@ -449,7 +449,7 @@ func renderCardProgressBar(done, total, width int, primary lipgloss.Color) strin
 
 // sessionFocusStatus returns a styled inline status badge for a session row in
 // the unified SESSIONS list. Priority: Error > Waiting > May Need Input >
-// idle-but-reviewable > finished (DoneAt set) > normal (N active, M idle).
+// idle-but-reviewable (only when no active agents) > finished (DoneAt set) > normal (N active, M idle).
 func (d dashboardModel) sessionFocusStatus(sess *agent.Session) string {
 	var waitingCount, activeCount, idleCount, idleAskingCount int
 	var firstWaitingReason string
@@ -488,7 +488,7 @@ func (d dashboardModel) sessionFocusStatus(sess *agent.Session) string {
 	if idleAskingCount > 0 {
 		return lipgloss.NewStyle().Foreground(ColorWarning).Render(fmt.Sprintf("? %d idle — may need input", idleAskingCount))
 	}
-	if sess.IsReviewable() && sess.DoneAt().IsZero() {
+	if sess.IsReviewable() && sess.DoneAt().IsZero() && activeCount == 0 {
 		return lipgloss.NewStyle().Foreground(ColorSuccess).Render("✓ idle — press m to review")
 	}
 	if !sess.DoneAt().IsZero() {
@@ -1647,10 +1647,16 @@ func (d dashboardModel) renderQueueRow(sess *agent.Session, repoName string, sel
 		nameRendered += tag
 	}
 	line1 := prefix + nameRendered
+	prIndSet := false
 	if prEntry := d.prCache[sess.ID]; prEntry != nil {
 		if prInd := prIndicator(prEntry); prInd != "" {
 			line1 = rightAlign(prefix+nameRendered, prInd, width)
+			prIndSet = true
 		}
+	}
+	if !prIndSet && !sess.IsReviewable() {
+		badge := d.sessionFocusStatus(sess)
+		line1 = rightAlign(prefix+nameRendered, badge, width)
 	}
 
 	var taskDisplay string

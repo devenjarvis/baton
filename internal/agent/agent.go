@@ -816,10 +816,15 @@ func (a *Agent) ExitErr() error {
 
 // Kill terminates the agent's process and waits for goroutines to exit.
 // Safe to call multiple times — subsequent calls are no-ops.
+// Also safe on synthetic test agents (nil pty/terminal): nil checks guard both.
 func (a *Agent) Kill() {
-	_ = a.pty.Close()
+	if a.pty != nil {
+		_ = a.pty.Close()
+	}
 	// Close terminal to unblock writeLoop's Read call.
-	a.terminal.Close()
+	if a.terminal != nil {
+		a.terminal.Close()
+	}
 	// Wait for writeLoop to finish before returning.
 	<-a.writeLoopDone
 }

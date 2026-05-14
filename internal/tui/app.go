@@ -51,10 +51,11 @@ type agentEventMsg struct {
 // already created earlier — the heuristic would double-count if we
 // incremented on session creation as well.
 type createResultMsg struct {
-	sessionID    string
-	agentID      string
-	err          error
-	isNewSession bool
+	sessionID       string
+	agentID         string
+	err             error
+	isNewSession    bool
+	skipFocusLaunch bool // when true, don't enter focusLaunch; cursor still moves
 }
 
 // killScope distinguishes an agent-level kill from a session-level kill so the
@@ -596,6 +597,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, tea.Batch(allCmds...)
 
 	case agentEventMsg:
+		var autoPromoteCmd tea.Cmd
 		// Clean up stale lastKnownStatus entries when a session auto-closes.
 		if msg.event.Type == agent.EventSessionClosed && msg.event.SessionID != "" {
 			prefix := msg.event.SessionID + "-agent-"
@@ -636,18 +638,32 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			a.lastKnownStatus[msg.event.AgentID] = msg.event.Status
-			if msg.event.Status == agent.StatusDone || msg.event.Status == agent.StatusError {
+			// Auto-promote and MarkDone share a single FindAgentAndSession
+			// call, gated on the statuses that can trigger either transition.
+			if msg.event.Status == agent.StatusIdle ||
+				msg.event.Status == agent.StatusDone ||
+				msg.event.Status == agent.StatusError {
 				if mgr := a.managers[msg.repoPath]; mgr != nil {
 					if _, sess := mgr.FindAgentAndSession(msg.event.AgentID); sess != nil {
-						allDone := true
-						for _, ag := range sess.Agents() {
-							if !ag.IsShell && ag.Status() != agent.StatusDone && ag.Status() != agent.StatusError {
-								allDone = false
-								break
-							}
+						// Auto-promote InProgress → ReadyForReview on first
+						// idle/done signal. Only fires once per session (the
+						// phase gate makes it idempotent on subsequent events).
+						if sess.LifecyclePhase() == agent.LifecycleInProgress && sess.IsReviewable() {
+							sess.SetLifecyclePhase(agent.LifecycleReadyForReview)
+							autoPromoteCmd = a.fetchReviewDiffCmd(sess)
 						}
-						if allDone {
-							sess.MarkDone()
+						// Mark session done when all non-shell agents have exited.
+						if msg.event.Status == agent.StatusDone || msg.event.Status == agent.StatusError {
+							allDone := true
+							for _, ag := range sess.Agents() {
+								if !ag.IsShell && ag.Status() != agent.StatusDone && ag.Status() != agent.StatusError {
+									allDone = false
+									break
+								}
+							}
+							if allDone {
+								sess.MarkDone()
+							}
 						}
 					}
 				}
@@ -700,7 +716,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Refresh list on any agent event — all repos are visible in the dashboard.
 		a.refreshAgentList()
 		if mgr := a.managers[msg.repoPath]; mgr != nil {
+			if autoPromoteCmd != nil {
+				return a, tea.Batch(autoPromoteCmd, listenEvents(mgr))
+			}
 			return a, listenEvents(mgr)
+		}
+		if autoPromoteCmd != nil {
+			return a, autoPromoteCmd
 		}
 		return a, nil
 
@@ -800,17 +822,19 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.sessionsCreatedCount++
 		}
 		a.refreshAgentList()
-		// Find the new agent by ID, select it, and auto-focus its terminal in
-		// focusLaunch.
+		// Find the new agent by ID. Cursor always moves to the new session's
+		// row; focusLaunch is only entered when skipFocusLaunch is false.
 		if msg.agentID != "" {
 			for i, item := range a.dashboard.items {
 				if item.kind == listItemAgent && item.agent != nil && item.agent.ID == msg.agentID {
 					a.dashboard.selected = i
-					a.focusLaunchAgent = item.agent
-					a.focusLaunchSession = item.session
-					a.dashboard.panelFocus = focusLaunch
-					a.dashboard.scrollOffset = 0
-					item.agent.Resize(a.focusLaunchTermHeight(), a.dashboard.width)
+					if !msg.skipFocusLaunch {
+						a.focusLaunchAgent = item.agent
+						a.focusLaunchSession = item.session
+						a.dashboard.panelFocus = focusLaunch
+						a.dashboard.scrollOffset = 0
+						item.agent.Resize(a.focusLaunchTermHeight(), a.dashboard.width)
+					}
 					// Move the pipeline cursor to the new session so when the
 					// user esc's back to focusList their cursor is on the row
 					// they just spawned. Walk every section because newSession
@@ -3820,7 +3844,7 @@ func (a *App) approvePlanAndSpawn(msg planEditorApproveMsg) (tea.Model, tea.Cmd)
 		// approved plan is when a session "starts" — submitPromptModal
 		// deliberately doesn't increment on plan creation, since the user
 		// could still abandon it before approving.
-		return createResultMsg{sessionID: sessID, agentID: ag.ID, isNewSession: true}
+		return createResultMsg{sessionID: sessID, agentID: ag.ID, isNewSession: true, skipFocusLaunch: true}
 	}
 }
 

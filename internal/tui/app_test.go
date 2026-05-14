@@ -4117,3 +4117,269 @@ func TestReviewPanel_ScrollBindingsAdvanceViewport(t *testing.T) {
 		t.Error("pgdown: panelFocus must remain focusReview")
 	}
 }
+
+// TestCreateResult_SkipFocusLaunch_StaysOnDashboard verifies that when
+// skipFocusLaunch is true the createResultMsg handler does not enter
+// focusLaunch, but still moves the pipeline cursor to the new session's row.
+func TestCreateResult_SkipFocusLaunch_StaysOnDashboard(t *testing.T) {
+	sess := agent.NewSessionForTest("sess-skip", "skip-session")
+	sess.SetLifecyclePhase(agent.LifecycleInProgress)
+	ag := sess.AddTestAgent("agent-skip", false, agent.StatusIdle)
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	// Pre-populate items; no manager is set so refreshAgentList returns early
+	// and leaves these items intact.
+	app.dashboard.items = []listItem{
+		{kind: listItemSession, repoPath: "/repo", session: sess},
+		{kind: listItemAgent, repoPath: "/repo", session: sess, agent: ag},
+	}
+
+	model, _ := app.Update(createResultMsg{
+		sessionID:       sess.ID,
+		agentID:         ag.ID,
+		skipFocusLaunch: true,
+	})
+	app = model.(App)
+
+	if app.dashboard.panelFocus == focusLaunch {
+		t.Error("panelFocus: got focusLaunch, want focusList (skipFocusLaunch should suppress terminal open)")
+	}
+	if app.focusLaunchAgent != nil {
+		t.Errorf("focusLaunchAgent: got %v, want nil", app.focusLaunchAgent.ID)
+	}
+	if app.focusCursorSection != focusSectionBuilding {
+		t.Errorf("focusCursorSection: got %v, want focusSectionBuilding", app.focusCursorSection)
+	}
+	building := app.dashboard.buildingSessions()
+	if len(building) == 0 {
+		t.Fatal("building section is empty — cursor-move block must run even when skipFocusLaunch is true")
+	}
+	if app.focusBuildingIdx >= len(building) {
+		t.Fatalf("focusBuildingIdx %d out of range (len=%d)", app.focusBuildingIdx, len(building))
+	}
+	if got := building[app.focusBuildingIdx].session; got == nil || got.ID != sess.ID {
+		t.Errorf("cursor does not point at new session: got %v, want %v", got, sess.ID)
+	}
+}
+
+// TestApprovePlanAndSpawn_StaysOnDashboard verifies that approving a plan keeps
+// the user on the dashboard (panelFocus == focusList, focusLaunchAgent == nil)
+// instead of dropping into the fullscreen agent terminal.
+func TestApprovePlanAndSpawn_StaysOnDashboard(t *testing.T) {
+	dir, err := os.MkdirTemp("", "baton-approve-spawn-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	for _, args := range [][]string{
+		{"git", "init"},
+		{"git", "config", "commit.gpgsign", "false"},
+		{"git", "commit", "--allow-empty", "-m", "init"},
+	} {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("setup %v: %v\n%s", args, err, out)
+		}
+	}
+
+	mgr := agent.NewManager(dir, config.Resolve(nil, nil))
+	defer mgr.Shutdown()
+
+	sess, err := mgr.CreateSessionForPlanning(agent.Config{
+		Rows: 24, Cols: 80, AgentProgram: "bash",
+	})
+	if err != nil {
+		t.Fatalf("CreateSessionForPlanning: %v", err)
+	}
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.managers[dir] = mgr
+	app.activeRepo = dir
+	app.resolvedCache[dir] = config.ResolvedSettings{
+		AgentProgram: "bash",
+	}
+
+	model, cmd := app.approvePlanAndSpawn(planEditorApproveMsg{
+		sessionID: sess.ID,
+		repoPath:  dir,
+	})
+	if m, ok := model.(*App); ok {
+		app = *m
+	} else {
+		app = model.(App)
+	}
+	if cmd == nil {
+		t.Fatal("approvePlanAndSpawn returned nil cmd; expected a deferred AddAgent closure")
+	}
+
+	// Execute the cmd synchronously to get the createResultMsg.
+	resultMsg, ok := cmd().(createResultMsg)
+	if !ok {
+		t.Fatalf("cmd() returned %T, want createResultMsg", cmd())
+	}
+	if resultMsg.err != nil {
+		t.Fatalf("createResultMsg.err: %v", resultMsg.err)
+	}
+	if !resultMsg.skipFocusLaunch {
+		t.Error("createResultMsg.skipFocusLaunch: got false, want true (plan-approve path must not open agent terminal)")
+	}
+
+	// Dispatch through Update and verify focus stays on dashboard.
+	model2, _ := app.Update(resultMsg)
+	if m, ok := model2.(*App); ok {
+		app = *m
+	} else {
+		app = model2.(App)
+	}
+	if app.dashboard.panelFocus == focusLaunch {
+		t.Error("panelFocus: got focusLaunch after plan approval, want focusList")
+	}
+	if app.focusLaunchAgent != nil {
+		t.Errorf("focusLaunchAgent: got %v, want nil", app.focusLaunchAgent.ID)
+	}
+}
+
+// setupAutoPromoteRepo creates a temp git repo and a manager for auto-promote tests.
+func setupAutoPromoteRepo(t *testing.T) (dir string, mgr *agent.Manager) {
+	t.Helper()
+	var err error
+	dir, err = os.MkdirTemp("", "baton-auto-promote-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	for _, args := range [][]string{
+		{"git", "init"},
+		{"git", "config", "commit.gpgsign", "false"},
+		{"git", "commit", "--allow-empty", "-m", "init"},
+	} {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("setup %v: %v\n%s", args, err, out)
+		}
+	}
+	mgr = agent.NewManager(dir, config.Resolve(nil, nil))
+	t.Cleanup(mgr.Shutdown)
+	return dir, mgr
+}
+
+// TestAgentEvent_IdleAutoPromotesInProgressToReadyForReview verifies that
+// receiving a StatusIdle event for a session in LifecycleInProgress whose
+// agents are all reviewable advances the session to LifecycleReadyForReview.
+func TestAgentEvent_IdleAutoPromotesInProgressToReadyForReview(t *testing.T) {
+	dir, mgr := setupAutoPromoteRepo(t)
+
+	sess, err := mgr.CreateSessionForPlanning(agent.Config{Rows: 24, Cols: 80, AgentProgram: "bash"})
+	if err != nil {
+		t.Fatalf("CreateSessionForPlanning: %v", err)
+	}
+	sess.SetLifecyclePhase(agent.LifecycleInProgress)
+	ag := sess.AddTestAgent("ag-idle-1", false, agent.StatusIdle)
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.managers[dir] = mgr
+	app.activeRepo = dir
+	app.resolvedCache[dir] = config.Resolve(nil, nil)
+
+	model, cmd := app.Update(agentEventMsg{
+		event: agent.Event{
+			Type:      agent.EventStatusChanged,
+			AgentID:   ag.ID,
+			SessionID: sess.ID,
+			Status:    agent.StatusIdle,
+		},
+		repoPath: dir,
+	})
+	if m, ok := model.(*App); ok {
+		_ = m
+	} else {
+		_ = model.(App)
+	}
+
+	if sess.LifecyclePhase() != agent.LifecycleReadyForReview {
+		t.Errorf("phase: got %v, want LifecycleReadyForReview", sess.LifecyclePhase())
+	}
+	if cmd == nil {
+		t.Error("returned Cmd is nil; expected tea.Batch(fetchReviewDiffCmd, listenEvents)")
+	}
+}
+
+// TestAgentEvent_ActiveDoesNotAutoPromote verifies that an Active-status event
+// does not advance a session from LifecycleInProgress to ReadyForReview.
+func TestAgentEvent_ActiveDoesNotAutoPromote(t *testing.T) {
+	dir, mgr := setupAutoPromoteRepo(t)
+
+	sess, err := mgr.CreateSessionForPlanning(agent.Config{Rows: 24, Cols: 80, AgentProgram: "bash"})
+	if err != nil {
+		t.Fatalf("CreateSessionForPlanning: %v", err)
+	}
+	sess.SetLifecyclePhase(agent.LifecycleInProgress)
+	ag := sess.AddTestAgent("ag-active-1", false, agent.StatusActive)
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.managers[dir] = mgr
+	app.activeRepo = dir
+
+	app.Update(agentEventMsg{ //nolint:errcheck
+		event: agent.Event{
+			Type:      agent.EventStatusChanged,
+			AgentID:   ag.ID,
+			SessionID: sess.ID,
+			Status:    agent.StatusActive,
+		},
+		repoPath: dir,
+	})
+
+	if sess.LifecyclePhase() != agent.LifecycleInProgress {
+		t.Errorf("phase: got %v, want LifecycleInProgress (Active event must not promote)", sess.LifecyclePhase())
+	}
+}
+
+// TestAgentEvent_IdleLeavesShippingPhaseAlone verifies that a Shipping-phase
+// session is not demoted to ReadyForReview when its agents go idle.
+func TestAgentEvent_IdleLeavesShippingPhaseAlone(t *testing.T) {
+	dir, mgr := setupAutoPromoteRepo(t)
+
+	sess, err := mgr.CreateSessionForPlanning(agent.Config{Rows: 24, Cols: 80, AgentProgram: "bash"})
+	if err != nil {
+		t.Fatalf("CreateSessionForPlanning: %v", err)
+	}
+	sess.SetLifecyclePhase(agent.LifecycleShipping)
+	ag := sess.AddTestAgent("ag-ship-1", false, agent.StatusIdle)
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.managers[dir] = mgr
+	app.activeRepo = dir
+
+	app.Update(agentEventMsg{ //nolint:errcheck
+		event: agent.Event{
+			Type:      agent.EventStatusChanged,
+			AgentID:   ag.ID,
+			SessionID: sess.ID,
+			Status:    agent.StatusIdle,
+		},
+		repoPath: dir,
+	})
+
+	if sess.LifecyclePhase() != agent.LifecycleShipping {
+		t.Errorf("phase: got %v, want LifecycleShipping (idle event must not demote Shipping session)", sess.LifecyclePhase())
+	}
+}

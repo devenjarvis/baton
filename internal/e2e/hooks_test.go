@@ -100,20 +100,24 @@ func TestHookPipeline(t *testing.T) {
 	if !waitForBadgeText(s, "waiting", 5000) {
 		t.Fatalf("never observed Waiting badge text\nScreen:\n%s", s.Screenshot())
 	}
-	// Idle — stop fires at t≈3.5s. The session card surfaces this as the
-	// "✓ idle — press m to review" cue.
-	if !waitForBadgeText(s, "press m to review", 5000) {
-		t.Fatalf("never observed idle review cue after Stop\nScreen:\n%s", s.Screenshot())
+	// Idle — stop fires at t≈3.5s. Auto-promotion moves the session from
+	// BUILDING to REVIEWING immediately on the idle event, so the session
+	// card now lives in the REVIEWING section of the pipeline.
+	if !waitForBadgeText(s, "REVIEWING", 5000) {
+		t.Fatalf("never observed REVIEWING section after Stop (auto-promotion did not fire)\nScreen:\n%s", s.Screenshot())
 	}
-	// Active again — user-prompt-submit fires at t≈5.5s and re-arms.
+	// Active again — user-prompt-submit fires at t≈5.5s and re-arms the
+	// status indicator. The session remains in REVIEWING (auto-promotion is
+	// idempotent for already-promoted sessions), but the agent badge should
+	// briefly show "active".
 	if !waitForBadgeText(s, "active", 5000) {
 		t.Fatalf("never observed re-armed Active badge after UserPromptSubmit\nScreen:\n%s", s.Screenshot())
 	}
-	// Idle again — stop fires at t≈7.5s. This doubles as a re-arm check:
-	// if UserPromptSubmit hadn't re-armed, there'd be no intermediate Active
-	// and the second Stop would be a no-op status-wise.
-	if !waitForBadgeText(s, "press m to review", 5000) {
-		t.Fatalf("never observed final idle cue after second Stop\nScreen:\n%s", s.Screenshot())
+	// Idle again — stop fires at t≈7.5s. Session stays in REVIEWING (the
+	// phase gate suppresses a second promotion). This doubles as a re-arm
+	// check: no intermediate Active would mean UserPromptSubmit didn't re-arm.
+	if !waitForBadgeText(s, "REVIEWING", 5000) {
+		t.Fatalf("never observed REVIEWING section after second Stop\nScreen:\n%s", s.Screenshot())
 	}
 }
 
