@@ -1,0 +1,4 @@
+### Fixed
+
+- Sessions no longer auto-close when all agents exit naturally. The watchAgent goroutine was calling `closeSession` whenever `sess.Status()` reached `StatusDone`, which removed the session from the manager and cleared its agents map before the user could advance the session to REVIEWING or SHIPPING. Sessions now persist until explicitly closed (user `X` key, merge, or detach cleanup).
+- Building session card line 3 ("current task:") now reads from plan checkboxes rather than stale pending todos, consistent with the badge (line 1) and task description (line 2). Plan checkboxes are the build agent's authoritative work contract (mapped 1:1 to `[task N]` commits) and stay current via Claude's Edit tool; TodoWrite snapshots can go stale when Claude omits subsequent calls. Only `in_progress` todos (an unambiguous active-work signal) still override the plan on line 3.
