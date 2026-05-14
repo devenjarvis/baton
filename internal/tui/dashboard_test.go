@@ -578,7 +578,6 @@ func TestFirstUncompletedTask(t *testing.T) {
 	}
 }
 
-
 func TestPlanningStatusBadge_PhaseTransitions(t *testing.T) {
 	dir := t.TempDir()
 	sess := agent.NewSessionForTestWithPath("id", "name", dir)

@@ -715,7 +715,7 @@ func (d dashboardModel) renderFocusSessionCard(sess *agent.Session, repoName str
 		task := buildingCurrentTask(sess)
 		line3 = stripe + indent
 		if task != "" {
-			taskBudget := descBudget - 14 // subtract len("current task: ")
+			taskBudget := descBudget - lipgloss.Width("current task: ")
 			if taskBudget < 0 {
 				taskBudget = 0
 			}
