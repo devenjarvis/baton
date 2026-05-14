@@ -4247,3 +4247,139 @@ func TestApprovePlanAndSpawn_StaysOnDashboard(t *testing.T) {
 		t.Errorf("focusLaunchAgent: got %v, want nil", app.focusLaunchAgent.ID)
 	}
 }
+
+// setupAutoPromoteRepo creates a temp git repo and a manager for auto-promote tests.
+func setupAutoPromoteRepo(t *testing.T) (dir string, mgr *agent.Manager) {
+	t.Helper()
+	var err error
+	dir, err = os.MkdirTemp("", "baton-auto-promote-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	for _, args := range [][]string{
+		{"git", "init"},
+		{"git", "config", "commit.gpgsign", "false"},
+		{"git", "commit", "--allow-empty", "-m", "init"},
+	} {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("setup %v: %v\n%s", args, err, out)
+		}
+	}
+	mgr = agent.NewManager(dir, config.Resolve(nil, nil))
+	t.Cleanup(mgr.Shutdown)
+	return dir, mgr
+}
+
+// TestAgentEvent_IdleAutoPromotesInProgressToReadyForReview verifies that
+// receiving a StatusIdle event for a session in LifecycleInProgress whose
+// agents are all reviewable advances the session to LifecycleReadyForReview.
+func TestAgentEvent_IdleAutoPromotesInProgressToReadyForReview(t *testing.T) {
+	dir, mgr := setupAutoPromoteRepo(t)
+
+	sess, err := mgr.CreateSessionForPlanning(agent.Config{Rows: 24, Cols: 80, AgentProgram: "bash"})
+	if err != nil {
+		t.Fatalf("CreateSessionForPlanning: %v", err)
+	}
+	sess.SetLifecyclePhase(agent.LifecycleInProgress)
+	ag := sess.AddTestAgent("ag-idle-1", false, agent.StatusIdle)
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.managers[dir] = mgr
+	app.activeRepo = dir
+	app.resolvedCache[dir] = config.Resolve(nil, nil)
+
+	model, cmd := app.Update(agentEventMsg{
+		event: agent.Event{
+			Type:      agent.EventStatusChanged,
+			AgentID:   ag.ID,
+			SessionID: sess.ID,
+			Status:    agent.StatusIdle,
+		},
+		repoPath: dir,
+	})
+	if m, ok := model.(*App); ok {
+		_ = m
+	} else {
+		_ = model.(App)
+	}
+
+	if sess.LifecyclePhase() != agent.LifecycleReadyForReview {
+		t.Errorf("phase: got %v, want LifecycleReadyForReview", sess.LifecyclePhase())
+	}
+	if cmd == nil {
+		t.Error("returned Cmd is nil; expected tea.Batch(fetchReviewDiffCmd, listenEvents)")
+	}
+}
+
+// TestAgentEvent_ActiveDoesNotAutoPromote verifies that an Active-status event
+// does not advance a session from LifecycleInProgress to ReadyForReview.
+func TestAgentEvent_ActiveDoesNotAutoPromote(t *testing.T) {
+	dir, mgr := setupAutoPromoteRepo(t)
+
+	sess, err := mgr.CreateSessionForPlanning(agent.Config{Rows: 24, Cols: 80, AgentProgram: "bash"})
+	if err != nil {
+		t.Fatalf("CreateSessionForPlanning: %v", err)
+	}
+	sess.SetLifecyclePhase(agent.LifecycleInProgress)
+	ag := sess.AddTestAgent("ag-active-1", false, agent.StatusActive)
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.managers[dir] = mgr
+	app.activeRepo = dir
+
+	app.Update(agentEventMsg{ //nolint:errcheck
+		event: agent.Event{
+			Type:      agent.EventStatusChanged,
+			AgentID:   ag.ID,
+			SessionID: sess.ID,
+			Status:    agent.StatusActive,
+		},
+		repoPath: dir,
+	})
+
+	if sess.LifecyclePhase() != agent.LifecycleInProgress {
+		t.Errorf("phase: got %v, want LifecycleInProgress (Active event must not promote)", sess.LifecyclePhase())
+	}
+}
+
+// TestAgentEvent_IdleLeavesShippingPhaseAlone verifies that a Shipping-phase
+// session is not demoted to ReadyForReview when its agents go idle.
+func TestAgentEvent_IdleLeavesShippingPhaseAlone(t *testing.T) {
+	dir, mgr := setupAutoPromoteRepo(t)
+
+	sess, err := mgr.CreateSessionForPlanning(agent.Config{Rows: 24, Cols: 80, AgentProgram: "bash"})
+	if err != nil {
+		t.Fatalf("CreateSessionForPlanning: %v", err)
+	}
+	sess.SetLifecyclePhase(agent.LifecycleShipping)
+	ag := sess.AddTestAgent("ag-ship-1", false, agent.StatusIdle)
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.managers[dir] = mgr
+	app.activeRepo = dir
+
+	app.Update(agentEventMsg{ //nolint:errcheck
+		event: agent.Event{
+			Type:      agent.EventStatusChanged,
+			AgentID:   ag.ID,
+			SessionID: sess.ID,
+			Status:    agent.StatusIdle,
+		},
+		repoPath: dir,
+	})
+
+	if sess.LifecyclePhase() != agent.LifecycleShipping {
+		t.Errorf("phase: got %v, want LifecycleShipping (idle event must not demote Shipping session)", sess.LifecyclePhase())
+	}
+}

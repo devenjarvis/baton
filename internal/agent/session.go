@@ -662,8 +662,20 @@ func NewSessionForTestWithPath(id, name, worktreePath string) *Session {
 // normal PTY-spawning path so callers don't need a real subprocess to exercise
 // status-dependent session logic (e.g. IsReviewable). The status write is
 // guarded by a.mu to match the pattern of every production writer of status.
+// The done and writeLoopDone channels are pre-closed so Kill() and KillAll()
+// treat the agent as already finished without blocking on a real process.
 func (s *Session) AddTestAgent(id string, isShell bool, status Status) *Agent {
-	a := &Agent{ID: id, IsShell: isShell, CreatedAt: time.Now()}
+	done := make(chan struct{})
+	close(done)
+	writeLoopDone := make(chan struct{})
+	close(writeLoopDone)
+	a := &Agent{
+		ID:            id,
+		IsShell:       isShell,
+		CreatedAt:     time.Now(),
+		done:          done,
+		writeLoopDone: writeLoopDone,
+	}
 	a.mu.Lock()
 	a.status = status
 	a.mu.Unlock()

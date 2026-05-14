@@ -597,6 +597,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, tea.Batch(allCmds...)
 
 	case agentEventMsg:
+		var autoPromoteCmd tea.Cmd
 		// Clean up stale lastKnownStatus entries when a session auto-closes.
 		if msg.event.Type == agent.EventSessionClosed && msg.event.SessionID != "" {
 			prefix := msg.event.SessionID + "-agent-"
@@ -637,18 +638,32 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			a.lastKnownStatus[msg.event.AgentID] = msg.event.Status
-			if msg.event.Status == agent.StatusDone || msg.event.Status == agent.StatusError {
+			// Auto-promote and MarkDone share a single FindAgentAndSession
+			// call, gated on the statuses that can trigger either transition.
+			if msg.event.Status == agent.StatusIdle ||
+				msg.event.Status == agent.StatusDone ||
+				msg.event.Status == agent.StatusError {
 				if mgr := a.managers[msg.repoPath]; mgr != nil {
 					if _, sess := mgr.FindAgentAndSession(msg.event.AgentID); sess != nil {
-						allDone := true
-						for _, ag := range sess.Agents() {
-							if !ag.IsShell && ag.Status() != agent.StatusDone && ag.Status() != agent.StatusError {
-								allDone = false
-								break
-							}
+						// Auto-promote InProgress → ReadyForReview on first
+						// idle/done signal. Only fires once per session (the
+						// phase gate makes it idempotent on subsequent events).
+						if sess.LifecyclePhase() == agent.LifecycleInProgress && sess.IsReviewable() {
+							sess.SetLifecyclePhase(agent.LifecycleReadyForReview)
+							autoPromoteCmd = a.fetchReviewDiffCmd(sess)
 						}
-						if allDone {
-							sess.MarkDone()
+						// Mark session done when all non-shell agents have exited.
+						if msg.event.Status == agent.StatusDone || msg.event.Status == agent.StatusError {
+							allDone := true
+							for _, ag := range sess.Agents() {
+								if !ag.IsShell && ag.Status() != agent.StatusDone && ag.Status() != agent.StatusError {
+									allDone = false
+									break
+								}
+							}
+							if allDone {
+								sess.MarkDone()
+							}
 						}
 					}
 				}
@@ -701,7 +716,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Refresh list on any agent event — all repos are visible in the dashboard.
 		a.refreshAgentList()
 		if mgr := a.managers[msg.repoPath]; mgr != nil {
+			if autoPromoteCmd != nil {
+				return a, tea.Batch(autoPromoteCmd, listenEvents(mgr))
+			}
 			return a, listenEvents(mgr)
+		}
+		if autoPromoteCmd != nil {
+			return a, autoPromoteCmd
 		}
 		return a, nil
 
