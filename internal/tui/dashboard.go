@@ -1683,10 +1683,16 @@ func (d dashboardModel) renderQueueRow(sess *agent.Session, repoName string, sel
 		nameRendered += tag
 	}
 	line1 := prefix + nameRendered
+	prIndSet := false
 	if prEntry := d.prCache[sess.ID]; prEntry != nil {
 		if prInd := prIndicator(prEntry); prInd != "" {
 			line1 = rightAlign(prefix+nameRendered, prInd, width)
+			prIndSet = true
 		}
+	}
+	if !prIndSet && !sess.IsReviewable() {
+		badge := d.sessionFocusStatus(sess)
+		line1 = rightAlign(prefix+nameRendered, badge, width)
 	}
 
 	var taskDisplay string
