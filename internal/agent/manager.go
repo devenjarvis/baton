@@ -304,6 +304,16 @@ func (m *Manager) dispatchHookEvents() {
 			m.maybeRenameFromPrompt(sess, a, e.Prompt)
 			m.maybeStartTaskSummary(sess)
 		}
+
+		if e.Kind == hook.KindStop && sess.LifecyclePhase() == LifecycleInProgress {
+			m.watchers.Add(1)
+			go func(s *Session) {
+				defer m.watchers.Done()
+				if err := s.RefreshCommitTaskCount(); err != nil {
+					fmt.Fprintf(os.Stderr, "refrain: refresh commit task count: %v\n", err)
+				}
+			}(sess)
+		}
 	}
 }
 
