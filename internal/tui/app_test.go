@@ -2214,6 +2214,42 @@ func TestPipeline_AKey_OpensFileBrowser(t *testing.T) {
 	}
 }
 
+// TestPipeline_RKey_OpensRepoPickerInManageMode verifies that pressing R on the
+// dashboard opens the repo picker in manage mode (not session mode).
+func TestPipeline_RKey_OpensRepoPickerInManageMode(t *testing.T) {
+	dir1 := t.TempDir()
+	dir2 := t.TempDir()
+
+	mgr1 := agent.NewManager(dir1, config.Resolve(nil, nil))
+	defer mgr1.Shutdown()
+	mgr2 := agent.NewManager(dir2, config.Resolve(nil, nil))
+	defer mgr2.Shutdown()
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.managers[dir1] = mgr1
+	app.managers[dir2] = mgr2
+	app.activeRepo = dir1
+	app.cfg = &config.Config{
+		Repos: []config.Repo{
+			{Path: dir1, Name: "repo1"},
+			{Path: dir2, Name: "repo2"},
+		},
+	}
+
+	model, _ := app.Update(tea.KeyPressMsg{Code: 'R', Text: "R"})
+	app = model.(App)
+	if app.view != ViewRepoPicker {
+		t.Fatalf("expected ViewRepoPicker after R, got %v", app.view)
+	}
+	if app.repoPicker.mode != repoPickerModeManage {
+		t.Errorf("expected repoPickerModeManage, got %v", app.repoPicker.mode)
+	}
+}
+
 // TestPipeline_XKey_NoSession verifies that 'x' on an empty pipeline produces
 // a friendly error and does not crash.
 func TestPipeline_XKey_NoSession(t *testing.T) {

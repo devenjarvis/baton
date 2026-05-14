@@ -2142,6 +2142,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.repoPicker = newRepoPickerModel()
 					a.repoPicker.width = a.width
 					a.repoPicker.height = a.height - 1
+					a.repoPicker.SetMode(repoPickerModeSession)
 					a.repoPicker.setRepos(a.cfg.Repos, counts, a.activeRepo)
 					a.view = ViewRepoPicker
 					return a, nil
@@ -2484,6 +2485,22 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return a, a.startPRDraftCmd(sess, repoPath, false)
 				}
 			}
+			return a, nil
+
+		case "R":
+			// Open repo picker in manage mode (switch active repo, edit settings, remove).
+			counts := make(map[string]int, len(a.cfg.Repos))
+			for _, repo := range a.cfg.Repos {
+				if mgr := a.managers[repo.Path]; mgr != nil {
+					counts[repo.Path] = mgr.AgentCount()
+				}
+			}
+			a.repoPicker = newRepoPickerModel()
+			a.repoPicker.width = a.width
+			a.repoPicker.height = a.height - 1
+			a.repoPicker.SetMode(repoPickerModeManage)
+			a.repoPicker.setRepos(a.cfg.Repos, counts, a.activeRepo)
+			a.view = ViewRepoPicker
 			return a, nil
 
 		case "s":
