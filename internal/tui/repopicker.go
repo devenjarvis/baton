@@ -53,7 +53,7 @@ type repoPickerModel struct {
 	scrollOffset int
 	filter       string
 
-	mode            repoPickerMode
+	mode             repoPickerMode
 	pendingRemoveIdx int // filtered-row index awaiting d+d confirm; -1 means none
 
 	width  int
