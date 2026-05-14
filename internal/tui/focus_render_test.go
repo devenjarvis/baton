@@ -871,3 +871,83 @@ func TestRenderFocusSessionCard_BranchChipAndElapsedGlyph(t *testing.T) {
 		t.Errorf("no-branch session should not render ⎇ label, got %q", line4b)
 	}
 }
+
+// TestBuildingCurrentTask covers the priority chain in buildingCurrentTask.
+func TestBuildingCurrentTask(t *testing.T) {
+	t.Run("in_progress todo ActiveForm wins", func(t *testing.T) {
+		sess := agent.NewSessionForTest("s", "my-session")
+		sess.SetLifecyclePhase(agent.LifecycleInProgress)
+		ag := sess.AddTestAgent("a-1", false, agent.StatusActive)
+		ag.SetTodos([]agent.TodoItem{
+			{Content: "write tests", Status: "in_progress", ActiveForm: "Writing unit tests"},
+			{Content: "open PR", Status: "pending", ActiveForm: ""},
+		})
+		got := buildingCurrentTask(sess)
+		if got != "Writing unit tests" {
+			t.Errorf("expected ActiveForm, got %q", got)
+		}
+	})
+
+	t.Run("in_progress todo falls back to Content when ActiveForm empty", func(t *testing.T) {
+		sess := agent.NewSessionForTest("s", "my-session")
+		sess.SetLifecyclePhase(agent.LifecycleInProgress)
+		ag := sess.AddTestAgent("a-1", false, agent.StatusActive)
+		ag.SetTodos([]agent.TodoItem{
+			{Content: "write tests", Status: "in_progress", ActiveForm: ""},
+		})
+		got := buildingCurrentTask(sess)
+		if got != "write tests" {
+			t.Errorf("expected Content fallback, got %q", got)
+		}
+	})
+
+	t.Run("first pending Content when no in_progress", func(t *testing.T) {
+		sess := agent.NewSessionForTest("s", "my-session")
+		sess.SetLifecyclePhase(agent.LifecycleInProgress)
+		ag := sess.AddTestAgent("a-1", false, agent.StatusActive)
+		ag.SetTodos([]agent.TodoItem{
+			{Content: "done step", Status: "completed", ActiveForm: ""},
+			{Content: "next step", Status: "pending", ActiveForm: ""},
+		})
+		got := buildingCurrentTask(sess)
+		if got != "next step" {
+			t.Errorf("expected first pending Content, got %q", got)
+		}
+	})
+
+	t.Run("falls back to firstUncompletedTask from plan", func(t *testing.T) {
+		dir := t.TempDir()
+		sess := agent.NewSessionForTestWithPath("s", "my-session", dir)
+		sess.SetLifecyclePhase(agent.LifecycleInProgress)
+		if err := sess.WritePlan("- [x] done\n- [ ] implement auth\n- [ ] write docs\n"); err != nil {
+			t.Fatal(err)
+		}
+		// No agent / no todos.
+		got := buildingCurrentTask(sess)
+		if got != "implement auth" {
+			t.Errorf("expected first uncompleted plan task, got %q", got)
+		}
+	})
+
+	t.Run("returns empty when no todos and no plan", func(t *testing.T) {
+		sess := agent.NewSessionForTest("s", "my-session")
+		sess.SetLifecyclePhase(agent.LifecycleInProgress)
+		got := buildingCurrentTask(sess)
+		if got != "" {
+			t.Errorf("expected empty string, got %q", got)
+		}
+	})
+
+	t.Run("returns empty when all plan tasks are checked", func(t *testing.T) {
+		dir := t.TempDir()
+		sess := agent.NewSessionForTestWithPath("s", "my-session", dir)
+		sess.SetLifecyclePhase(agent.LifecycleInProgress)
+		if err := sess.WritePlan("- [x] one\n- [x] two\n"); err != nil {
+			t.Fatal(err)
+		}
+		got := buildingCurrentTask(sess)
+		if got != "" {
+			t.Errorf("expected empty string when all plan tasks done, got %q", got)
+		}
+	})
+}

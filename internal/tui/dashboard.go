@@ -918,6 +918,32 @@ func firstUncompletedTask(plan string) string {
 	return ""
 }
 
+// buildingCurrentTask returns the name of the task currently in progress for
+// the session. Priority: in_progress TodoItem ActiveForm → Content; first
+// pending TodoItem Content; firstUncompletedTask from the cached plan; "".
+func buildingCurrentTask(sess *agent.Session) string {
+	if ag := sess.PrimaryAgent(); ag != nil {
+		todos := ag.Todos()
+		for _, t := range todos {
+			if t.Status == "in_progress" {
+				if t.ActiveForm != "" {
+					return t.ActiveForm
+				}
+				return t.Content
+			}
+		}
+		for _, t := range todos {
+			if t.Status == "pending" {
+				return t.Content
+			}
+		}
+	}
+	if plan, present := sess.CachedPlan(); present {
+		return firstUncompletedTask(plan)
+	}
+	return ""
+}
+
 // secondUncompletedTask returns the text of the second "- [ ]" line in plan,
 // or "" if fewer than two open tasks exist. Uses the same whitespace-trimming
 // and blank-body-skipping rules as firstUncompletedTask so both helpers agree
