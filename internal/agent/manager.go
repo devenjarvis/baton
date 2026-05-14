@@ -1710,14 +1710,6 @@ func (m *Manager) watchAgent(a *Agent, sessionID string) {
 	case <-a.Done():
 		status := a.Status()
 		m.emit(Event{Type: EventDone, AgentID: a.ID, SessionID: sessionID, Status: status})
-
-		// Auto-close session if all agents are done.
-		m.mu.RLock()
-		sess := m.sessions[sessionID]
-		m.mu.RUnlock()
-		if sess != nil && sess.Status() == StatusDone {
-			m.closeSession(sessionID, sess)
-		}
 	case <-m.done:
 	}
 }

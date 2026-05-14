@@ -496,9 +496,15 @@ func (d dashboardModel) sessionFocusStatus(sess *agent.Session) string {
 	}
 	if sess.LifecyclePhase() == agent.LifecycleInProgress {
 		const barWidth = 20
-		// Check todos first to stay in sync with focusTaskDescription's priority:
-		// when both todos and a plan exist, the badge and the task text on lines
-		// 2–3 should count the same source.
+		// Plan checkboxes take priority over TodoWrite snapshots: plan items are
+		// the build agent's authoritative work contract (mapped 1:1 to [task N]
+		// commits) and stay in sync via Claude's Edit tool, whereas TodoWrite-driven
+		// todos can sit stale when Claude omits subsequent TodoWrite calls.
+		if plan, present := sess.CachedPlan(); present {
+			if total, done := planTaskCounts(plan); total > 0 {
+				return renderCardProgressBar(done, total, barWidth, ColorPrimary)
+			}
+		}
 		if ag := sess.PrimaryAgent(); ag != nil {
 			todos := ag.Todos()
 			if len(todos) > 0 {
@@ -509,11 +515,6 @@ func (d dashboardModel) sessionFocusStatus(sess *agent.Session) string {
 						done++
 					}
 				}
-				return renderCardProgressBar(done, total, barWidth, ColorPrimary)
-			}
-		}
-		if plan, present := sess.CachedPlan(); present {
-			if total, done := planTaskCounts(plan); total > 0 {
 				return renderCardProgressBar(done, total, barWidth, ColorPrimary)
 			}
 		}
@@ -923,8 +924,10 @@ func firstUncompletedTask(plan string) string {
 }
 
 // buildingCurrentTask returns the name of the task currently in progress for
-// the session. Priority: in_progress TodoItem ActiveForm → Content; first
-// pending TodoItem Content; firstUncompletedTask from the cached plan; "".
+// the session. Priority: in_progress TodoItem ActiveForm → Content; plan
+// firstUncompletedTask (when plan has open checkboxes); first pending TodoItem
+// Content (only when no plan with checkboxes exists); "". Mirrors the
+// plan-first ordering in sessionFocusStatus and focusTaskDescription.
 func buildingCurrentTask(sess *agent.Session) string {
 	if ag := sess.PrimaryAgent(); ag != nil {
 		todos := ag.Todos()
@@ -936,14 +939,24 @@ func buildingCurrentTask(sess *agent.Session) string {
 				return t.Content
 			}
 		}
-		for _, t := range todos {
+	}
+	// Plan checkboxes win over stale pending todos when a plan exists.
+	if plan, present := sess.CachedPlan(); present {
+		if first := firstUncompletedTask(plan); first != "" {
+			return first
+		}
+		// Plan exists but all checkboxes done: don't surface stale todos.
+		if total, _ := planTaskCounts(plan); total > 0 {
+			return ""
+		}
+	}
+	// No plan (or plan with no checkboxes): fall back to first pending todo.
+	if ag := sess.PrimaryAgent(); ag != nil {
+		for _, t := range ag.Todos() {
 			if t.Status == "pending" {
 				return t.Content
 			}
 		}
-	}
-	if plan, present := sess.CachedPlan(); present {
-		return firstUncompletedTask(plan)
 	}
 	return ""
 }
