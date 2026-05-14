@@ -690,7 +690,7 @@ func (d dashboardModel) renderFocusSessionCard(sess *agent.Session, repoName str
 		descText, descPending = planningDescription(sess)
 		descLine1, descLine2 = wrapTwoLines(descText, descBudget)
 	} else {
-		descLine1, descLine2, descPending = focusTaskDescription(sess, descBudget)
+		descLine1, descLine2, descPending = focusSessionDescription(sess, descBudget)
 	}
 	var line2, line3 string
 	buildingPhase := phase == agent.LifecycleInProgress && !sess.IsReviewable()
@@ -943,53 +943,12 @@ func secondUncompletedTask(plan string) string {
 	return ""
 }
 
-// focusTaskDescription chooses the description lines for a session card in
+// focusSessionDescription chooses the description lines for a session card in
 // focus mode and reports whether they should render in pending (italic) style.
-// For Building-phase sessions, line1 is the active task text and line2 is
-// the next task text (both raw). Priority: in_progress TodoItem > plan
-// firstUncompletedTask > fallback.
-func focusTaskDescription(sess *agent.Session, budget int) (line1, line2 string, pending bool) {
-	if sess.LifecyclePhase() == agent.LifecycleInProgress && !sess.IsReviewable() {
-		if ag := sess.PrimaryAgent(); ag != nil {
-			todos := ag.Todos()
-			if len(todos) > 0 {
-				var activeText, nextPending string
-				for _, t := range todos {
-					if t.Status == "in_progress" {
-						activeText = t.ActiveForm
-						if activeText == "" {
-							activeText = t.Content
-						}
-						break
-					}
-				}
-				for _, t := range todos {
-					if t.Status == "pending" {
-						nextPending = t.Content
-						break
-					}
-				}
-				if activeText == "" && nextPending != "" {
-					activeText = nextPending
-					nextPending = ""
-				}
-				if activeText != "" {
-					l1 := truncateVisible(activeText, budget)
-					l2 := truncateVisible(nextPending, budget)
-					return l1, l2, false
-				}
-			}
-		}
-		// No todos: fall back to plan checkboxes.
-		if plan, present := sess.CachedPlan(); present {
-			first := firstUncompletedTask(plan)
-			if first != "" {
-				second := secondUncompletedTask(plan)
-				return truncateVisible(first, budget), truncateVisible(second, budget), false
-			}
-		}
-	}
-
+// Priority: TaskSummary → OriginalPrompt → "…". Building-phase todo/plan task
+// text is intentionally excluded — current-task signal belongs on line 3 via
+// buildingCurrentTask, not here.
+func focusSessionDescription(sess *agent.Session, budget int) (line1, line2 string, pending bool) {
 	origPrompt := sess.OriginalPrompt()
 	var text string
 	var pend bool

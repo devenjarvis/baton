@@ -303,9 +303,10 @@ func TestSessionFocusStatus_BuildingWithTodosErrorPreempts(t *testing.T) {
 	}
 }
 
-// TestFocusTaskDescription_WithTodos verifies that focusTaskDescription returns
-// the in_progress todo's activeForm on line1 and the first pending todo on line2.
-func TestFocusTaskDescription_WithTodos(t *testing.T) {
+// TestFocusSessionDescription_PrefersSummaryOverTodos verifies that
+// focusSessionDescription ignores todo items and returns the description
+// (TaskSummary → OriginalPrompt → "…") regardless of Building phase.
+func TestFocusSessionDescription_PrefersSummaryOverTodos(t *testing.T) {
 	sess := agent.NewSessionForTest("s", "my-session")
 	sess.SetLifecyclePhase(agent.LifecycleInProgress)
 	ag := sess.AddTestAgent("a-1", false, agent.StatusActive)
@@ -313,39 +314,34 @@ func TestFocusTaskDescription_WithTodos(t *testing.T) {
 		{Content: "write unit tests", Status: "in_progress", ActiveForm: "Writing unit tests"},
 		{Content: "open PR", Status: "pending", ActiveForm: ""},
 	})
-	// PrimaryAgent() reads from session's agents map.
 	_ = ag
 
-	line1, line2, pending := focusTaskDescription(sess, 80)
-	if !strings.Contains(line1, "Writing unit tests") {
-		t.Errorf("line1 should contain active todo activeForm, got %q", line1)
+	line1, _, _ := focusSessionDescription(sess, 80)
+	if strings.Contains(line1, "Writing unit tests") {
+		t.Errorf("line1 should not contain active todo activeForm, got %q", line1)
 	}
-	if !strings.Contains(line2, "open PR") {
-		t.Errorf("line2 should contain next pending todo, got %q", line2)
-	}
-	if pending {
-		t.Error("expected pending=false for todo-driven description")
+	// No TaskSummary or OriginalPrompt set → falls back to "…"
+	if !strings.Contains(line1, "…") {
+		t.Errorf("line1 should contain task summary fallback, got %q", line1)
 	}
 }
 
-// TestFocusTaskDescription_WithoutTodos verifies that focusTaskDescription
+// TestFocusSessionDescription_WithoutTodos verifies that focusSessionDescription
 // falls back to the task summary / original prompt when no todos are present.
-func TestFocusTaskDescription_WithoutTodos(t *testing.T) {
+func TestFocusSessionDescription_WithoutTodos(t *testing.T) {
 	sess := agent.NewSessionForTest("s", "my-session")
 	sess.SetLifecyclePhase(agent.LifecycleInProgress)
 	sess.SetTaskSummary("implement oauth flow")
 
-	line1, _, _ := focusTaskDescription(sess, 80)
+	line1, _, _ := focusSessionDescription(sess, 80)
 	if !strings.Contains(line1, "implement oauth flow") {
 		t.Errorf("expected task summary fallback, got %q", line1)
 	}
 }
 
-// TestFocusTaskDescription_ReviewableFallsThrough verifies that stale todos
+// TestFocusSessionDescription_ReviewableFallsThrough verifies that stale todos
 // do not surface on lines 2-3 when the session IsReviewable (all agents Idle).
-// The badge on line 1 already shows "✓ idle — press m to review" in that state,
-// so todo lines would be contradictory.
-func TestFocusTaskDescription_ReviewableFallsThrough(t *testing.T) {
+func TestFocusSessionDescription_ReviewableFallsThrough(t *testing.T) {
 	sess := agent.NewSessionForTest("s", "my-session")
 	sess.SetLifecyclePhase(agent.LifecycleInProgress)
 	sess.SetTaskSummary("implement oauth flow")
@@ -355,7 +351,7 @@ func TestFocusTaskDescription_ReviewableFallsThrough(t *testing.T) {
 		{Content: "stale task", Status: "in_progress", ActiveForm: "Stale active work"},
 	})
 
-	line1, line2, _ := focusTaskDescription(sess, 80)
+	line1, line2, _ := focusSessionDescription(sess, 80)
 	// Must NOT show the in_progress todo text.
 	if strings.Contains(line1, "Stale active work") || strings.Contains(line2, "Stale active work") {
 		t.Errorf("expected todo description suppressed for reviewable session, got line1=%q line2=%q", line1, line2)
