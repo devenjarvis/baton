@@ -2250,6 +2250,93 @@ func TestPipeline_RKey_OpensRepoPickerInManageMode(t *testing.T) {
 	}
 }
 
+// TestRepoPicker_ManageMode_SwitchActiveUpdatesActiveRepo verifies that
+// repoPickerSwitchActiveMsg changes the active repo and returns to the dashboard.
+func TestRepoPicker_ManageMode_SwitchActiveUpdatesActiveRepo(t *testing.T) {
+	dir1 := t.TempDir()
+	dir2 := t.TempDir()
+
+	mgr1 := agent.NewManager(dir1, config.Resolve(nil, nil))
+	defer mgr1.Shutdown()
+	mgr2 := agent.NewManager(dir2, config.Resolve(nil, nil))
+	defer mgr2.Shutdown()
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.managers[dir1] = mgr1
+	app.managers[dir2] = mgr2
+	app.activeRepo = dir1
+	app.cfg = &config.Config{
+		Repos: []config.Repo{
+			{Path: dir1, Name: "repo1"},
+			{Path: dir2, Name: "repo2"},
+		},
+	}
+	app.view = ViewRepoPicker
+
+	model, _ := app.Update(repoPickerSwitchActiveMsg{path: dir2})
+	app = model.(App)
+	if app.view != ViewDashboard {
+		t.Errorf("expected ViewDashboard after switch-active, got %v", app.view)
+	}
+	if app.activeRepo != dir2 {
+		t.Errorf("activeRepo = %q, want %q", app.activeRepo, dir2)
+	}
+}
+
+// TestRepoPicker_ManageMode_EditSettingsOpensConfigFormAndReturns verifies that
+// repoPickerEditSettingsMsg opens the config form, and cancel returns to picker.
+func TestRepoPicker_ManageMode_EditSettingsOpensConfigFormAndReturns(t *testing.T) {
+	dir1 := t.TempDir()
+
+	mgr1 := agent.NewManager(dir1, config.Resolve(nil, nil))
+	defer mgr1.Shutdown()
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.managers[dir1] = mgr1
+	app.activeRepo = dir1
+	app.cfg = &config.Config{
+		Repos: []config.Repo{
+			{Path: dir1, Name: "repo1"},
+		},
+	}
+	app.view = ViewRepoPicker
+	app.repoPicker.SetMode(repoPickerModeManage)
+
+	// Send edit-settings msg: should open config form and stay on dashboard.
+	model, _ := app.Update(repoPickerEditSettingsMsg{path: dir1})
+	app = model.(App)
+	if app.dashboard.repoConfigForm == nil {
+		t.Fatal("expected repoConfigForm to be non-nil after edit-settings")
+	}
+	if !app.repoPickerPendingFromConfig {
+		t.Error("expected repoPickerPendingFromConfig to be true")
+	}
+	if app.view != ViewDashboard {
+		t.Errorf("expected ViewDashboard after edit-settings, got %v", app.view)
+	}
+
+	// Cancel the config form: should return to ViewRepoPicker.
+	model, _ = app.Update(configFormCancelMsg{})
+	app = model.(App)
+	if app.view != ViewRepoPicker {
+		t.Errorf("expected ViewRepoPicker after configFormCancel, got %v", app.view)
+	}
+	if app.repoPickerPendingFromConfig {
+		t.Error("expected repoPickerPendingFromConfig to be cleared after cancel")
+	}
+	if app.dashboard.repoConfigForm != nil {
+		t.Error("expected repoConfigForm to be nil after cancel")
+	}
+}
+
 // TestPipeline_XKey_NoSession verifies that 'x' on an empty pipeline produces
 // a friendly error and does not crash.
 func TestPipeline_XKey_NoSession(t *testing.T) {

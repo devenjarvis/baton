@@ -154,6 +154,11 @@ type App struct {
 	// ViewRepoPicker rather than the dashboard.
 	repoPickerPending bool
 
+	// repoPickerPendingFromConfig is set when the repo config form was opened
+	// from the manage-mode picker. After save or cancel, control returns to
+	// ViewRepoPicker rather than the dashboard.
+	repoPickerPendingFromConfig bool
+
 	// Settings
 	globalSettings *config.GlobalSettings
 	repoSettings   map[string]*config.RepoSettings    // keyed by repo path
@@ -1434,12 +1439,40 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+		if a.repoPickerPendingFromConfig {
+			a.repoPickerPendingFromConfig = false
+			counts := make(map[string]int, len(a.cfg.Repos))
+			for _, repo := range a.cfg.Repos {
+				if mgr := a.managers[repo.Path]; mgr != nil {
+					counts[repo.Path] = mgr.AgentCount()
+				}
+			}
+			a.repoPicker.setRepos(a.cfg.Repos, counts, a.dashboard.configRepoPath)
+			a.dashboard.repoConfigForm = nil
+			a.dashboard.configRepoPath = ""
+			a.view = ViewRepoPicker
+			return a, nil
+		}
 		a.dashboard.panelFocus = focusList
 		a.dashboard.repoConfigForm = nil
 		return a, nil
 
 	case configFormCancelMsg:
 		// Repo config form cancelled.
+		if a.repoPickerPendingFromConfig {
+			a.repoPickerPendingFromConfig = false
+			counts := make(map[string]int, len(a.cfg.Repos))
+			for _, repo := range a.cfg.Repos {
+				if mgr := a.managers[repo.Path]; mgr != nil {
+					counts[repo.Path] = mgr.AgentCount()
+				}
+			}
+			a.repoPicker.setRepos(a.cfg.Repos, counts, a.dashboard.configRepoPath)
+			a.dashboard.repoConfigForm = nil
+			a.dashboard.configRepoPath = ""
+			a.view = ViewRepoPicker
+			return a, nil
+		}
 		a.dashboard.panelFocus = focusList
 		a.dashboard.repoConfigForm = nil
 		return a, nil
@@ -3002,6 +3035,21 @@ func (a App) updateRepoPicker(msg tea.Msg) (tea.Model, tea.Cmd) {
 			sess.SetLifecyclePhase(agent.LifecycleInProgress)
 			return createResultMsg{sessionID: sess.ID, agentID: ag.ID, isNewSession: true}
 		}
+
+	case repoPickerSwitchActiveMsg:
+		if msg.path == "" {
+			return a, nil
+		}
+		a.activeRepo = msg.path
+		a.refreshAgentList()
+		a.view = ViewDashboard
+		return a, nil
+
+	case repoPickerEditSettingsMsg:
+		a.initRepoConfigForm(msg.path)
+		a.repoPickerPendingFromConfig = true
+		a.view = ViewDashboard
+		return a, nil
 
 	case repoPickerAddRepoMsg:
 		a.repoPickerPending = true
