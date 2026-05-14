@@ -1057,7 +1057,7 @@ func TestBuildingCurrentTask(t *testing.T) {
 		}
 	})
 
-	t.Run("first pending Content when no in_progress", func(t *testing.T) {
+	t.Run("first pending Content when no in_progress and no plan", func(t *testing.T) {
 		sess := agent.NewSessionForTest("s", "my-session")
 		sess.SetLifecyclePhase(agent.LifecycleInProgress)
 		ag := sess.AddTestAgent("a-1", false, agent.StatusActive)
@@ -1068,6 +1068,25 @@ func TestBuildingCurrentTask(t *testing.T) {
 		got := buildingCurrentTask(sess)
 		if got != "next step" {
 			t.Errorf("expected first pending Content, got %q", got)
+		}
+	})
+
+	t.Run("plan open task wins over stale pending todos", func(t *testing.T) {
+		dir := t.TempDir()
+		sess := agent.NewSessionForTestWithPath("s", "my-session", dir)
+		sess.SetLifecyclePhase(agent.LifecycleInProgress)
+		if err := sess.WritePlan("- [x] one\n- [x] two\n- [ ] three\n- [ ] four\n- [ ] five\n"); err != nil {
+			t.Fatal(err)
+		}
+		ag := sess.AddTestAgent("a-1", false, agent.StatusActive)
+		ag.SetTodos([]agent.TodoItem{
+			{Content: "step one", Status: "pending"},
+			{Content: "step two", Status: "pending"},
+			{Content: "step three", Status: "pending"},
+		})
+		got := buildingCurrentTask(sess)
+		if got != "three" {
+			t.Errorf("expected first uncompleted plan task %q, got %q", "three", got)
 		}
 	})
 
@@ -1106,4 +1125,56 @@ func TestBuildingCurrentTask(t *testing.T) {
 			t.Errorf("expected empty string when all plan tasks done, got %q", got)
 		}
 	})
+}
+
+// TestRenderFocusSessionCard_StaleTodosLineLine3UsesPlan verifies the full
+// card rendering for the stale-todos scenario: a Building session with a plan
+// (2/5 tasks done) and todos all "pending" (stale TodoWrite snapshot). Line 1
+// must show the plan-driven "2/5" progress badge; line 3 must show "three"
+// (the first uncompleted plan task) rather than "step one" (the first pending
+// todo). This locks in the plan-first priority across all three card signals
+// (badge, focusTaskDescription, and buildingCurrentTask).
+func TestRenderFocusSessionCard_StaleTodosLineLine3UsesPlan(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	dir := t.TempDir()
+	sess := agent.NewSessionForTestWithPath("s", "my-session", dir)
+	sess.SetLifecyclePhase(agent.LifecycleInProgress)
+	if err := sess.WritePlan("- [x] one\n- [x] two\n- [ ] three\n- [ ] four\n- [ ] five\n"); err != nil {
+		t.Fatal(err)
+	}
+	ag := sess.AddTestAgent("a-1", false, agent.StatusActive)
+	ag.SetTodos([]agent.TodoItem{
+		{Content: "step one", Status: "pending"},
+		{Content: "step two", Status: "pending"},
+		{Content: "step three", Status: "pending"},
+		{Content: "step four", Status: "pending"},
+		{Content: "step five", Status: "pending"},
+	})
+
+	d := newDashboardModel()
+	d.items = []listItem{
+		{kind: listItemSession, repoPath: "/r", session: sess},
+		{kind: listItemAgent, repoPath: "/r", session: sess, agent: ag},
+	}
+
+	card := d.renderFocusSessionCard(sess, "", false, 100)
+	if len(card) != 4 {
+		t.Fatalf("expected 4-line card, got %d lines", len(card))
+	}
+
+	line1 := ansi.Strip(card[0])
+	if !strings.Contains(line1, "2/5") {
+		t.Errorf("line 1 (badge) should show plan-driven '2/5', got %q", line1)
+	}
+
+	line3 := ansi.Strip(card[2])
+	if !strings.Contains(line3, "three") {
+		t.Errorf("line 3 should show first uncompleted plan task 'three', got %q", line3)
+	}
+	if strings.Contains(line3, "step one") {
+		t.Errorf("line 3 must not show stale pending todo 'step one', got %q", line3)
+	}
 }

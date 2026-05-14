@@ -924,8 +924,10 @@ func firstUncompletedTask(plan string) string {
 }
 
 // buildingCurrentTask returns the name of the task currently in progress for
-// the session. Priority: in_progress TodoItem ActiveForm → Content; first
-// pending TodoItem Content; firstUncompletedTask from the cached plan; "".
+// the session. Priority: in_progress TodoItem ActiveForm → Content; plan
+// firstUncompletedTask (when plan has open checkboxes); first pending TodoItem
+// Content (only when no plan with checkboxes exists); "". Mirrors the
+// plan-first ordering in sessionFocusStatus and focusTaskDescription.
 func buildingCurrentTask(sess *agent.Session) string {
 	if ag := sess.PrimaryAgent(); ag != nil {
 		todos := ag.Todos()
@@ -937,14 +939,24 @@ func buildingCurrentTask(sess *agent.Session) string {
 				return t.Content
 			}
 		}
-		for _, t := range todos {
+	}
+	// Plan checkboxes win over stale pending todos when a plan exists.
+	if plan, present := sess.CachedPlan(); present {
+		if first := firstUncompletedTask(plan); first != "" {
+			return first
+		}
+		// Plan exists but all checkboxes done: don't surface stale todos.
+		if total, _ := planTaskCounts(plan); total > 0 {
+			return ""
+		}
+	}
+	// No plan (or plan with no checkboxes): fall back to first pending todo.
+	if ag := sess.PrimaryAgent(); ag != nil {
+		for _, t := range ag.Todos() {
 			if t.Status == "pending" {
 				return t.Content
 			}
 		}
-	}
-	if plan, present := sess.CachedPlan(); present {
-		return firstUncompletedTask(plan)
 	}
 	return ""
 }
