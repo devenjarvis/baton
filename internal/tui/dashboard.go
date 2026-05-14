@@ -500,7 +500,6 @@ func (d dashboardModel) sessionFocusStatus(sess *agent.Session) string {
 		// the build agent's authoritative work contract (mapped 1:1 to [task N]
 		// commits) and stay in sync via Claude's Edit tool, whereas TodoWrite-driven
 		// todos can sit stale when Claude omits subsequent TodoWrite calls.
-		// focusTaskDescription mirrors this priority.
 		if plan, present := sess.CachedPlan(); present {
 			if total, done := planTaskCounts(plan); total > 0 {
 				return renderCardProgressBar(done, total, barWidth, ColorPrimary)
@@ -692,7 +691,7 @@ func (d dashboardModel) renderFocusSessionCard(sess *agent.Session, repoName str
 		descText, descPending = planningDescription(sess)
 		descLine1, descLine2 = wrapTwoLines(descText, descBudget)
 	} else {
-		descLine1, descLine2, descPending = focusTaskDescription(sess, descBudget)
+		descLine1, descLine2, descPending = focusSessionDescription(sess, descBudget)
 	}
 	var line2, line3 string
 	buildingPhase := phase == agent.LifecycleInProgress && !sess.IsReviewable()
@@ -707,21 +706,25 @@ func (d dashboardModel) renderFocusSessionCard(sess *agent.Session, repoName str
 			line3 = stripe + indent + descStyle.Render(descLine2)
 		}
 	} else if buildingPhase {
-		// Active task: bold text, no leading glyph.
-		activeLine := ""
-		if descLine1 != "" {
-			activeLine = lipgloss.NewStyle().Bold(true).Render(truncateVisible(descLine1, descBudget))
+		// Line 2: session description — StyleSubtle or muted-italic when pending.
+		descStyle := StyleSubtle
+		if descPending {
+			descStyle = lipgloss.NewStyle().Foreground(ColorMuted).Italic(true)
 		}
-		line2 = stripe + indent + activeLine
-		// Next task: "next: <muted-italic text>". Subtract 6 cells for "next: ".
+		line2 = stripe + indent + descStyle.Render(descLine1)
+		// Line 3: current task (label muted, name bold) or description overflow.
+		task := buildingCurrentTask(sess)
 		line3 = stripe + indent
-		if descLine2 != "" {
-			nextBudget := descBudget - 6
-			if nextBudget < 0 {
-				nextBudget = 0
+		if task != "" {
+			taskBudget := descBudget - lipgloss.Width("current task: ")
+			if taskBudget < 0 {
+				taskBudget = 0
 			}
-			nextStyle := lipgloss.NewStyle().Foreground(ColorMuted).Italic(true)
-			line3 = stripe + indent + nextStyle.Render("next: "+truncateVisible(descLine2, nextBudget))
+			taskLabel := StyleSubtle.Render("current task: ")
+			taskName := lipgloss.NewStyle().Bold(true).Render(truncateVisible(task, taskBudget))
+			line3 = stripe + indent + taskLabel + taskName
+		} else if descLine2 != "" {
+			line3 = stripe + indent + descStyle.Render(descLine2)
 		}
 	} else {
 		line2 = stripe + indent + StyleSubtle.Render(descLine1)
@@ -920,92 +923,38 @@ func firstUncompletedTask(plan string) string {
 	return ""
 }
 
-// secondUncompletedTask returns the text of the second "- [ ]" line in plan,
-// or "" if fewer than two open tasks exist. Uses the same whitespace-trimming
-// and blank-body-skipping rules as firstUncompletedTask so both helpers agree
-// on what constitutes a valid open task. The "second open task" approximation
-// is intentional — deriving the truly-in-flight task from git commits would
-// require per-tick git I/O that the plan cache exists to avoid.
-func secondUncompletedTask(plan string) string {
-	count := 0
-	for _, raw := range strings.Split(plan, "\n") {
-		line := strings.TrimLeft(raw, " \t")
-		if !strings.HasPrefix(line, "- [ ]") {
-			continue
+// buildingCurrentTask returns the name of the task currently in progress for
+// the session. Priority: in_progress TodoItem ActiveForm → Content; first
+// pending TodoItem Content; firstUncompletedTask from the cached plan; "".
+func buildingCurrentTask(sess *agent.Session) string {
+	if ag := sess.PrimaryAgent(); ag != nil {
+		todos := ag.Todos()
+		for _, t := range todos {
+			if t.Status == "in_progress" {
+				if t.ActiveForm != "" {
+					return t.ActiveForm
+				}
+				return t.Content
+			}
 		}
-		text := strings.TrimSpace(strings.TrimPrefix(line, "- [ ]"))
-		if text == "" {
-			continue
+		for _, t := range todos {
+			if t.Status == "pending" {
+				return t.Content
+			}
 		}
-		count++
-		if count == 2 {
-			return text
-		}
+	}
+	if plan, present := sess.CachedPlan(); present {
+		return firstUncompletedTask(plan)
 	}
 	return ""
 }
 
-// focusTaskDescription chooses the description lines for a session card in
+// focusSessionDescription chooses the description lines for a session card in
 // focus mode and reports whether they should render in pending (italic) style.
-// For Building-phase sessions, line1 is the active task text and line2 is
-// the next task text (both raw). Priority: plan firstUncompletedTask >
-// in_progress TodoItem > fallback. Plan checkboxes take precedence because
-// they are the build agent's authoritative contract (1:1 with [task N]
-// commits) and stay in sync via Claude's Edit tool; TodoWrite snapshots can
-// go stale when Claude omits subsequent calls. When a plan exists but all
-// checkboxes are done, we do NOT fall through to todos — the task-summary
-// path below handles that case. This mirrors sessionFocusStatus's priority.
-func focusTaskDescription(sess *agent.Session, budget int) (line1, line2 string, pending bool) {
-	if sess.LifecyclePhase() == agent.LifecycleInProgress && !sess.IsReviewable() {
-		skipTodos := false
-		// Plan checkboxes win when the plan has open tasks.
-		if plan, present := sess.CachedPlan(); present {
-			first := firstUncompletedTask(plan)
-			if first != "" {
-				second := secondUncompletedTask(plan)
-				return truncateVisible(first, budget), truncateVisible(second, budget), false
-			}
-			// Plan exists but all checkboxes done: skip todos so stale
-			// TodoWrite state doesn't resurface completed-looking tasks.
-			if total, _ := planTaskCounts(plan); total > 0 {
-				skipTodos = true
-			}
-		}
-		// No plan (or plan with zero checkboxes): consult todos.
-		if !skipTodos {
-			if ag := sess.PrimaryAgent(); ag != nil {
-				todos := ag.Todos()
-				if len(todos) > 0 {
-					var activeText, nextPending string
-					for _, t := range todos {
-						if t.Status == "in_progress" {
-							activeText = t.ActiveForm
-							if activeText == "" {
-								activeText = t.Content
-							}
-							break
-						}
-					}
-					for _, t := range todos {
-						if t.Status == "pending" {
-							nextPending = t.Content
-							break
-						}
-					}
-					if activeText == "" && nextPending != "" {
-						activeText = nextPending
-						nextPending = ""
-					}
-					if activeText != "" {
-						l1 := truncateVisible(activeText, budget)
-						l2 := truncateVisible(nextPending, budget)
-						return l1, l2, false
-					}
-				}
-			}
-		}
-	}
-
+// Priority: TaskSummary → OriginalPrompt → "…". Building-phase todo/plan task
+// text is intentionally excluded — current-task signal belongs on line 3 via
+// buildingCurrentTask, not here.
+func focusSessionDescription(sess *agent.Session, budget int) (line1, line2 string, pending bool) {
 	origPrompt := sess.OriginalPrompt()
 	var text string
 	var pend bool

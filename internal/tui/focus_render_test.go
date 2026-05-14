@@ -303,9 +303,10 @@ func TestSessionFocusStatus_BuildingWithTodosErrorPreempts(t *testing.T) {
 	}
 }
 
-// TestFocusTaskDescription_WithTodos verifies that focusTaskDescription returns
-// the in_progress todo's activeForm on line1 and the first pending todo on line2.
-func TestFocusTaskDescription_WithTodos(t *testing.T) {
+// TestFocusSessionDescription_PrefersSummaryOverTodos verifies that
+// focusSessionDescription ignores todo items and returns the description
+// (TaskSummary → OriginalPrompt → "…") regardless of Building phase.
+func TestFocusSessionDescription_PrefersSummaryOverTodos(t *testing.T) {
 	sess := agent.NewSessionForTest("s", "my-session")
 	sess.SetLifecyclePhase(agent.LifecycleInProgress)
 	ag := sess.AddTestAgent("a-1", false, agent.StatusActive)
@@ -313,39 +314,34 @@ func TestFocusTaskDescription_WithTodos(t *testing.T) {
 		{Content: "write unit tests", Status: "in_progress", ActiveForm: "Writing unit tests"},
 		{Content: "open PR", Status: "pending", ActiveForm: ""},
 	})
-	// PrimaryAgent() reads from session's agents map.
 	_ = ag
 
-	line1, line2, pending := focusTaskDescription(sess, 80)
-	if !strings.Contains(line1, "Writing unit tests") {
-		t.Errorf("line1 should contain active todo activeForm, got %q", line1)
+	line1, _, _ := focusSessionDescription(sess, 80)
+	if strings.Contains(line1, "Writing unit tests") {
+		t.Errorf("line1 should not contain active todo activeForm, got %q", line1)
 	}
-	if !strings.Contains(line2, "open PR") {
-		t.Errorf("line2 should contain next pending todo, got %q", line2)
-	}
-	if pending {
-		t.Error("expected pending=false for todo-driven description")
+	// No TaskSummary or OriginalPrompt set → falls back to "…"
+	if !strings.Contains(line1, "…") {
+		t.Errorf("line1 should contain task summary fallback, got %q", line1)
 	}
 }
 
-// TestFocusTaskDescription_WithoutTodos verifies that focusTaskDescription
+// TestFocusSessionDescription_WithoutTodos verifies that focusSessionDescription
 // falls back to the task summary / original prompt when no todos are present.
-func TestFocusTaskDescription_WithoutTodos(t *testing.T) {
+func TestFocusSessionDescription_WithoutTodos(t *testing.T) {
 	sess := agent.NewSessionForTest("s", "my-session")
 	sess.SetLifecyclePhase(agent.LifecycleInProgress)
 	sess.SetTaskSummary("implement oauth flow")
 
-	line1, _, _ := focusTaskDescription(sess, 80)
+	line1, _, _ := focusSessionDescription(sess, 80)
 	if !strings.Contains(line1, "implement oauth flow") {
 		t.Errorf("expected task summary fallback, got %q", line1)
 	}
 }
 
-// TestFocusTaskDescription_ReviewableFallsThrough verifies that stale todos
+// TestFocusSessionDescription_ReviewableFallsThrough verifies that stale todos
 // do not surface on lines 2-3 when the session IsReviewable (all agents Idle).
-// The badge on line 1 already shows "✓ idle — press m to review" in that state,
-// so todo lines would be contradictory.
-func TestFocusTaskDescription_ReviewableFallsThrough(t *testing.T) {
+func TestFocusSessionDescription_ReviewableFallsThrough(t *testing.T) {
 	sess := agent.NewSessionForTest("s", "my-session")
 	sess.SetLifecyclePhase(agent.LifecycleInProgress)
 	sess.SetTaskSummary("implement oauth flow")
@@ -355,7 +351,7 @@ func TestFocusTaskDescription_ReviewableFallsThrough(t *testing.T) {
 		{Content: "stale task", Status: "in_progress", ActiveForm: "Stale active work"},
 	})
 
-	line1, line2, _ := focusTaskDescription(sess, 80)
+	line1, line2, _ := focusSessionDescription(sess, 80)
 	// Must NOT show the in_progress todo text.
 	if strings.Contains(line1, "Stale active work") || strings.Contains(line2, "Stale active work") {
 		t.Errorf("expected todo description suppressed for reviewable session, got line1=%q line2=%q", line1, line2)
@@ -405,9 +401,9 @@ func TestRenderQueueRow_RepoPrefix(t *testing.T) {
 }
 
 // TestRenderFocusSessionCard_PlanBackedBuildingHasTaskProgressLine verifies
-// that a Building session with a plan and open tasks produces a 4-line card
-// where line 2 shows the first open task (bold, no leading ▸) and line 3
-// shows "next: second open" (no leading ↳).
+// that a Building session with a plan shows the session description on line 2
+// and "current task: <first open task>" on line 3. The line-1 progress bar
+// and the 4-line card height are unchanged.
 func TestRenderFocusSessionCard_PlanBackedBuildingHasTaskProgressLine(t *testing.T) {
 	dir := t.TempDir()
 	sess := agent.NewSessionForTestWithPath("s", "my-session", dir)
@@ -428,32 +424,129 @@ func TestRenderFocusSessionCard_PlanBackedBuildingHasTaskProgressLine(t *testing
 	if len(card) != 4 {
 		t.Fatalf("expected 4-line card for plan-backed building session, got %d lines: %v", len(card), card)
 	}
-	line2 := ansi.Strip(card[1])
-	if strings.Contains(line2, "▸") {
-		t.Errorf("line 2 must not contain ▸ prefix, got %q", line2)
+	line1 := ansi.Strip(card[0])
+	if !strings.Contains(line1, "1/3") {
+		t.Errorf("line 1 should still contain progress bar '1/3', got %q", line1)
 	}
-	if !strings.Contains(line2, "write tests") {
-		t.Errorf("line 2 should contain first open task, got %q", line2)
+	line2 := ansi.Strip(card[1])
+	if !strings.Contains(line2, "implement oauth flow") {
+		t.Errorf("line 2 should contain session description (TaskSummary), got %q", line2)
 	}
 	line3 := ansi.Strip(card[2])
-	if strings.Contains(line3, "↳") {
-		t.Errorf("line 3 must not contain ↳ glyph, got %q", line3)
+	if !strings.Contains(line3, "current task:") {
+		t.Errorf("line 3 should contain \"current task:\" prefix, got %q", line3)
 	}
-	if !strings.Contains(line3, "next:") {
-		t.Errorf("line 3 should contain \"next:\" prefix, got %q", line3)
+	if !strings.Contains(line3, "write tests") {
+		t.Errorf("line 3 should contain first open task name, got %q", line3)
 	}
-	if !strings.Contains(line3, "open PR") {
-		t.Errorf("line 3 should contain second open task, got %q", line3)
+	if strings.Contains(line3, "next:") {
+		t.Errorf("line 3 must not contain 'next:', got %q", line3)
+	}
+	if strings.Contains(line3, "open PR") {
+		t.Errorf("line 3 must not contain the second open task, got %q", line3)
 	}
 }
 
-// TestRenderFocusSessionCard_PlanBackedBuilding_PlanOverridesTodo verifies that
-// when the session has both a plan with open tasks and an in_progress TodoItem,
-// the plan's first uncompleted task wins on line 2. Plan checkboxes are the
-// build agent's authoritative contract (1:1 with [task N] commits) and stay in
-// sync via Claude's Edit tool; TodoWrite snapshots can go stale when Claude
-// omits subsequent calls.
-func TestRenderFocusSessionCard_PlanBackedBuilding_PlanOverridesTodo(t *testing.T) {
+// TestRenderFocusSessionCard_BuildingDescriptionFallsBackToOriginalPrompt
+// verifies that when no TaskSummary is set, line 2 shows the OriginalPrompt
+// in muted-italic style (pending=true branch).
+func TestRenderFocusSessionCard_BuildingDescriptionFallsBackToOriginalPrompt(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	sess := agent.NewSessionForTest("s", "my-session")
+	sess.SetLifecyclePhase(agent.LifecycleInProgress)
+	sess.SetOriginalPrompt("add dark mode")
+	ag := sess.AddTestAgent("a-1", false, agent.StatusActive)
+
+	d := newDashboardModel()
+	d.items = []listItem{
+		{kind: listItemSession, repoPath: "/r", session: sess},
+		{kind: listItemAgent, repoPath: "/r", session: sess, agent: ag},
+	}
+
+	card := d.renderFocusSessionCard(sess, "", false, 100)
+	if len(card) != 4 {
+		t.Fatalf("expected 4-line card, got %d", len(card))
+	}
+	if !strings.Contains(ansi.Strip(card[1]), "add dark mode") {
+		t.Errorf("line 2 should contain OriginalPrompt, got %q", ansi.Strip(card[1]))
+	}
+	// Pending style → italic SGR (\x1b[...;3m or \x1b[3m).
+	if !strings.Contains(card[1], "\x1b[") {
+		t.Errorf("line 2 raw should contain ANSI escape (italic), got %q", card[1])
+	}
+}
+
+// TestRenderFocusSessionCard_BuildingNoTasksFallsBackToDescriptionOverflow
+// verifies that when there are no todos and no plan, a long OriginalPrompt
+// wraps onto lines 2 and 3 with no "current task:" present.
+func TestRenderFocusSessionCard_BuildingNoTasksFallsBackToDescriptionOverflow(t *testing.T) {
+	sess := agent.NewSessionForTest("s", "my-session")
+	sess.SetLifecyclePhase(agent.LifecycleInProgress)
+	sess.SetOriginalPrompt("implement the entire authentication subsystem with OAuth2 PKCE flow")
+	ag := sess.AddTestAgent("a-1", false, agent.StatusActive)
+
+	d := newDashboardModel()
+	d.items = []listItem{
+		{kind: listItemSession, repoPath: "/r", session: sess},
+		{kind: listItemAgent, repoPath: "/r", session: sess, agent: ag},
+	}
+
+	card := d.renderFocusSessionCard(sess, "", false, 60)
+	if len(card) != 4 {
+		t.Fatalf("expected 4-line card, got %d", len(card))
+	}
+	line2 := ansi.Strip(card[1])
+	line3 := ansi.Strip(card[2])
+	if !strings.Contains(line2, "implement") {
+		t.Errorf("line 2 should contain first wrapped chunk, got %q", line2)
+	}
+	if !strings.Contains(line3, "OAuth2") && !strings.Contains(line3, "authentication") {
+		t.Errorf("line 3 should contain description overflow, got %q", line3)
+	}
+	if strings.Contains(line2, "current task:") || strings.Contains(line3, "current task:") {
+		t.Errorf("no current task should appear when no todos/plan, got line2=%q line3=%q", line2, line3)
+	}
+}
+
+// TestRenderFocusSessionCard_BuildingNoTasksShortDescription verifies that
+// when there are no todos, no plan, and the description fits in one line,
+// line 3 is blank (no "current task:", no overflow).
+func TestRenderFocusSessionCard_BuildingNoTasksShortDescription(t *testing.T) {
+	sess := agent.NewSessionForTest("s", "my-session")
+	sess.SetLifecyclePhase(agent.LifecycleInProgress)
+	sess.SetOriginalPrompt("add dark mode")
+	ag := sess.AddTestAgent("a-1", false, agent.StatusActive)
+
+	d := newDashboardModel()
+	d.items = []listItem{
+		{kind: listItemSession, repoPath: "/r", session: sess},
+		{kind: listItemAgent, repoPath: "/r", session: sess, agent: ag},
+	}
+
+	card := d.renderFocusSessionCard(sess, "", false, 100)
+	if len(card) != 4 {
+		t.Fatalf("expected 4-line card, got %d", len(card))
+	}
+	line3 := ansi.Strip(card[2])
+	if strings.Contains(line3, "current task:") {
+		t.Errorf("line 3 must not contain 'current task:' when no todos/plan, got %q", line3)
+	}
+	// "Blank" in card context = stripe glyph + indent spaces, no content.
+	contentAfterStripe := strings.TrimLeft(strings.TrimPrefix(line3, "▎"), " ")
+	if contentAfterStripe != "" {
+		t.Errorf("line 3 should be blank (stripe+indent only) when description fits one line, got %q", line3)
+	}
+}
+
+// TestRenderFocusSessionCard_PlanBackedBuilding_TodoOverridesPlan verifies that
+// when the session's primary agent has an in_progress TodoItem, that item's
+// ActiveForm wins on line 3 ("current task: Running todo task") over the
+// plan's first uncompleted task. Line 2 shows the description; line 1 still
+// shows the progress bar.
+func TestRenderFocusSessionCard_PlanBackedBuilding_TodoOverridesPlan(t *testing.T) {
 	dir := t.TempDir()
 	sess := agent.NewSessionForTestWithPath("s", "my-session", dir)
 	sess.SetLifecyclePhase(agent.LifecycleInProgress)
@@ -476,18 +569,29 @@ func TestRenderFocusSessionCard_PlanBackedBuilding_PlanOverridesTodo(t *testing.
 	if len(card) != 4 {
 		t.Fatalf("expected 4-line card, got %d", len(card))
 	}
-	line2 := ansi.Strip(card[1])
-	if !strings.Contains(line2, "plan task one") {
-		t.Errorf("line 2 should show plan's first open task, got %q", line2)
+	line1 := ansi.Strip(card[0])
+	if !strings.Contains(line1, "tasks") {
+		t.Errorf("line 1 should still contain progress bar, got %q", line1)
 	}
-	if strings.Contains(line2, "Running todo task") {
-		t.Errorf("line 2 must not show stale todo when plan is present, got %q", line2)
+	line3 := ansi.Strip(card[2])
+	if !strings.Contains(line3, "current task:") {
+		t.Errorf("line 3 should contain 'current task:' prefix, got %q", line3)
+	}
+	if !strings.Contains(line3, "Running todo task") {
+		t.Errorf("line 3 should show in_progress todo's ActiveForm, got %q", line3)
+	}
+	if strings.Contains(line3, "next:") {
+		t.Errorf("line 3 must not contain 'next:', got %q", line3)
+	}
+	if strings.Contains(line3, "plan task") {
+		t.Errorf("line 3 must not show plan task text when todo overrides it, got %q", line3)
 	}
 }
 
 // TestRenderFocusSessionCard_PlanWithSingleOpenTaskDropsNextSuffix verifies
-// that when only one open task remains, line 2 shows the last task (bold, no ▸)
-// and line 3 is blank (no "next:" suffix), card is exactly 4 lines.
+// that when only one open task remains, line 3 shows "current task: last task"
+// and contains no "next:" suffix. Line 1 still holds the progress bar.
+// Card is exactly 4 lines.
 func TestRenderFocusSessionCard_PlanWithSingleOpenTaskDropsNextSuffix(t *testing.T) {
 	dir := t.TempDir()
 	sess := agent.NewSessionForTestWithPath("s", "my-session", dir)
@@ -507,13 +611,19 @@ func TestRenderFocusSessionCard_PlanWithSingleOpenTaskDropsNextSuffix(t *testing
 	if len(card) != 4 {
 		t.Fatalf("expected 4-line card with single open task, got %d lines", len(card))
 	}
-	line2 := ansi.Strip(card[1])
-	if !strings.Contains(line2, "last task") {
-		t.Errorf("line 2 should contain open task name, got %q", line2)
+	line1 := ansi.Strip(card[0])
+	if !strings.Contains(line1, "tasks") {
+		t.Errorf("line 1 should still contain progress bar, got %q", line1)
 	}
 	line3 := ansi.Strip(card[2])
+	if !strings.Contains(line3, "current task:") {
+		t.Errorf("line 3 should contain 'current task:' prefix, got %q", line3)
+	}
+	if !strings.Contains(line3, "last task") {
+		t.Errorf("line 3 should contain the open task name, got %q", line3)
+	}
 	if strings.Contains(line3, "next:") {
-		t.Errorf("line 3 must not have 'next:' with single open task, got %q", line3)
+		t.Errorf("line 3 must not contain 'next:', got %q", line3)
 	}
 }
 
@@ -916,4 +1026,84 @@ func TestRenderFocusSessionCard_BranchChipAndElapsedGlyph(t *testing.T) {
 	if strings.Contains(line4b, "⎇") {
 		t.Errorf("no-branch session should not render ⎇ label, got %q", line4b)
 	}
+}
+
+// TestBuildingCurrentTask covers the priority chain in buildingCurrentTask.
+func TestBuildingCurrentTask(t *testing.T) {
+	t.Run("in_progress todo ActiveForm wins", func(t *testing.T) {
+		sess := agent.NewSessionForTest("s", "my-session")
+		sess.SetLifecyclePhase(agent.LifecycleInProgress)
+		ag := sess.AddTestAgent("a-1", false, agent.StatusActive)
+		ag.SetTodos([]agent.TodoItem{
+			{Content: "write tests", Status: "in_progress", ActiveForm: "Writing unit tests"},
+			{Content: "open PR", Status: "pending", ActiveForm: ""},
+		})
+		got := buildingCurrentTask(sess)
+		if got != "Writing unit tests" {
+			t.Errorf("expected ActiveForm, got %q", got)
+		}
+	})
+
+	t.Run("in_progress todo falls back to Content when ActiveForm empty", func(t *testing.T) {
+		sess := agent.NewSessionForTest("s", "my-session")
+		sess.SetLifecyclePhase(agent.LifecycleInProgress)
+		ag := sess.AddTestAgent("a-1", false, agent.StatusActive)
+		ag.SetTodos([]agent.TodoItem{
+			{Content: "write tests", Status: "in_progress", ActiveForm: ""},
+		})
+		got := buildingCurrentTask(sess)
+		if got != "write tests" {
+			t.Errorf("expected Content fallback, got %q", got)
+		}
+	})
+
+	t.Run("first pending Content when no in_progress", func(t *testing.T) {
+		sess := agent.NewSessionForTest("s", "my-session")
+		sess.SetLifecyclePhase(agent.LifecycleInProgress)
+		ag := sess.AddTestAgent("a-1", false, agent.StatusActive)
+		ag.SetTodos([]agent.TodoItem{
+			{Content: "done step", Status: "completed", ActiveForm: ""},
+			{Content: "next step", Status: "pending", ActiveForm: ""},
+		})
+		got := buildingCurrentTask(sess)
+		if got != "next step" {
+			t.Errorf("expected first pending Content, got %q", got)
+		}
+	})
+
+	t.Run("falls back to firstUncompletedTask from plan", func(t *testing.T) {
+		dir := t.TempDir()
+		sess := agent.NewSessionForTestWithPath("s", "my-session", dir)
+		sess.SetLifecyclePhase(agent.LifecycleInProgress)
+		if err := sess.WritePlan("- [x] done\n- [ ] implement auth\n- [ ] write docs\n"); err != nil {
+			t.Fatal(err)
+		}
+		// No agent / no todos.
+		got := buildingCurrentTask(sess)
+		if got != "implement auth" {
+			t.Errorf("expected first uncompleted plan task, got %q", got)
+		}
+	})
+
+	t.Run("returns empty when no todos and no plan", func(t *testing.T) {
+		sess := agent.NewSessionForTest("s", "my-session")
+		sess.SetLifecyclePhase(agent.LifecycleInProgress)
+		got := buildingCurrentTask(sess)
+		if got != "" {
+			t.Errorf("expected empty string, got %q", got)
+		}
+	})
+
+	t.Run("returns empty when all plan tasks are checked", func(t *testing.T) {
+		dir := t.TempDir()
+		sess := agent.NewSessionForTestWithPath("s", "my-session", dir)
+		sess.SetLifecyclePhase(agent.LifecycleInProgress)
+		if err := sess.WritePlan("- [x] one\n- [x] two\n"); err != nil {
+			t.Fatal(err)
+		}
+		got := buildingCurrentTask(sess)
+		if got != "" {
+			t.Errorf("expected empty string when all plan tasks done, got %q", got)
+		}
+	})
 }
