@@ -51,10 +51,11 @@ type agentEventMsg struct {
 // already created earlier — the heuristic would double-count if we
 // incremented on session creation as well.
 type createResultMsg struct {
-	sessionID    string
-	agentID      string
-	err          error
-	isNewSession bool
+	sessionID       string
+	agentID         string
+	err             error
+	isNewSession    bool
+	skipFocusLaunch bool // when true, don't enter focusLaunch; cursor still moves
 }
 
 // killScope distinguishes an agent-level kill from a session-level kill so the
@@ -800,17 +801,19 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.sessionsCreatedCount++
 		}
 		a.refreshAgentList()
-		// Find the new agent by ID, select it, and auto-focus its terminal in
-		// focusLaunch.
+		// Find the new agent by ID. Cursor always moves to the new session's
+		// row; focusLaunch is only entered when skipFocusLaunch is false.
 		if msg.agentID != "" {
 			for i, item := range a.dashboard.items {
 				if item.kind == listItemAgent && item.agent != nil && item.agent.ID == msg.agentID {
 					a.dashboard.selected = i
-					a.focusLaunchAgent = item.agent
-					a.focusLaunchSession = item.session
-					a.dashboard.panelFocus = focusLaunch
-					a.dashboard.scrollOffset = 0
-					item.agent.Resize(a.focusLaunchTermHeight(), a.dashboard.width)
+					if !msg.skipFocusLaunch {
+						a.focusLaunchAgent = item.agent
+						a.focusLaunchSession = item.session
+						a.dashboard.panelFocus = focusLaunch
+						a.dashboard.scrollOffset = 0
+						item.agent.Resize(a.focusLaunchTermHeight(), a.dashboard.width)
+					}
 					// Move the pipeline cursor to the new session so when the
 					// user esc's back to focusList their cursor is on the row
 					// they just spawned. Walk every section because newSession

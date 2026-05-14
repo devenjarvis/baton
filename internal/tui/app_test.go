@@ -4117,3 +4117,51 @@ func TestReviewPanel_ScrollBindingsAdvanceViewport(t *testing.T) {
 		t.Error("pgdown: panelFocus must remain focusReview")
 	}
 }
+
+// TestCreateResult_SkipFocusLaunch_StaysOnDashboard verifies that when
+// skipFocusLaunch is true the createResultMsg handler does not enter
+// focusLaunch, but still moves the pipeline cursor to the new session's row.
+func TestCreateResult_SkipFocusLaunch_StaysOnDashboard(t *testing.T) {
+	sess := agent.NewSessionForTest("sess-skip", "skip-session")
+	sess.SetLifecyclePhase(agent.LifecycleInProgress)
+	ag := sess.AddTestAgent("agent-skip", false, agent.StatusIdle)
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	// Pre-populate items; no manager is set so refreshAgentList returns early
+	// and leaves these items intact.
+	app.dashboard.items = []listItem{
+		{kind: listItemSession, repoPath: "/repo", session: sess},
+		{kind: listItemAgent, repoPath: "/repo", session: sess, agent: ag},
+	}
+
+	model, _ := app.Update(createResultMsg{
+		sessionID:       sess.ID,
+		agentID:         ag.ID,
+		skipFocusLaunch: true,
+	})
+	app = model.(App)
+
+	if app.dashboard.panelFocus == focusLaunch {
+		t.Error("panelFocus: got focusLaunch, want focusList (skipFocusLaunch should suppress terminal open)")
+	}
+	if app.focusLaunchAgent != nil {
+		t.Errorf("focusLaunchAgent: got %v, want nil", app.focusLaunchAgent.ID)
+	}
+	if app.focusCursorSection != focusSectionBuilding {
+		t.Errorf("focusCursorSection: got %v, want focusSectionBuilding", app.focusCursorSection)
+	}
+	building := app.dashboard.buildingSessions()
+	if len(building) == 0 {
+		t.Fatal("building section is empty — cursor-move block must run even when skipFocusLaunch is true")
+	}
+	if app.focusBuildingIdx >= len(building) {
+		t.Fatalf("focusBuildingIdx %d out of range (len=%d)", app.focusBuildingIdx, len(building))
+	}
+	if got := building[app.focusBuildingIdx].session; got == nil || got.ID != sess.ID {
+		t.Errorf("cursor does not point at new session: got %v, want %v", got, sess.ID)
+	}
+}
