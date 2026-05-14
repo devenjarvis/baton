@@ -17,17 +17,19 @@ var (
 	// session under the pipeline cursor. Kept tight so a 120-col terminal
 	// never truncates "quit" off the right edge — the `b` hint's desc is
 	// rewritten to "break" by App.View() outside the Planning section.
+	// `t` (shell) and `x` (kill) are omitted to stay within the column budget
+	// after adding `R repos` and `o branch`; both bindings remain active.
 	dashboardHints = []keyHint{
 		{"j/k", "navigate"},
 		{"⏎", "open"},
-		{"n", "new session"},
+		{"n", "session"},
 		{"b", "build"},
 		{"m", "ready"},
 		{"r", "review"},
 		{"c", "agent"},
 		{"d", "diff"},
-		{"t", "shell"},
-		{"x", "kill"},
+		{"R", "repos"},
+		{"o", "branch"},
 		{"s", "settings"},
 		{"q", "quit"},
 	}
@@ -81,6 +83,15 @@ var (
 		{"type", "filter"},
 		{"enter", "select"},
 		{"a", "add repo"},
+		{"esc", "cancel"},
+	}
+
+	repoPickerManageHints = []keyHint{
+		{"j/k", "navigate"},
+		{"⏎", "switch"},
+		{"s", "settings"},
+		{"d", "remove"},
+		{"a", "add"},
 		{"esc", "cancel"},
 	}
 )

@@ -4111,7 +4111,11 @@ func (a App) View() tea.View {
 		content = lipgloss.JoinVertical(lipgloss.Left, body, statusbar)
 	case ViewRepoPicker:
 		body := a.repoPicker.View()
-		statusbar := renderStatusBar(repoPickerHints, a.width)
+		hints := repoPickerHints
+		if a.repoPicker.mode == repoPickerModeManage {
+			hints = repoPickerManageHints
+		}
+		statusbar := renderStatusBar(hints, a.width)
 		content = lipgloss.JoinVertical(lipgloss.Left, body, statusbar)
 	}
 
