@@ -1209,7 +1209,7 @@ func TestSessionFocusStatus_BuildingProgressCombinesPlanAndCommits(t *testing.T)
 
 	t.Run("commits_ahead_of_checkboxes_3_of_5", func(t *testing.T) {
 		sess := newBuildingSession(t, plan5) // 1 checked, 5 total
-		sess.SetCommitTaskCountForTest(3, 3)  // commits: done=3, max=3
+		sess.SetCommitTaskCountForTest(3, 3) // commits: done=3, max=3
 		badge := ansi.Strip(d.sessionFocusStatus(sess))
 		if !strings.Contains(badge, "3/5") {
 			t.Errorf("expected 3/5 badge (commits ahead of checkboxes), got %q", badge)
