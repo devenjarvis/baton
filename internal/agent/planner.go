@@ -361,3 +361,79 @@ func runClaudePlanner(ctx context.Context, claudePath, model, instruction, quest
 	}
 	return output, nil
 }
+
+// runDraftWithRetry calls drafter.Draft up to planDraftAttempts times,
+// retrying on transient failures (non-terminal errors or empty body).
+// ErrEmptyPrompt and ErrClaudeNotFound short-circuit on the first attempt.
+// onAttempt, if non-nil, is called before each subprocess invocation with
+// (currentAttempt, maxAttempts) so callers can update display state.
+func runDraftWithRetry(
+	ctx context.Context,
+	drafter PlanDrafter,
+	req DraftRequest,
+	done <-chan struct{},
+	onAttempt func(attempt, max int),
+) (string, error) {
+	maxAttempts := planDraftAttempts
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		select {
+		case <-done:
+			return "", context.Canceled
+		default:
+		}
+
+		if onAttempt != nil {
+			onAttempt(attempt, maxAttempts)
+		}
+
+		attemptCtx, cancel := context.WithTimeout(ctx, planDraftPerAttemptCap)
+		body, err := drafter.Draft(attemptCtx, req)
+		cancel()
+
+		// Terminal errors: short-circuit immediately, no backoff.
+		if errors.Is(err, ErrEmptyPrompt) || errors.Is(err, ErrClaudeNotFound) {
+			return "", err
+		}
+
+		if err == nil && strings.TrimSpace(body) != "" {
+			return body, nil
+		}
+
+		if err != nil {
+			lastErr = err
+		} else {
+			lastErr = errors.New("planner returned empty plan")
+		}
+
+		if attempt == maxAttempts {
+			break
+		}
+
+		// Sleep between attempts, aborting on context cancellation.
+		var wait time.Duration
+		if idx := attempt - 1; idx < len(planDraftBackoff) {
+			wait = planDraftBackoff[idx]
+		}
+		if wait > 0 {
+			timer := time.NewTimer(wait)
+			select {
+			case <-timer.C:
+			case <-done:
+				timer.Stop()
+				return "", context.Canceled
+			case <-ctx.Done():
+				timer.Stop()
+				return "", ctx.Err()
+			}
+		}
+	}
+	return "", lastErr
+}
