@@ -913,8 +913,13 @@ func planTaskCounts(plan string) (total, done int) {
 // "" if every task is done (or the plan has no task lines). Used by the
 // Planning card description so the user sees what's outstanding without
 // opening the editor.
+//
+// Scopes to the "## Tasks" section via agent.ScanTaskLines so a stray "- [ ]"
+// in Spec/Goal/Verification cannot surface as the "current task" while
+// planTaskCounts (which uses the same scope) ignores it — the two would
+// otherwise disagree on which item is outstanding.
 func firstUncompletedTask(plan string) string {
-	for _, raw := range strings.Split(plan, "\n") {
+	for _, raw := range agent.ScanTaskLines(plan) {
 		line := strings.TrimLeft(raw, " \t")
 		if !strings.HasPrefix(line, "- [ ]") {
 			continue

@@ -727,3 +727,60 @@ func TestParseSessionNum(t *testing.T) {
 		}
 	}
 }
+
+// TestDetach_CalledTwiceDoesNotPanic pins the idempotency of Detach: calling
+// it twice must not panic on close-of-closed-channel for m.done or m.events.
+// Before the shared shutdownOnce gate, the second call panicked.
+func TestDetach_CalledTwiceDoesNotPanic(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+
+	if got := mgr.Detach(); got != nil {
+		t.Fatalf("first Detach on empty manager: want nil, got %+v", got)
+	}
+	if got := mgr.Detach(); got != nil {
+		t.Errorf("second Detach: want nil (no-op), got %+v", got)
+	}
+}
+
+// TestDetach_ThenShutdownDoesNotPanic pins the production teardown order: the
+// TUI snapshots state via Detach() and then a deferred mgr.Shutdown() fires.
+// The second call must be a no-op rather than panic on close-of-closed-channel.
+func TestDetach_ThenShutdownDoesNotPanic(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+
+	cfg := Config{Task: "test", Rows: 24, Cols: 80}
+	_, _, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 60")
+	})
+	if err != nil {
+		t.Fatalf("CreateSessionWithCommand: %v", err)
+	}
+
+	bs := mgr.Detach()
+	if bs == nil {
+		t.Fatal("Detach returned nil; expected snapshot with one session")
+	}
+	if len(bs.Sessions) != 1 {
+		t.Fatalf("Detach snapshot: want 1 session, got %d", len(bs.Sessions))
+	}
+
+	// Must not panic. Shutdown after Detach is the documented production
+	// pattern (defer mgr.Shutdown() paired with an explicit Detach on quit).
+	mgr.Shutdown()
+}
+
+// TestShutdown_ThenDetachReturnsNil pins the reverse order: if Shutdown has
+// already torn down the manager, a subsequent Detach must return nil rather
+// than panic. The shared shutdownOnce gate makes this a no-op.
+func TestShutdown_ThenDetachReturnsNil(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+
+	mgr.Shutdown()
+
+	if got := mgr.Detach(); got != nil {
+		t.Errorf("Detach after Shutdown: want nil, got %+v", got)
+	}
+}

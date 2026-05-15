@@ -1574,107 +1574,118 @@ func (m *Manager) RepoPath() string {
 
 // Detach snapshots all sessions into a RefrainState, kills all agents but preserves
 // worktrees, and shuts down the manager. Returns the state for persistence.
+//
+// Shares m.shutdownOnce with Shutdown: both close m.done, drain watchers, and
+// close the sends channels exactly once. If Shutdown ran first, Detach returns
+// nil; if Detach ran first, a later Shutdown is a no-op (which is correct —
+// Detach intentionally leaves snapshotted sessions alive for a later resume).
+// Without this gate, a defer mgr.Shutdown() after Detach panics on
+// close-of-closed-channel.
 func (m *Manager) Detach() *state.RefrainState {
-	close(m.done)
+	var result *state.RefrainState
+	m.shutdownOnce.Do(func() {
+		close(m.done)
 
-	// Stop hooks + drain watchers before snapshotting so any in-flight
-	// branch rename has settled and the snapshot captures the final name.
-	m.stopHookServer()
-	m.watchers.Wait()
+		// Stop hooks + drain watchers before snapshotting so any in-flight
+		// branch rename has settled and the snapshot captures the final name.
+		m.stopHookServer()
+		m.watchers.Wait()
 
-	m.mu.RLock()
-	sessions := make([]*Session, 0, len(m.sessions))
-	for _, s := range m.sessions {
-		sessions = append(sessions, s)
-	}
-	m.mu.RUnlock()
-
-	// Partition: complete sessions are cleaned up; others are snapshotted.
-	var toSnapshot, toClean []*Session
-	for _, s := range sessions {
-		if s.LifecyclePhase() == LifecycleComplete {
-			toClean = append(toClean, s)
-		} else {
-			toSnapshot = append(toSnapshot, s)
+		m.mu.RLock()
+		sessions := make([]*Session, 0, len(m.sessions))
+		for _, s := range m.sessions {
+			sessions = append(sessions, s)
 		}
-	}
+		m.mu.RUnlock()
 
-	// Snapshot state before killing agents.
-	sessionStates := make([]state.SessionState, 0, len(toSnapshot))
-	for _, s := range toSnapshot {
-		var doneAt *time.Time
-		if t := s.DoneAt(); !t.IsZero() {
-			doneAt = &t
-		}
-		ss := state.SessionState{
-			ID:             s.ID,
-			Name:           s.CurrentName(),
-			DisplayName:    s.GetDisplayName(),
-			WorktreePath:   s.Worktree.Path,
-			Branch:         s.Branch(),
-			BaseBranch:     s.Worktree.BaseBranch,
-			OwnsBranch:     s.ownsBranch,
-			HasClaudeName:  s.HasClaudeName(),
-			LifecyclePhase: s.LifecyclePhase().String(),
-			OriginalPrompt: s.OriginalPrompt(),
-			DoneAt:         doneAt,
-		}
-		for _, a := range s.Agents() {
-			as := state.AgentState{
-				ID:              a.ID,
-				Name:            a.Name,
-				DisplayName:     a.GetDisplayName(),
-				Task:            a.Task,
-				ClaudeSessionID: a.ClaudeSessionID(),
+		// Partition: complete sessions are cleaned up; others are snapshotted.
+		var toSnapshot, toClean []*Session
+		for _, s := range sessions {
+			if s.LifecyclePhase() == LifecycleComplete {
+				toClean = append(toClean, s)
+			} else {
+				toSnapshot = append(toSnapshot, s)
 			}
-			ss.Agents = append(ss.Agents, as)
 		}
-		sessionStates = append(sessionStates, ss)
-	}
 
-	// Kill complete sessions and remove their worktrees.
-	var cleanWg sync.WaitGroup
-	cleanWg.Add(len(toClean))
-	for _, s := range toClean {
-		go func() {
-			defer cleanWg.Done()
-			s.KillAll()
-			_ = s.Cleanup(m.repoPath)
-		}()
-	}
-	cleanWg.Wait()
+		// Snapshot state before killing agents.
+		sessionStates := make([]state.SessionState, 0, len(toSnapshot))
+		for _, s := range toSnapshot {
+			var doneAt *time.Time
+			if t := s.DoneAt(); !t.IsZero() {
+				doneAt = &t
+			}
+			ss := state.SessionState{
+				ID:             s.ID,
+				Name:           s.CurrentName(),
+				DisplayName:    s.GetDisplayName(),
+				WorktreePath:   s.Worktree.Path,
+				Branch:         s.Branch(),
+				BaseBranch:     s.Worktree.BaseBranch,
+				OwnsBranch:     s.ownsBranch,
+				HasClaudeName:  s.HasClaudeName(),
+				LifecyclePhase: s.LifecyclePhase().String(),
+				OriginalPrompt: s.OriginalPrompt(),
+				DoneAt:         doneAt,
+			}
+			for _, a := range s.Agents() {
+				as := state.AgentState{
+					ID:              a.ID,
+					Name:            a.Name,
+					DisplayName:     a.GetDisplayName(),
+					Task:            a.Task,
+					ClaudeSessionID: a.ClaudeSessionID(),
+				}
+				ss.Agents = append(ss.Agents, as)
+			}
+			sessionStates = append(sessionStates, ss)
+		}
 
-	// Kill agents for snapshotted sessions but do NOT call Cleanup (preserve worktrees).
-	var wg sync.WaitGroup
-	wg.Add(len(toSnapshot))
-	for _, s := range toSnapshot {
-		go func() {
-			defer wg.Done()
-			s.KillAll()
-		}()
-	}
-	wg.Wait()
+		// Kill complete sessions and remove their worktrees.
+		var cleanWg sync.WaitGroup
+		cleanWg.Add(len(toClean))
+		for _, s := range toClean {
+			go func() {
+				defer cleanWg.Done()
+				s.KillAll()
+				_ = s.Cleanup(m.repoPath)
+			}()
+		}
+		cleanWg.Wait()
 
-	m.mu.Lock()
-	m.sessions = make(map[string]*Session)
-	m.mu.Unlock()
+		// Kill agents for snapshotted sessions but do NOT call Cleanup (preserve worktrees).
+		var wg sync.WaitGroup
+		wg.Add(len(toSnapshot))
+		for _, s := range toSnapshot {
+			go func() {
+				defer wg.Done()
+				s.KillAll()
+			}()
+		}
+		wg.Wait()
 
-	// Same gate as Shutdown — see the comment there.
-	m.sendsMu.Lock()
-	m.sendsClosed = true
-	close(m.events)
-	close(m.plannerQuestions)
-	m.sendsMu.Unlock()
+		m.mu.Lock()
+		m.sessions = make(map[string]*Session)
+		m.mu.Unlock()
 
-	if len(sessionStates) == 0 {
-		return nil
-	}
+		// Same gate as Shutdown — see the comment there.
+		m.sendsMu.Lock()
+		m.sendsClosed = true
+		close(m.events)
+		close(m.plannerQuestions)
+		m.sendsMu.Unlock()
 
-	return &state.RefrainState{
-		Version:  1,
-		SavedAt:  time.Now(),
-		Sessions: sessionStates,
-	}
+		if len(sessionStates) == 0 {
+			return
+		}
+
+		result = &state.RefrainState{
+			Version:  1,
+			SavedAt:  time.Now(),
+			Sessions: sessionStates,
+		}
+	})
+	return result
 }
 
 // ResumeSession recreates a session from saved state without creating a new worktree.
