@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"strings"
@@ -618,5 +619,67 @@ func TestPlanEditor_ScrollModeStylesHeadings(t *testing.T) {
 	}
 	if !strings.Contains(view, "\x1b[") {
 		t.Errorf("expected ANSI styling in scroll view, got plain output:\n%s", view)
+	}
+}
+
+// --- R-key retry tests ---
+
+func TestPlanEditor_R_RetryEmitsMsgWhenDraftError(t *testing.T) {
+	sess, _ := newEditorTestSession(t)
+	sess.SetDraftError(errors.New("boom"))
+	sess.SetOriginalPrompt("do the thing")
+	editor := newPlanEditor(sess, "testrepo", 80, 30)
+
+	cmd := editor.Update(tea.KeyPressMsg{Code: 'R', Text: "R"})
+	if cmd == nil {
+		t.Fatal("R with draft error + original prompt should emit a cmd")
+	}
+	got := cmd()
+	msg, ok := got.(planEditorRetryMsg)
+	if !ok {
+		t.Fatalf("cmd produced %T, want planEditorRetryMsg", got)
+	}
+	if msg.sessionID != sess.ID {
+		t.Errorf("sessionID = %q, want %q", msg.sessionID, sess.ID)
+	}
+	if msg.repoPath != "testrepo" {
+		t.Errorf("repoPath = %q, want testrepo", msg.repoPath)
+	}
+}
+
+func TestPlanEditor_R_NoopWhenNoDraftError(t *testing.T) {
+	sess, _ := newEditorTestSession(t)
+	sess.SetOriginalPrompt("do the thing")
+	// No draft error set.
+	editor := newPlanEditor(sess, "testrepo", 80, 30)
+
+	cmd := editor.Update(tea.KeyPressMsg{Code: 'R', Text: "R"})
+	if cmd != nil {
+		t.Errorf("R with no draft error should be a no-op, got cmd that returns %T", cmd())
+	}
+}
+
+func TestPlanEditor_R_NoopWhenNoOriginalPrompt(t *testing.T) {
+	sess, _ := newEditorTestSession(t)
+	sess.SetDraftError(errors.New("boom"))
+	// No original prompt set.
+	editor := newPlanEditor(sess, "testrepo", 80, 30)
+
+	cmd := editor.Update(tea.KeyPressMsg{Code: 'R', Text: "R"})
+	if cmd != nil {
+		t.Errorf("R with no original prompt should be a no-op, got cmd that returns %T", cmd())
+	}
+}
+
+func TestPlanEditor_R_NoopWhenDrafting(t *testing.T) {
+	sess, _ := newEditorTestSession(t)
+	sess.SetDraftError(errors.New("boom"))
+	sess.SetOriginalPrompt("do the thing")
+	editor := newPlanEditor(sess, "testrepo", 80, 30)
+	editor.SetDrafting(true)
+
+	cmd := editor.Update(tea.KeyPressMsg{Code: 'R', Text: "R"})
+	if cmd != nil {
+		t.Errorf("R while drafting should be a no-op, got cmd that returns %T", cmd())
 	}
 }

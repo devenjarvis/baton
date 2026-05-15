@@ -172,6 +172,13 @@ type planEditorReviseMsg struct {
 	critique  string
 }
 
+// planEditorRetryMsg is emitted when the user presses R in scroll mode while
+// a draft error is set and the original prompt is available.
+type planEditorRetryMsg struct {
+	sessionID string
+	repoPath  string
+}
+
 // planEditorAbandonMsg is emitted on `q` in scroll mode to abandon the
 // planning session entirely.
 type planEditorAbandonMsg struct {
@@ -251,12 +258,19 @@ func (m *planEditorModel) SetSize(w, h int) {
 }
 
 // SetDrafting toggles the drafting placeholder. While drafting, scroll-mode
-// hints render a spinner and `i`/`a`/`r` are no-ops.
+// hints render a spinner and `i`/`a`/`r` are no-ops. When the session is on
+// a retry attempt, the status line reflects the current attempt counter.
 func (m *planEditorModel) SetDrafting(v bool) {
 	m.drafting = v
 	if v {
+		if m.sess != nil {
+			if cur, max := m.sess.DraftAttempt(); cur > 1 && max > 0 {
+				m.statusMsg = fmt.Sprintf("Drafting… (retry %d/%d)", cur, max)
+				return
+			}
+		}
 		m.statusMsg = "Drafting…"
-	} else if m.statusMsg == "Drafting…" {
+	} else if m.statusMsg == "Drafting…" || strings.HasPrefix(m.statusMsg, "Drafting… (retry") {
 		m.statusMsg = ""
 	}
 }
@@ -576,6 +590,15 @@ func (m *planEditorModel) updateScroll(msg tea.KeyPressMsg) tea.Cmd {
 		m.mode = planEditorModeReviseInput
 		m.reviseInput.SetValue("")
 		return m.reviseInput.Focus()
+	case "R":
+		if m.drafting || m.revising {
+			return nil
+		}
+		if m.sess == nil || m.sess.DraftError() == nil || m.sess.OriginalPrompt() == "" {
+			return nil
+		}
+		sessID, repoPath := m.sess.ID, m.repoPath
+		return func() tea.Msg { return planEditorRetryMsg{sessionID: sessID, repoPath: repoPath} }
 	case "u":
 		if m.revising || m.sess == nil {
 			return nil
@@ -938,7 +961,11 @@ func (m *planEditorModel) renderHeader() string {
 
 func (m *planEditorModel) renderStatusLine() string {
 	if m.errMsg != "" {
-		return StyleError.Render(m.errMsg)
+		msg := m.errMsg
+		if m.sess != nil && m.sess.DraftError() != nil && m.sess.OriginalPrompt() != "" {
+			msg += " — press R to retry"
+		}
+		return StyleError.Render(msg)
 	}
 	if m.statusMsg != "" {
 		return StyleSubtle.Render(m.statusMsg)
