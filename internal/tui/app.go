@@ -4421,7 +4421,7 @@ outer:
 			ps.inFlight = true
 			a.prPollsInFlight++
 			fetchThreads := sess.LifecyclePhase() == agent.LifecycleShipping
-			cmds = append(cmds, a.refreshPRStatusForSession(sess.ID, sess.Branch(), repo.Path, sess.Worktree.Path, fetchThreads))
+			cmds = append(cmds, a.refreshPRStatusForSession(sess.ID, sess.Branch(), repo.Path, sess.Worktree.Path, fetchThreads, 0))
 		}
 	}
 	return cmds
@@ -4493,7 +4493,9 @@ func getLocalHeadSHA(worktreePath string) string {
 
 // refreshPRStatusForSession returns a Cmd that polls PR, check, and review status for a single session.
 // worktreePath is used as a fallback SHA source when the branch hasn't been pushed under its current name.
-func (a *App) refreshPRStatusForSession(sessionID, branch, repoPath, worktreePath string, fetchThreads bool) tea.Cmd {
+// cachedPRNumber, when > 0 and the session is in LifecycleShipping, enables a merged-fallback lookup
+// via resolveMergedFallback so externally-merged/closed PRs are detected and the session is cleaned up.
+func (a *App) refreshPRStatusForSession(sessionID, branch, repoPath, worktreePath string, fetchThreads bool, cachedPRNumber int) tea.Cmd {
 	// Guard: ensure the caller passed the repo that actually owns this session.
 	// This catches programming errors (e.g. passing cfg.Repos[0].Path for a
 	// session that belongs to a different repo) before the poll fires.
@@ -4538,6 +4540,11 @@ func (a *App) refreshPRStatusForSession(sessionID, branch, repoPath, worktreePat
 			if err != nil {
 				return prPollMsg{sessionID: sessionID, err: err}
 			}
+		}
+		// Shipping sessions: if the open-only lookups all returned nil, check
+		// whether the cached PR was merged or closed externally.
+		if pr == nil && cachedPRNumber > 0 {
+			pr = resolveMergedFallback(ctx, owner, repo, cachedPRNumber, ghClient.RefreshPR)
 		}
 		var checks *github.CheckStatus
 		var reviews *github.ReviewStatus

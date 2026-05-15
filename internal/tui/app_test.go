@@ -4282,7 +4282,7 @@ func TestRefreshPRStatus_WrongRepoReturnsError(t *testing.T) {
 	app.cfg = &config.Config{Repos: []config.Repo{{Path: dir}}}
 
 	wrongRepoPath := "/nonexistent/wrong-repo"
-	cmd := app.refreshPRStatusForSession(sess.ID, sess.Branch(), wrongRepoPath, "", false)
+	cmd := app.refreshPRStatusForSession(sess.ID, sess.Branch(), wrongRepoPath, "", false, 0)
 	if cmd == nil {
 		t.Fatal("expected non-nil Cmd from refreshPRStatusForSession with wrong repo")
 	}
