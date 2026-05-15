@@ -569,6 +569,11 @@ func TestPlanTaskCounts(t *testing.T) {
 }
 
 func TestFirstUncompletedTask(t *testing.T) {
+	// Spec/Verification stray-checkbox case mirrors the same scoping rule
+	// planTaskCounts uses (agent.ScanTaskLines): when a "## Tasks" heading
+	// is present, only checkboxes inside that section count — otherwise the
+	// commit-to-task prefix mapping ("[task N]") and the displayed "current
+	// task" disagree on which item is being worked on.
 	for _, tc := range []struct {
 		name string
 		plan string
@@ -579,10 +584,63 @@ func TestFirstUncompletedTask(t *testing.T) {
 		{"first open", "- [x] done\n- [ ] next thing\n- [ ] later\n", "next thing"},
 		{"trims surrounding whitespace", "  - [ ]   trim me  \n", "trim me"},
 		{"skips blank task body", "- [ ]   \n- [ ] real one\n", "real one"},
+		{
+			"ignores spec checkbox when tasks section present",
+			"## Spec\n- [ ] not a task — acceptance criterion\n\n## Tasks\n- [ ] real task\n",
+			"real task",
+		},
+		{
+			"ignores verification checkbox after empty tasks section",
+			"## Tasks\n\n## Verification\n- [ ] run the tests\n",
+			"",
+		},
+		{
+			"no tasks heading falls back to whole-doc scan",
+			"# Goal\nDo a thing.\n- [ ] freeform item\n",
+			"freeform item",
+		},
+		{
+			"tasks section completed with stray spec checkbox returns empty",
+			"## Spec\n- [ ] acceptance criterion not done\n\n## Tasks\n- [x] only task\n",
+			"",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := firstUncompletedTask(tc.plan); got != tc.want {
 				t.Errorf("firstUncompletedTask(%q) = %q, want %q", tc.plan, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestFirstUncompletedTask_ConsistentWithPlanTaskCounts pins the structural
+// invariant the scoping bug violated: the planning card cannot display a
+// "current task" that planTaskCounts treats as nonexistent, because the
+// "[task N]" commit prefix the build agent emits is derived from
+// planTaskCounts' scope. If firstUncompletedTask surfaces a Spec checkbox
+// while planTaskCounts counts only Tasks-section items, the UI would show
+// "1/0 tasks · current task: <spec item>" — nonsensical.
+func TestFirstUncompletedTask_ConsistentWithPlanTaskCounts(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		plan string
+	}{
+		{"empty", ""},
+		{"freeform only", "- [ ] one\n- [x] two\n"},
+		{"freeform all done", "- [x] one\n- [x] two\n"},
+		{"tasks section with stray spec checkbox", "## Spec\n- [ ] spec\n\n## Tasks\n- [ ] real\n- [x] done\n"},
+		{"tasks section all done with stray verification", "## Tasks\n- [x] done\n\n## Verification\n- [ ] run tests\n"},
+		{"empty tasks section with stray notes", "## Tasks\n\n## Not in scope\n- [ ] later\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			total, done := planTaskCounts(tc.plan)
+			first := firstUncompletedTask(tc.plan)
+			outstanding := total - done
+			if outstanding > 0 && first == "" {
+				t.Errorf("planTaskCounts reports %d outstanding but firstUncompletedTask returned empty for plan:\n%s", outstanding, tc.plan)
+			}
+			if outstanding == 0 && first != "" {
+				t.Errorf("planTaskCounts reports 0 outstanding but firstUncompletedTask returned %q for plan:\n%s", first, tc.plan)
 			}
 		})
 	}
