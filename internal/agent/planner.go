@@ -381,13 +381,19 @@ func runDraftWithRetry(
 
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		if err := ctx.Err(); err != nil {
-			return "", err
-		}
-		select {
-		case <-done:
-			return "", context.Canceled
-		default:
+		// Between attempts: check for cancellation before sleeping or retrying.
+		// We do NOT check before the first attempt — the drafter itself receives
+		// the (possibly already-cancelled) context and handles it gracefully,
+		// which existing tests rely on.
+		if attempt > 1 {
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
+			select {
+			case <-done:
+				return "", context.Canceled
+			default:
+			}
 		}
 
 		if onAttempt != nil {

@@ -507,6 +507,8 @@ func (s *stubDrafter) Revise(_ context.Context, _ ReviseRequest) (string, error)
 }
 
 func TestRunDraftWithRetry_RetriesTransientThenSucceeds(t *testing.T) {
+	setPlanDraftRetryForTesting(t, 3, 10*time.Millisecond, 1*time.Millisecond)
+
 	const wantPlan = "# Goal\nDone\n"
 	stub := &stubDrafter{
 		results: []struct {

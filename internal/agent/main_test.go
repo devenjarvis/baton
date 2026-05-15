@@ -47,5 +47,36 @@ func TestMain(m *testing.M) {
 	haikuSummaryOverallTimeout = 3 * time.Second
 	haikuSummaryBackoff = []time.Duration{}
 
+	// Shrink plan-draft retry budget so draft tests don't sit through 2s+5s
+	// real-world backoffs. Individual retry tests override these via
+	// setPlanDraftRetryForTesting.
+	planDraftAttempts = 1
+	planDraftPerAttemptCap = 500 * time.Millisecond
+	planDraftBackoff = []time.Duration{}
+
 	os.Exit(m.Run())
+}
+
+// setPlanDraftRetryForTesting swaps the plan-draft retry tunables to fast
+// values for the duration of the test. Mirrors setHaikuRetryForTesting.
+func setPlanDraftRetryForTesting(t *testing.T, attempts int, perAttempt, backoff time.Duration) {
+	t.Helper()
+	origAttempts := planDraftAttempts
+	origCap := planDraftPerAttemptCap
+	origBackoff := planDraftBackoff
+
+	planDraftAttempts = attempts
+	planDraftPerAttemptCap = perAttempt
+	// Build a backoff slice of length attempts-1 filled with the given value.
+	newBackoff := make([]time.Duration, attempts-1)
+	for i := range newBackoff {
+		newBackoff[i] = backoff
+	}
+	planDraftBackoff = newBackoff
+
+	t.Cleanup(func() {
+		planDraftAttempts = origAttempts
+		planDraftPerAttemptCap = origCap
+		planDraftBackoff = origBackoff
+	})
 }

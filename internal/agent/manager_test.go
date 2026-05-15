@@ -449,6 +449,52 @@ func TestManager_StartDraft_DoesNotCountTowardAgentCount(t *testing.T) {
 	}
 }
 
+func TestManager_StartDraft_RetriesTransientThenSucceeds(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	setPlanDraftRetryForTesting(t, 3, 1*time.Millisecond, 1*time.Millisecond)
+
+	const planMD = "# Goal\nDo X\n\n## Tasks\n- [ ] step\n"
+	var callCount int32
+	mgr.SetPlanDrafter(&stubPlanDrafter{
+		draftFn: func(ctx context.Context, req DraftRequest) (string, error) {
+			n := atomic.AddInt32(&callCount, 1)
+			if n == 1 {
+				return "", errors.New("overloaded")
+			}
+			return planMD, nil
+		},
+	})
+
+	sess, _, err := mgr.CreateSessionWithCommand(
+		Config{Task: "test", Rows: 24, Cols: 80},
+		func(name string) *exec.Cmd { return exec.Command("bash", "-c", "sleep 5") },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := mgr.StartDraft(sess.ID, "add dark mode"); err != nil {
+		t.Fatalf("StartDraft: %v", err)
+	}
+
+	waitForCondition(t, 2*time.Second, func() bool {
+		return !sess.IsDrafting() && sess.HasPlan()
+	})
+
+	if got := atomic.LoadInt32(&callCount); got != 2 {
+		t.Errorf("stub called %d times, want 2", got)
+	}
+	if sess.DraftError() != nil {
+		t.Errorf("DraftError = %v, want nil after success", sess.DraftError())
+	}
+	if !sess.HasPlan() {
+		t.Error("HasPlan() should be true after successful retry")
+	}
+}
+
 func TestManager_RevisePlan_Success(t *testing.T) {
 	repo := setupTestRepo(t)
 	mgr := NewManager(repo, defaultTestSettings())
