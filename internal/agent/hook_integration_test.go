@@ -2324,3 +2324,122 @@ func TestTaskSummarizerSucceedsAfterTransientError(t *testing.T) {
 		t.Errorf("summarizer call count = %d, want 2", got)
 	}
 }
+
+// TestManager_StopHookRefreshesCommitTaskCount verifies that a KindStop event
+// for a LifecycleInProgress session triggers a background refresh of the
+// commit-task cache and that CommitTaskCount() converges to the correct values.
+func TestManager_StopHookRefreshesCommitTaskCount(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	cfg := Config{Task: "test", Rows: 24, Cols: 80}
+	sess, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Advance to Building so the Stop handler fires the refresh.
+	sess.SetLifecyclePhase(LifecycleInProgress)
+
+	// Make two task commits in the worktree.
+	makeTestCommit(t, sess.Worktree.Path, "[task 1] first")
+	makeTestCommit(t, sess.Worktree.Path, "[task 2] second")
+
+	// Send a Stop event — dispatcher should fire RefreshCommitTaskCount in a goroutine.
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindStop,
+		AgentID: ag.ID,
+	}); err != nil {
+		t.Fatalf("SendEvent Stop: %v", err)
+	}
+
+	// Poll until cache is populated (goroutine may lag a few ms).
+	waitForCondition(t, 3*time.Second, func() bool {
+		done, maxIdx := sess.CommitTaskCount()
+		return done == 2 && maxIdx == 2
+	})
+
+	done, maxIdx := sess.CommitTaskCount()
+	if done != 2 || maxIdx != 2 {
+		t.Errorf("CommitTaskCount() = (%d, %d), want (2, 2)", done, maxIdx)
+	}
+}
+
+// TestManager_StopHookSkipsRefreshAfterMarkDone verifies that a KindStop event
+// for a session that has already advanced past LifecycleInProgress does NOT
+// overwrite a previously-seeded commit-task cache. This pins the
+// LifecyclePhase guard introduced in dispatchHookEvents against regression.
+func TestManager_StopHookSkipsRefreshAfterMarkDone(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	cfg := Config{Task: "test", Rows: 24, Cols: 80}
+	sess, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed the cache so we can detect if it gets overwritten.
+	sess.SetCommitTaskCountForTest(7, 7)
+
+	// Advance to ReadyForReview (past Building) — Stop events must now be no-ops.
+	sess.SetLifecyclePhase(LifecycleReadyForReview)
+
+	// Make commits that would produce a smaller count if incorrectly refreshed.
+	makeTestCommit(t, sess.Worktree.Path, "[task 1] should not be counted")
+
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindStop,
+		AgentID: ag.ID,
+	}); err != nil {
+		t.Fatalf("SendEvent Stop: %v", err)
+	}
+
+	// Wait long enough for any goroutine to have run if incorrectly spawned.
+	time.Sleep(200 * time.Millisecond)
+
+	done, maxIdx := sess.CommitTaskCount()
+	if done != 7 || maxIdx != 7 {
+		t.Errorf("CommitTaskCount() = (%d, %d) after ReadyForReview Stop, want (7, 7) — cache must not be overwritten", done, maxIdx)
+	}
+}
+
+// TestManager_StopHookSkipsRefreshOutsideBuilding verifies that a KindStop
+// event for a non-Building session is a no-op for the commit-task cache.
+func TestManager_StopHookSkipsRefreshOutsideBuilding(t *testing.T) {
+	repo := setupTestRepo(t)
+	mgr := NewManager(repo, defaultTestSettings())
+	defer mgr.Shutdown()
+
+	cfg := Config{Task: "test", Rows: 24, Cols: 80}
+	sess, ag, err := mgr.CreateSessionWithCommand(cfg, func(name string) *exec.Cmd {
+		return exec.Command("bash", "-c", "sleep 5")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Leave lifecycle as LifecyclePlanning (default).
+	makeTestCommit(t, sess.Worktree.Path, "[task 1] should not be counted")
+
+	if err := hook.SendEvent(mgr.HookSocketPath(), hook.Event{
+		Kind:    hook.KindStop,
+		AgentID: ag.ID,
+	}); err != nil {
+		t.Fatalf("SendEvent Stop: %v", err)
+	}
+
+	// Wait long enough for any goroutine to have run if incorrectly spawned.
+	time.Sleep(200 * time.Millisecond)
+
+	done, maxIdx := sess.CommitTaskCount()
+	if done != 0 || maxIdx != 0 {
+		t.Errorf("CommitTaskCount() = (%d, %d) after Planning Stop, want (0, 0)", done, maxIdx)
+	}
+}

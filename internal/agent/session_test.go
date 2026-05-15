@@ -1562,6 +1562,89 @@ OAuth2 support`
 	})
 }
 
+// makeTestCommit creates an empty git commit in dir with the given message.
+func makeTestCommit(t *testing.T, dir, message string) {
+	t.Helper()
+	cmd := exec.Command("git", "commit", "--allow-empty", "-m", message)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("makeTestCommit %q: %v\n%s", message, err, out)
+	}
+}
+
+func TestSession_CommitTaskCount_ZeroWithNoCommits(t *testing.T) {
+	repo := setupTestRepo(t)
+	wt := &git.WorktreeInfo{Path: repo, Branch: "main", BaseBranch: "main"}
+	s := newSession("id", "name", wt)
+
+	done, maxIdx := s.CommitTaskCount()
+	if done != 0 || maxIdx != 0 {
+		t.Errorf("CommitTaskCount() = (%d, %d), want (0, 0)", done, maxIdx)
+	}
+}
+
+func TestSession_CommitTaskCount_CorrectAfterRefresh(t *testing.T) {
+	repo := setupTestRepo(t)
+
+	// Detect the actual base branch name (main or master depending on git config).
+	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	cmd.Dir = repo
+	branchOut, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("detect base branch: %v", err)
+	}
+	baseBranch := strings.TrimSpace(string(branchOut))
+
+	// Create a feature branch so [task N] commits are ahead of the base.
+	cmd = exec.Command("git", "checkout", "-b", "feature")
+	cmd.Dir = repo
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("checkout -b feature: %v\n%s", err, out)
+	}
+
+	makeTestCommit(t, repo, "[task 1] first task")
+	makeTestCommit(t, repo, "[task 2] second task")
+	makeTestCommit(t, repo, "[task 2] also second task") // duplicate index
+	makeTestCommit(t, repo, "chore: noop")               // non-task commit
+
+	wt := &git.WorktreeInfo{Path: repo, Branch: "feature", BaseBranch: baseBranch}
+	s := newSession("id", "name", wt)
+
+	if err := s.RefreshCommitTaskCount(); err != nil {
+		t.Fatalf("RefreshCommitTaskCount: %v", err)
+	}
+
+	done, maxIdx := s.CommitTaskCount()
+	// distinct task indices: {1, 2} → done=2; max index=2
+	if done != 2 || maxIdx != 2 {
+		t.Errorf("CommitTaskCount() = (%d, %d), want (2, 2)", done, maxIdx)
+	}
+}
+
+func TestSession_CommitTaskCount_ZeroWithNilWorktree(t *testing.T) {
+	s := newSession("id", "name", nil)
+
+	// RefreshCommitTaskCount must not error.
+	if err := s.RefreshCommitTaskCount(); err != nil {
+		t.Errorf("RefreshCommitTaskCount with nil worktree: %v", err)
+	}
+
+	done, maxIdx := s.CommitTaskCount()
+	if done != 0 || maxIdx != 0 {
+		t.Errorf("CommitTaskCount() with nil worktree = (%d, %d), want (0, 0)", done, maxIdx)
+	}
+}
+
+func TestSession_CommitTaskCount_SetForTest(t *testing.T) {
+	s := newSession("id", "name", &git.WorktreeInfo{})
+	s.SetCommitTaskCountForTest(3, 5)
+
+	done, maxIdx := s.CommitTaskCount()
+	if done != 3 || maxIdx != 5 {
+		t.Errorf("CommitTaskCount() = (%d, %d), want (3, 5)", done, maxIdx)
+	}
+}
+
 // TestSession_CleanupIsIdempotent pins M2: a second Cleanup call must not
 // re-run git worktree remove (which would return a "not a worktree" error
 // and surface a spurious shutdown failure). Both Shutdown's teardown loop
