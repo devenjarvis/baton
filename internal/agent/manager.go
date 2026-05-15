@@ -708,7 +708,7 @@ func (m *Manager) runDraft(ctx context.Context, sess *Session, drafter PlanDraft
 	}()
 
 	body, err := runDraftWithRetry(ctx, drafter, DraftRequest{UserPrompt: prompt, QuestionSocket: qSocket, Cwd: sess.Worktree.Path}, m.done, func(cur, max int) {
-		sess.setDraftAttempt(cur, max)
+		sess.SetDraftAttempt(cur, max)
 	})
 
 	// If the session has already been removed from the manager (e.g. by a

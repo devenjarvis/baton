@@ -896,7 +896,7 @@ func TestSession_DraftAttempt_DefaultsToZero(t *testing.T) {
 
 func TestSession_DraftAttempt_RoundTrip(t *testing.T) {
 	s := newSession("id", "name", &git.WorktreeInfo{})
-	s.setDraftAttempt(2, 3)
+	s.SetDraftAttempt(2, 3)
 	cur, max := s.DraftAttempt()
 	if cur != 2 || max != 3 {
 		t.Errorf("DraftAttempt() = (%d, %d), want (2, 3)", cur, max)

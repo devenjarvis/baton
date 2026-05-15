@@ -603,6 +603,34 @@ func TestPlanningStatusBadge_PhaseTransitions(t *testing.T) {
 	}
 }
 
+func TestPlanningStatusBadge_RetryCounter(t *testing.T) {
+	sess := agent.NewSessionForTest("id", "name")
+	// Start drafting so IsDrafting() returns true.
+	if !sess.TryStartDraft(func() {}) {
+		t.Fatal("TryStartDraft should succeed on fresh session")
+	}
+
+	// First attempt: badge should show "drafting…" (no retry suffix).
+	sess.SetDraftAttempt(1, 3)
+	if got := planningStatusBadge(sess); strings.Contains(ansi.Strip(got), "retrying") {
+		t.Errorf("attempt 1 badge = %q, want no 'retrying'", got)
+	}
+	if got := planningStatusBadge(sess); !strings.Contains(ansi.Strip(got), "drafting") {
+		t.Errorf("attempt 1 badge = %q, want 'drafting'", got)
+	}
+
+	// Second attempt: badge should show "retrying… (2/3)".
+	sess.SetDraftAttempt(2, 3)
+	got := planningStatusBadge(sess)
+	stripped := ansi.Strip(got)
+	if !strings.Contains(stripped, "retrying") {
+		t.Errorf("attempt 2 badge = %q, want 'retrying'", stripped)
+	}
+	if !strings.Contains(stripped, "2/3") {
+		t.Errorf("attempt 2 badge = %q, want '2/3'", stripped)
+	}
+}
+
 type errAnything struct{}
 
 func (errAnything) Error() string { return "anything" }

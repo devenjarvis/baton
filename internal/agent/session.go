@@ -783,9 +783,9 @@ func (s *Session) DraftAttempt() (current, max int) {
 	return s.draftAttemptCurrent, s.draftAttemptMax
 }
 
-// setDraftAttempt records the current retry attempt. Called by runDraftWithRetry
+// SetDraftAttempt records the current retry attempt. Called by runDraftWithRetry
 // before each subprocess invocation so the dashboard badge can show progress.
-func (s *Session) setDraftAttempt(current, max int) {
+func (s *Session) SetDraftAttempt(current, max int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.draftAttemptCurrent = current
