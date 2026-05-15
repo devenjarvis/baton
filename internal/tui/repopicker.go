@@ -16,8 +16,25 @@ import (
 // into repoPickerModel.repos.
 const repoPickerAddRepoIdx = -1
 
+// repoPickerMode controls which action enter/s/d perform.
+type repoPickerMode int
+
+const (
+	repoPickerModeSession repoPickerMode = iota // default: enter starts a session
+	repoPickerModeManage                        // enter switches active repo, s/d manage
+)
+
 // repoPickerSelectMsg is emitted when the user picks a registered repo.
 type repoPickerSelectMsg struct{ path string }
+
+// repoPickerSwitchActiveMsg is emitted in manage mode when the user presses enter on a repo.
+type repoPickerSwitchActiveMsg struct{ path string }
+
+// repoPickerEditSettingsMsg is emitted in manage mode when the user presses s.
+type repoPickerEditSettingsMsg struct{ path string }
+
+// repoPickerRemoveMsg is emitted in manage mode when the user confirms removal with d+d.
+type repoPickerRemoveMsg struct{ path string }
 
 // repoPickerAddRepoMsg is emitted when the user picks the add-repo entry or
 // presses the `a` shortcut.
@@ -36,13 +53,22 @@ type repoPickerModel struct {
 	scrollOffset int
 	filter       string
 
+	mode             repoPickerMode
+	pendingRemoveIdx int // filtered-row index awaiting d+d confirm; -1 means none
+
 	width  int
 	height int
 }
 
 // newRepoPickerModel returns an empty picker. Call setRepos before use.
 func newRepoPickerModel() repoPickerModel {
-	return repoPickerModel{}
+	return repoPickerModel{pendingRemoveIdx: -1}
+}
+
+// SetMode sets the picker mode and resets any pending-confirm state.
+func (m *repoPickerModel) SetMode(mode repoPickerMode) {
+	m.mode = mode
+	m.pendingRemoveIdx = -1
 }
 
 // setRepos populates the picker's data and selects initialPath if present.
@@ -56,6 +82,7 @@ func (m *repoPickerModel) setRepos(repos []config.Repo, counts map[string]int, i
 	m.filter = ""
 	m.scrollOffset = 0
 	m.selected = 0
+	m.pendingRemoveIdx = -1
 	m.applyFilter()
 	if initialPath != "" {
 		for i, idx := range m.filtered {
@@ -77,10 +104,12 @@ func (m repoPickerModel) Update(msg tea.Msg) (repoPickerModel, tea.Cmd) {
 		case "esc":
 			return m, func() tea.Msg { return repoPickerCancelMsg{} }
 		case "up", "k":
+			m.pendingRemoveIdx = -1
 			if m.selected > 0 {
 				m.selected--
 			}
 		case "down", "j":
+			m.pendingRemoveIdx = -1
 			if m.selected < len(m.filtered)-1 {
 				m.selected++
 			}
@@ -93,22 +122,66 @@ func (m repoPickerModel) Update(msg tea.Msg) (repoPickerModel, tea.Cmd) {
 				return m, func() tea.Msg { return repoPickerAddRepoMsg{} }
 			}
 			path := m.repos[idx].Path
+			if m.mode == repoPickerModeManage {
+				return m, func() tea.Msg { return repoPickerSwitchActiveMsg{path: path} }
+			}
 			return m, func() tea.Msg { return repoPickerSelectMsg{path: path} }
 		case "a":
 			// Mirror filebrowser's `.` pattern: when the filter is active,
 			// treat `a` as a normal filter character so repo names like "alpha"
 			// stay reachable. Only triggers add-repo when the filter is empty.
 			if m.filter == "" {
+				m.pendingRemoveIdx = -1
 				return m, func() tea.Msg { return repoPickerAddRepoMsg{} }
 			}
 			m.filter += key
 			m.applyFilter()
+		case "s":
+			if m.mode == repoPickerModeManage && m.filter == "" {
+				if len(m.filtered) == 0 || m.selected >= len(m.filtered) {
+					break
+				}
+				idx := m.filtered[m.selected]
+				if idx == repoPickerAddRepoIdx {
+					break
+				}
+				path := m.repos[idx].Path
+				m.pendingRemoveIdx = -1
+				return m, func() tea.Msg { return repoPickerEditSettingsMsg{path: path} }
+			}
+			m.pendingRemoveIdx = -1
+			m.filter += key
+			m.applyFilter()
+		case "d":
+			if m.mode == repoPickerModeManage && m.filter == "" {
+				if len(m.filtered) == 0 || m.selected >= len(m.filtered) {
+					break
+				}
+				idx := m.filtered[m.selected]
+				if idx == repoPickerAddRepoIdx {
+					break
+				}
+				if m.pendingRemoveIdx == m.selected {
+					// Second d on the same row: emit remove.
+					path := m.repos[idx].Path
+					m.pendingRemoveIdx = -1
+					return m, func() tea.Msg { return repoPickerRemoveMsg{path: path} }
+				}
+				// First d: mark for confirm.
+				m.pendingRemoveIdx = m.selected
+				break
+			}
+			m.pendingRemoveIdx = -1
+			m.filter += key
+			m.applyFilter()
 		case "backspace":
+			m.pendingRemoveIdx = -1
 			if len(m.filter) > 0 {
 				m.filter = m.filter[:len(m.filter)-1]
 				m.applyFilter()
 			}
 		default:
+			m.pendingRemoveIdx = -1
 			if len(key) == 1 && key[0] >= ' ' && key[0] <= '~' {
 				m.filter += key
 				m.applyFilter()
@@ -176,7 +249,11 @@ func (m repoPickerModel) View() string {
 
 // renderList renders the left panel with the filtered repo list.
 func (m repoPickerModel) renderList(width int) string {
-	title := StyleTitle.Render("NEW SESSION IN…")
+	titleText := "NEW SESSION IN…"
+	if m.mode == repoPickerModeManage {
+		titleText = "MANAGE REPOS"
+	}
+	title := StyleTitle.Render(titleText)
 	sepWidth := width - 2
 	if sepWidth < 0 {
 		sepWidth = 0
@@ -312,7 +389,17 @@ func (m repoPickerModel) renderDetails(width int) string {
 	lines = append(lines, "")
 	lines = append(lines, StyleSubtle.Render(countLabel))
 	lines = append(lines, "")
-	lines = append(lines, StyleSubtle.Render("Press enter to start a session in this repo"))
+
+	if m.mode == repoPickerModeManage {
+		if m.pendingRemoveIdx == m.selected {
+			lines = append(lines, StyleWarning.Render("delete "+repo.DisplayName()+"?"))
+			lines = append(lines, StyleSubtle.Render("d again to confirm · any other key to cancel"))
+		} else {
+			lines = append(lines, StyleSubtle.Render("enter switch · s settings · d remove"))
+		}
+	} else {
+		lines = append(lines, StyleSubtle.Render("Press enter to start a session in this repo"))
+	}
 	return strings.Join(lines, "\n")
 }
 

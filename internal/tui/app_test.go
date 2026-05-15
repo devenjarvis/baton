@@ -2214,6 +2214,294 @@ func TestPipeline_AKey_OpensFileBrowser(t *testing.T) {
 	}
 }
 
+// TestPipeline_RKey_OpensRepoPickerInManageMode verifies that pressing R on the
+// dashboard opens the repo picker in manage mode (not session mode).
+func TestPipeline_RKey_OpensRepoPickerInManageMode(t *testing.T) {
+	dir1 := t.TempDir()
+	dir2 := t.TempDir()
+
+	mgr1 := agent.NewManager(dir1, config.Resolve(nil, nil))
+	defer mgr1.Shutdown()
+	mgr2 := agent.NewManager(dir2, config.Resolve(nil, nil))
+	defer mgr2.Shutdown()
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.managers[dir1] = mgr1
+	app.managers[dir2] = mgr2
+	app.activeRepo = dir1
+	app.cfg = &config.Config{
+		Repos: []config.Repo{
+			{Path: dir1, Name: "repo1"},
+			{Path: dir2, Name: "repo2"},
+		},
+	}
+
+	model, _ := app.Update(tea.KeyPressMsg{Code: 'R', Text: "R"})
+	app = model.(App)
+	if app.view != ViewRepoPicker {
+		t.Fatalf("expected ViewRepoPicker after R, got %v", app.view)
+	}
+	if app.repoPicker.mode != repoPickerModeManage {
+		t.Errorf("expected repoPickerModeManage, got %v", app.repoPicker.mode)
+	}
+}
+
+// TestRepoPicker_ManageMode_SwitchActiveUpdatesActiveRepo verifies that
+// repoPickerSwitchActiveMsg changes the active repo and returns to the dashboard.
+func TestRepoPicker_ManageMode_SwitchActiveUpdatesActiveRepo(t *testing.T) {
+	dir1 := t.TempDir()
+	dir2 := t.TempDir()
+
+	mgr1 := agent.NewManager(dir1, config.Resolve(nil, nil))
+	defer mgr1.Shutdown()
+	mgr2 := agent.NewManager(dir2, config.Resolve(nil, nil))
+	defer mgr2.Shutdown()
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.managers[dir1] = mgr1
+	app.managers[dir2] = mgr2
+	app.activeRepo = dir1
+	app.cfg = &config.Config{
+		Repos: []config.Repo{
+			{Path: dir1, Name: "repo1"},
+			{Path: dir2, Name: "repo2"},
+		},
+	}
+	app.view = ViewRepoPicker
+
+	model, _ := app.Update(repoPickerSwitchActiveMsg{path: dir2})
+	app = model.(App)
+	if app.view != ViewDashboard {
+		t.Errorf("expected ViewDashboard after switch-active, got %v", app.view)
+	}
+	if app.activeRepo != dir2 {
+		t.Errorf("activeRepo = %q, want %q", app.activeRepo, dir2)
+	}
+}
+
+// TestRepoPicker_ManageMode_EditSettingsOpensConfigFormAndReturns verifies that
+// repoPickerEditSettingsMsg opens the config form, and cancel returns to picker.
+func TestRepoPicker_ManageMode_EditSettingsOpensConfigFormAndReturns(t *testing.T) {
+	dir1 := t.TempDir()
+
+	mgr1 := agent.NewManager(dir1, config.Resolve(nil, nil))
+	defer mgr1.Shutdown()
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.managers[dir1] = mgr1
+	app.activeRepo = dir1
+	app.cfg = &config.Config{
+		Repos: []config.Repo{
+			{Path: dir1, Name: "repo1"},
+		},
+	}
+	app.view = ViewRepoPicker
+	app.repoPicker.SetMode(repoPickerModeManage)
+
+	// Send edit-settings msg: should open config form and stay on dashboard.
+	model, _ := app.Update(repoPickerEditSettingsMsg{path: dir1})
+	app = model.(App)
+	if app.dashboard.repoConfigForm == nil {
+		t.Fatal("expected repoConfigForm to be non-nil after edit-settings")
+	}
+	if !app.repoPickerPendingFromConfig {
+		t.Error("expected repoPickerPendingFromConfig to be true")
+	}
+	if app.view != ViewDashboard {
+		t.Errorf("expected ViewDashboard after edit-settings, got %v", app.view)
+	}
+
+	// Cancel the config form: should return to ViewRepoPicker.
+	model, _ = app.Update(configFormCancelMsg{})
+	app = model.(App)
+	if app.view != ViewRepoPicker {
+		t.Errorf("expected ViewRepoPicker after configFormCancel, got %v", app.view)
+	}
+	if app.repoPickerPendingFromConfig {
+		t.Error("expected repoPickerPendingFromConfig to be cleared after cancel")
+	}
+	if app.dashboard.repoConfigForm != nil {
+		t.Error("expected repoConfigForm to be nil after cancel")
+	}
+}
+
+// initBareRepo creates a minimal git repo in a temp dir for manager tests.
+func initBareRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, args := range [][]string{
+		{"git", "init"},
+		{"git", "config", "commit.gpgsign", "false"},
+		{"git", "commit", "--allow-empty", "-m", "init"},
+	} {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("cmd %v: %v\n%s", args, err, out)
+		}
+	}
+	return dir
+}
+
+// TestRepoPicker_ManageMode_Remove_BlockedWhenSessionsExist verifies that trying
+// to remove a repo with running agents shows an error and keeps the repo.
+func TestRepoPicker_ManageMode_Remove_BlockedWhenSessionsExist(t *testing.T) {
+	dir1 := initBareRepo(t)
+	dir2 := t.TempDir()
+
+	mgr1 := agent.NewManager(dir1, config.ResolvedSettings{
+		BypassPermissions: true,
+		AgentProgram:      "bash",
+	})
+	defer mgr1.Shutdown()
+	mgr2 := agent.NewManager(dir2, config.Resolve(nil, nil))
+	defer mgr2.Shutdown()
+
+	// Spawn a long-running agent so AgentCount() > 0.
+	_, _, err := mgr1.CreateSessionWithCommand(
+		agent.Config{Rows: 24, Cols: 80, BypassPermissions: true},
+		func(_ string) *exec.Cmd { return exec.Command("bash", "-c", "sleep 10") },
+	)
+	if err != nil {
+		t.Fatalf("CreateSessionWithCommand: %v", err)
+	}
+	if mgr1.AgentCount() == 0 {
+		t.Skip("agent not yet live — skipping race-sensitive timing test")
+	}
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.managers[dir1] = mgr1
+	app.managers[dir2] = mgr2
+	app.activeRepo = dir1
+	app.cfg = &config.Config{
+		Repos: []config.Repo{
+			{Path: dir1, Name: "repo1"},
+			{Path: dir2, Name: "repo2"},
+		},
+	}
+	app.view = ViewRepoPicker
+
+	model, _ := app.Update(repoPickerRemoveMsg{path: dir1})
+	app = model.(App)
+	if app.err == "" {
+		t.Error("expected an error when removing a repo with running sessions")
+	}
+	if len(app.cfg.Repos) != 2 {
+		t.Errorf("cfg.Repos should still have 2 entries, got %d", len(app.cfg.Repos))
+	}
+	if app.view != ViewRepoPicker {
+		t.Errorf("view should remain ViewRepoPicker after blocked remove, got %v", app.view)
+	}
+}
+
+// TestRepoPicker_ManageMode_Remove_DeletesAndReassignsActive verifies that removing
+// the active repo reassigns active to the first remaining repo.
+func TestRepoPicker_ManageMode_Remove_DeletesAndReassignsActive(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir1 := t.TempDir()
+	dir2 := t.TempDir()
+
+	mgr1 := agent.NewManager(dir1, config.Resolve(nil, nil))
+	defer mgr1.Shutdown()
+	mgr2 := agent.NewManager(dir2, config.Resolve(nil, nil))
+	defer mgr2.Shutdown()
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.managers[dir1] = mgr1
+	app.managers[dir2] = mgr2
+	app.activeRepo = dir1
+	app.cfg = &config.Config{
+		Repos: []config.Repo{
+			{Path: dir1, Name: "repo1"},
+			{Path: dir2, Name: "repo2"},
+		},
+	}
+	app.view = ViewRepoPicker
+	app.repoPicker = newRepoPickerModel()
+	app.repoPicker.width = 120
+	app.repoPicker.height = 39
+	app.repoPicker.SetMode(repoPickerModeManage)
+	app.repoPicker.setRepos(app.cfg.Repos, nil, dir1)
+
+	model, _ := app.Update(repoPickerRemoveMsg{path: dir1})
+	app = model.(App)
+	if len(app.cfg.Repos) != 1 {
+		t.Errorf("expected 1 repo after remove, got %d", len(app.cfg.Repos))
+	}
+	if app.activeRepo != dir2 {
+		t.Errorf("activeRepo = %q, want %q", app.activeRepo, dir2)
+	}
+	if app.managers[dir1] != nil {
+		t.Error("managers[dir1] should be nil after removal")
+	}
+	// Picker should be updated to reflect the remaining repo.
+	if len(app.repoPicker.repos) != 1 {
+		t.Errorf("repoPicker.repos should have 1 entry, got %d", len(app.repoPicker.repos))
+	}
+	if app.view != ViewRepoPicker {
+		t.Errorf("view should remain ViewRepoPicker after successful remove, got %v", app.view)
+	}
+}
+
+// TestRepoPicker_ManageMode_RemoveMsg_UnknownPathSetsError verifies that
+// repoPickerRemoveMsg for an unregistered repo sets an error and leaves
+// cfg.Repos unchanged, validating the routing through updateRepoPicker.
+func TestRepoPicker_ManageMode_RemoveMsg_UnknownPathSetsError(t *testing.T) {
+	dir1 := t.TempDir()
+
+	mgr1 := agent.NewManager(dir1, config.Resolve(nil, nil))
+	defer mgr1.Shutdown()
+
+	app := NewApp()
+	app.width = 120
+	app.height = 40
+	app.dashboard.width = 120
+	app.dashboard.height = 39
+	app.managers[dir1] = mgr1
+	app.activeRepo = dir1
+	app.cfg = &config.Config{
+		Repos: []config.Repo{
+			{Path: dir1, Name: "repo1"},
+		},
+	}
+	app.view = ViewRepoPicker
+	app.repoPicker.SetMode(repoPickerModeManage)
+
+	nonExistent := t.TempDir()
+	model, _ := app.Update(repoPickerRemoveMsg{path: nonExistent})
+	app = model.(App)
+
+	if app.err == "" {
+		t.Error("expected error when removing an unregistered repo path")
+	}
+	if app.view != ViewRepoPicker {
+		t.Errorf("view = %v, want ViewRepoPicker after failed remove", app.view)
+	}
+	if len(app.cfg.Repos) != 1 {
+		t.Errorf("cfg.Repos should still have 1 entry, got %d", len(app.cfg.Repos))
+	}
+}
+
 // TestPipeline_XKey_NoSession verifies that 'x' on an empty pipeline produces
 // a friendly error and does not crash.
 func TestPipeline_XKey_NoSession(t *testing.T) {

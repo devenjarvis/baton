@@ -66,9 +66,10 @@ type Manager struct {
 	pendingNames map[string]struct{}
 	nextID       int
 
-	events   chan Event
-	done     chan struct{}
-	watchers sync.WaitGroup
+	events       chan Event
+	done         chan struct{}
+	watchers     sync.WaitGroup
+	shutdownOnce sync.Once
 
 	// sendsMu protects sends into m.events and m.plannerQuestions from racing
 	// the close() calls in Shutdown/Detach. emit() and the pumpPlannerQuestions
@@ -1479,51 +1480,53 @@ func (m *Manager) Events() <-chan Event {
 	return m.events
 }
 
-// Shutdown kills all sessions and cleans up.
+// Shutdown kills all sessions and cleans up. Safe to call multiple times.
 func (m *Manager) Shutdown() {
-	close(m.done)
+	m.shutdownOnce.Do(func() {
+		close(m.done)
 
-	// Stop the hook server first so no new rename goroutines can be spawned
-	// by late UserPromptSubmit events, then drain in-flight watchers
-	// (watchAgent + async branch-rename goroutines). Without this ordering,
-	// a rename goroutine can race Session.Cleanup and mutate Worktree state
-	// while the worktree is being removed from disk.
-	m.stopHookServer()
-	m.watchers.Wait()
+		// Stop the hook server first so no new rename goroutines can be spawned
+		// by late UserPromptSubmit events, then drain in-flight watchers
+		// (watchAgent + async branch-rename goroutines). Without this ordering,
+		// a rename goroutine can race Session.Cleanup and mutate Worktree state
+		// while the worktree is being removed from disk.
+		m.stopHookServer()
+		m.watchers.Wait()
 
-	m.mu.RLock()
-	sessions := make([]*Session, 0, len(m.sessions))
-	for _, s := range m.sessions {
-		sessions = append(sessions, s)
-	}
-	m.mu.RUnlock()
+		m.mu.RLock()
+		sessions := make([]*Session, 0, len(m.sessions))
+		for _, s := range m.sessions {
+			sessions = append(sessions, s)
+		}
+		m.mu.RUnlock()
 
-	var wg sync.WaitGroup
-	wg.Add(len(sessions))
-	for _, s := range sessions {
-		go func() {
-			defer wg.Done()
-			s.KillAll()
-			_ = s.Cleanup(m.repoPath)
-		}()
-	}
-	wg.Wait()
+		var wg sync.WaitGroup
+		wg.Add(len(sessions))
+		for _, s := range sessions {
+			go func() {
+				defer wg.Done()
+				s.KillAll()
+				_ = s.Cleanup(m.repoPath)
+			}()
+		}
+		wg.Wait()
 
-	m.mu.Lock()
-	m.sessions = make(map[string]*Session)
-	m.mu.Unlock()
+		m.mu.Lock()
+		m.sessions = make(map[string]*Session)
+		m.mu.Unlock()
 
-	// Gate all emitters BEFORE closing the channels. Holding sendsMu.Lock
-	// across the close ensures any concurrent emit/pumpPlannerQuestions
-	// either completed before we entered, or is now short-circuited by the
-	// sendsClosed check it sees once it acquires its RLock. Without this
-	// ordering, a late caller (StartDraft, ResumeSession, a watchAgent
-	// finishing) would panic with "send on closed channel".
-	m.sendsMu.Lock()
-	m.sendsClosed = true
-	close(m.events)
-	close(m.plannerQuestions)
-	m.sendsMu.Unlock()
+		// Gate all emitters BEFORE closing the channels. Holding sendsMu.Lock
+		// across the close ensures any concurrent emit/pumpPlannerQuestions
+		// either completed before we entered, or is now short-circuited by the
+		// sendsClosed check it sees once it acquires its RLock. Without this
+		// ordering, a late caller (StartDraft, ResumeSession, a watchAgent
+		// finishing) would panic with "send on closed channel".
+		m.sendsMu.Lock()
+		m.sendsClosed = true
+		close(m.events)
+		close(m.plannerQuestions)
+		m.sendsMu.Unlock()
+	})
 }
 
 // stopHookServer closes the hook server and waits for the dispatcher goroutine.

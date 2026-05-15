@@ -154,6 +154,11 @@ type App struct {
 	// ViewRepoPicker rather than the dashboard.
 	repoPickerPending bool
 
+	// repoPickerPendingFromConfig is set when the repo config form was opened
+	// from the manage-mode picker. After save or cancel, control returns to
+	// ViewRepoPicker rather than the dashboard.
+	repoPickerPendingFromConfig bool
+
 	// Settings
 	globalSettings *config.GlobalSettings
 	repoSettings   map[string]*config.RepoSettings    // keyed by repo path
@@ -1406,6 +1411,28 @@ func (a *App) addRepo(path string) tea.Cmd {
 	return nil
 }
 
+// returnFromConfigForm closes the repo config form and returns to the repo
+// picker if one was pending, or back to the dashboard list otherwise.
+func (a App) returnFromConfigForm() (tea.Model, tea.Cmd) {
+	if a.repoPickerPendingFromConfig {
+		a.repoPickerPendingFromConfig = false
+		counts := make(map[string]int, len(a.cfg.Repos))
+		for _, repo := range a.cfg.Repos {
+			if mgr := a.managers[repo.Path]; mgr != nil {
+				counts[repo.Path] = mgr.AgentCount()
+			}
+		}
+		a.repoPicker.setRepos(a.cfg.Repos, counts, a.dashboard.configRepoPath)
+		a.dashboard.repoConfigForm = nil
+		a.dashboard.configRepoPath = ""
+		a.view = ViewRepoPicker
+		return a, nil
+	}
+	a.dashboard.panelFocus = focusList
+	a.dashboard.repoConfigForm = nil
+	return a, nil
+}
+
 func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case configFormSaveMsg:
@@ -1434,15 +1461,11 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-		a.dashboard.panelFocus = focusList
-		a.dashboard.repoConfigForm = nil
-		return a, nil
+		return a.returnFromConfigForm()
 
 	case configFormCancelMsg:
 		// Repo config form cancelled.
-		a.dashboard.panelFocus = focusList
-		a.dashboard.repoConfigForm = nil
-		return a, nil
+		return a.returnFromConfigForm()
 
 	case tea.PasteMsg:
 		// Prompt modal consumes paste while open (same precedence as the
@@ -2142,6 +2165,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.repoPicker = newRepoPickerModel()
 					a.repoPicker.width = a.width
 					a.repoPicker.height = a.height - 1
+					a.repoPicker.SetMode(repoPickerModeSession)
 					a.repoPicker.setRepos(a.cfg.Repos, counts, a.activeRepo)
 					a.view = ViewRepoPicker
 					return a, nil
@@ -2484,6 +2508,22 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return a, a.startPRDraftCmd(sess, repoPath, false)
 				}
 			}
+			return a, nil
+
+		case "R":
+			// Open repo picker in manage mode (switch active repo, edit settings, remove).
+			counts := make(map[string]int, len(a.cfg.Repos))
+			for _, repo := range a.cfg.Repos {
+				if mgr := a.managers[repo.Path]; mgr != nil {
+					counts[repo.Path] = mgr.AgentCount()
+				}
+			}
+			a.repoPicker = newRepoPickerModel()
+			a.repoPicker.width = a.width
+			a.repoPicker.height = a.height - 1
+			a.repoPicker.SetMode(repoPickerModeManage)
+			a.repoPicker.setRepos(a.cfg.Repos, counts, a.activeRepo)
+			a.view = ViewRepoPicker
 			return a, nil
 
 		case "s":
@@ -2985,6 +3025,61 @@ func (a App) updateRepoPicker(msg tea.Msg) (tea.Model, tea.Cmd) {
 			sess.SetLifecyclePhase(agent.LifecycleInProgress)
 			return createResultMsg{sessionID: sess.ID, agentID: ag.ID, isNewSession: true}
 		}
+
+	case repoPickerSwitchActiveMsg:
+		if msg.path == "" {
+			return a, nil
+		}
+		a.activeRepo = msg.path
+		a.refreshAgentList()
+		a.view = ViewDashboard
+		return a, nil
+
+	case repoPickerEditSettingsMsg:
+		a.initRepoConfigForm(msg.path)
+		a.repoPickerPendingFromConfig = true
+		a.view = ViewDashboard
+		return a, nil
+
+	case repoPickerRemoveMsg:
+		mgr := a.managers[msg.path]
+		if mgr != nil && mgr.AgentCount() > 0 {
+			a.setError(fmt.Sprintf("cannot remove %q while %d session(s) are running",
+				filepath.Base(msg.path), mgr.AgentCount()))
+			return a, nil
+		}
+		origRepos := make([]config.Repo, len(a.cfg.Repos))
+		copy(origRepos, a.cfg.Repos)
+		if err := config.RemoveRepo(a.cfg, msg.path); err != nil {
+			a.setError(err.Error())
+			return a, nil
+		}
+		if err := config.Save(a.cfg); err != nil {
+			a.cfg.Repos = origRepos
+			a.setError(err.Error())
+			return a, nil
+		}
+		if mgr != nil {
+			mgr.Shutdown()
+		}
+		delete(a.managers, msg.path)
+		delete(a.repoSettings, msg.path)
+		delete(a.resolvedCache, msg.path)
+		if a.activeRepo == msg.path {
+			a.activeRepo = ""
+			if len(a.cfg.Repos) > 0 {
+				a.activeRepo = a.cfg.Repos[0].Path
+			}
+		}
+		a.refreshAgentList()
+		counts := make(map[string]int, len(a.cfg.Repos))
+		for _, repo := range a.cfg.Repos {
+			if m := a.managers[repo.Path]; m != nil {
+				counts[repo.Path] = m.AgentCount()
+			}
+		}
+		a.repoPicker.setRepos(a.cfg.Repos, counts, a.activeRepo)
+		return a, nil
 
 	case repoPickerAddRepoMsg:
 		a.repoPickerPending = true
@@ -4013,7 +4108,11 @@ func (a App) View() tea.View {
 		content = lipgloss.JoinVertical(lipgloss.Left, body, statusbar)
 	case ViewRepoPicker:
 		body := a.repoPicker.View()
-		statusbar := renderStatusBar(repoPickerHints, a.width)
+		hints := repoPickerHints
+		if a.repoPicker.mode == repoPickerModeManage {
+			hints = repoPickerManageHints
+		}
+		statusbar := renderStatusBar(hints, a.width)
 		content = lipgloss.JoinVertical(lipgloss.Left, body, statusbar)
 	}
 
