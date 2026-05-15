@@ -144,6 +144,17 @@ var (
 	haikuSummaryBackoff           = []time.Duration{1 * time.Second, 3 * time.Second}
 )
 
+// planDraftAttempts / planDraftPerAttemptCap / planDraftBackoff bound the
+// per-draft retry loop. The claude CLI does its own internal retry-with-backoff
+// before exiting non-zero, so the outer loop stays small: 3 attempts with 2s
+// and 5s gaps keeps worst-case wall-clock under ~15s of added overhead.
+// Declared as vars so tests can swap to fast values via setPlanDraftRetryForTesting.
+var (
+	planDraftAttempts      = 3
+	planDraftPerAttemptCap = 5 * time.Minute
+	planDraftBackoff       = []time.Duration{2 * time.Second, 5 * time.Second}
+)
+
 // ErrSessionNotFound is returned by KillSession when the given session ID is
 // not present in the manager. Callers that tolerate concurrent cleanup races
 // should use errors.Is to suppress it.
@@ -696,7 +707,9 @@ func (m *Manager) runDraft(ctx context.Context, sess *Session, drafter PlanDraft
 		}
 	}()
 
-	body, err := drafter.Draft(ctx, DraftRequest{UserPrompt: prompt, QuestionSocket: qSocket, Cwd: sess.Worktree.Path})
+	body, err := runDraftWithRetry(ctx, drafter, DraftRequest{UserPrompt: prompt, QuestionSocket: qSocket, Cwd: sess.Worktree.Path}, m.done, func(cur, max int) {
+		sess.SetDraftAttempt(cur, max)
+	})
 
 	// If the session has already been removed from the manager (e.g. by a
 	// completed KillSession), skip the post-draft writes — there is nothing

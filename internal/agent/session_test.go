@@ -884,6 +884,34 @@ func TestSession_FinishDraft_DoesNotClearDraftError(t *testing.T) {
 	}
 }
 
+// --- DraftAttempt counter tests ---
+
+func TestSession_DraftAttempt_DefaultsToZero(t *testing.T) {
+	s := newSession("id", "name", &git.WorktreeInfo{})
+	cur, max := s.DraftAttempt()
+	if cur != 0 || max != 0 {
+		t.Errorf("DraftAttempt() = (%d, %d), want (0, 0) on fresh session", cur, max)
+	}
+}
+
+func TestSession_DraftAttempt_RoundTrip(t *testing.T) {
+	s := newSession("id", "name", &git.WorktreeInfo{})
+	s.SetDraftAttempt(2, 3)
+	cur, max := s.DraftAttempt()
+	if cur != 2 || max != 3 {
+		t.Errorf("DraftAttempt() = (%d, %d), want (2, 3)", cur, max)
+	}
+	// finishDraft should reset counters to (0, 0)
+	if !s.TryStartDraft(func() {}) {
+		t.Fatal("TryStartDraft should succeed on fresh session")
+	}
+	s.finishDraft()
+	cur, max = s.DraftAttempt()
+	if cur != 0 || max != 0 {
+		t.Errorf("DraftAttempt() after finishDraft = (%d, %d), want (0, 0)", cur, max)
+	}
+}
+
 // --- LastOutputTime tests ---
 
 func TestSession_LastOutputTime_ZeroWithNoAgents(t *testing.T) {

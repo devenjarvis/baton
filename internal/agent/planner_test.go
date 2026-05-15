@@ -482,3 +482,111 @@ func TestDefaultPlanDrafter_NonEmptyModelPreserved(t *testing.T) {
 		t.Errorf("Model() = %q, want claude-opus-4-7", d.Model())
 	}
 }
+
+// --- runDraftWithRetry tests ---
+
+type stubDrafter struct {
+	calls   int
+	results []struct {
+		body string
+		err  error
+	}
+}
+
+func (s *stubDrafter) Draft(_ context.Context, _ DraftRequest) (string, error) {
+	i := s.calls
+	s.calls++
+	if i >= len(s.results) {
+		return "", errors.New("stub: no more results")
+	}
+	return s.results[i].body, s.results[i].err
+}
+
+func (s *stubDrafter) Revise(_ context.Context, _ ReviseRequest) (string, error) {
+	return "", errors.New("stub: Revise not implemented")
+}
+
+func TestRunDraftWithRetry_RetriesTransientThenSucceeds(t *testing.T) {
+	setPlanDraftRetryForTesting(t, 3, 10*time.Millisecond, 1*time.Millisecond)
+
+	const wantPlan = "# Goal\nDone\n"
+	stub := &stubDrafter{
+		results: []struct {
+			body string
+			err  error
+		}{
+			{body: "", err: errors.New("overloaded")},
+			{body: wantPlan, err: nil},
+		},
+	}
+
+	var attemptLog [][2]int
+	onAttempt := func(attempt, max int) {
+		attemptLog = append(attemptLog, [2]int{attempt, max})
+	}
+
+	ctx := context.Background()
+	done := make(chan struct{})
+	body, err := runDraftWithRetry(ctx, stub, DraftRequest{UserPrompt: "p"}, done, onAttempt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if body != wantPlan {
+		t.Errorf("body = %q, want %q", body, wantPlan)
+	}
+	if stub.calls != 2 {
+		t.Errorf("stub calls = %d, want 2", stub.calls)
+	}
+	// onAttempt should have been called once per attempt.
+	if len(attemptLog) != 2 {
+		t.Fatalf("onAttempt called %d times, want 2", len(attemptLog))
+	}
+	if attemptLog[0] != [2]int{1, planDraftAttempts} {
+		t.Errorf("attempt log[0] = %v, want {1, %d}", attemptLog[0], planDraftAttempts)
+	}
+	if attemptLog[1] != [2]int{2, planDraftAttempts} {
+		t.Errorf("attempt log[1] = %v, want {2, %d}", attemptLog[1], planDraftAttempts)
+	}
+}
+
+func TestRunDraftWithRetry_TerminalEmptyPromptShortCircuits(t *testing.T) {
+	stub := &stubDrafter{
+		results: []struct {
+			body string
+			err  error
+		}{
+			{body: "", err: ErrEmptyPrompt},
+		},
+	}
+
+	ctx := context.Background()
+	done := make(chan struct{})
+	_, err := runDraftWithRetry(ctx, stub, DraftRequest{UserPrompt: ""}, done, nil)
+	if !errors.Is(err, ErrEmptyPrompt) {
+		t.Errorf("err = %v, want ErrEmptyPrompt", err)
+	}
+	if stub.calls != 1 {
+		t.Errorf("stub calls = %d, want 1 (no retry on terminal error)", stub.calls)
+	}
+}
+
+func TestRunDraftWithRetry_TerminalClaudeNotFoundShortCircuits(t *testing.T) {
+	stub := &stubDrafter{
+		results: []struct {
+			body string
+			err  error
+		}{
+			{body: "", err: ErrClaudeNotFound},
+		},
+	}
+
+	ctx := context.Background()
+	done := make(chan struct{})
+	_, err := runDraftWithRetry(ctx, stub, DraftRequest{UserPrompt: "p"}, done, nil)
+	if !errors.Is(err, ErrClaudeNotFound) {
+		t.Errorf("err = %v, want ErrClaudeNotFound", err)
+	}
+	if stub.calls != 1 {
+		t.Errorf("stub calls = %d, want 1 (no retry on terminal error)", stub.calls)
+	}
+}

@@ -25,26 +25,28 @@ type Session struct {
 	Worktree  *git.WorktreeInfo
 	CreatedAt time.Time
 
-	mu             sync.RWMutex
-	agents         map[string]*Agent
-	nextAgentNum   int
-	displayName    string
-	hasClaudeName  bool // true once the session's branch has been renamed from its random placeholder
-	renaming       bool // true while an async branch-rename is in flight; gates double-dispatch
-	lifecyclePhase LifecyclePhase
-	originalPrompt string
-	doneAt         time.Time
-	ownsBranch     bool   // true if this session created the branch (cleanup should delete it)
-	hookSocketPath string // absolute path to the manager's hook socket ("" disables hooks)
-	taskSummary    string // short summary of the session's task, set once by the summarizer goroutine
-	hasTaskSummary bool   // true once SetTaskSummary has been called
-	summarizing    bool   // true while an async task-summary goroutine is in flight; gates double-dispatch
-	drafting       bool   // true while a plan-drafting subprocess is in flight; gates double-dispatch
-	draftCancel    context.CancelFunc
-	draftErr       error // last drafting error, surfaced by the Planning card; cleared on successful draft
-	revising       bool  // true while a plan-revising subprocess is in flight; gates double-dispatch
-	reviseCancel   context.CancelFunc
-	reviseErr      error // last revise error, surfaced by the editor; cleared on successful revise
+	mu                  sync.RWMutex
+	agents              map[string]*Agent
+	nextAgentNum        int
+	displayName         string
+	hasClaudeName       bool // true once the session's branch has been renamed from its random placeholder
+	renaming            bool // true while an async branch-rename is in flight; gates double-dispatch
+	lifecyclePhase      LifecyclePhase
+	originalPrompt      string
+	doneAt              time.Time
+	ownsBranch          bool   // true if this session created the branch (cleanup should delete it)
+	hookSocketPath      string // absolute path to the manager's hook socket ("" disables hooks)
+	taskSummary         string // short summary of the session's task, set once by the summarizer goroutine
+	hasTaskSummary      bool   // true once SetTaskSummary has been called
+	summarizing         bool   // true while an async task-summary goroutine is in flight; gates double-dispatch
+	drafting            bool   // true while a plan-drafting subprocess is in flight; gates double-dispatch
+	draftCancel         context.CancelFunc
+	draftErr            error // last drafting error, surfaced by the Planning card; cleared on successful draft
+	draftAttemptCurrent int   // current attempt number (1-based); 0 outside a draft
+	draftAttemptMax     int   // max attempts for the current draft; 0 outside a draft
+	revising            bool  // true while a plan-revising subprocess is in flight; gates double-dispatch
+	reviseCancel        context.CancelFunc
+	reviseErr           error // last revise error, surfaced by the editor; cleared on successful revise
 	// Plan-content cache, keyed by the mtime of the last observed plan.md.
 	// Populated lazily by CachedPlan() on first read so resumed sessions
 	// also benefit. The dashboard hot path (per-render Building card) stats
@@ -773,6 +775,23 @@ func (s *Session) TryStartDraft(cancel context.CancelFunc) bool {
 	return true
 }
 
+// DraftAttempt returns the in-flight attempt counter as (current, max).
+// Both values are 0 outside a draft, 1-based during one.
+func (s *Session) DraftAttempt() (current, max int) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.draftAttemptCurrent, s.draftAttemptMax
+}
+
+// SetDraftAttempt records the current retry attempt. Called by runDraftWithRetry
+// before each subprocess invocation so the dashboard badge can show progress.
+func (s *Session) SetDraftAttempt(current, max int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.draftAttemptCurrent = current
+	s.draftAttemptMax = max
+}
+
 // finishDraft clears the in-flight draft flag and releases the stored cancel
 // func by invoking it (idempotent — calling cancel after the context already
 // fired is a no-op). Called from the deferred cleanup of the goroutine
@@ -783,6 +802,8 @@ func (s *Session) finishDraft() {
 	cancel := s.draftCancel
 	s.drafting = false
 	s.draftCancel = nil
+	s.draftAttemptCurrent = 0
+	s.draftAttemptMax = 0
 	s.mu.Unlock()
 	if cancel != nil {
 		cancel()

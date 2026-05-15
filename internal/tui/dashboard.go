@@ -829,6 +829,11 @@ func renderBranchLabel(branch string) string {
 // drafter and revise paths both go through.
 func planningStatusBadge(sess *agent.Session) string {
 	if sess.IsDrafting() {
+		if cur, max := sess.DraftAttempt(); cur > 1 && max > 0 {
+			return lipgloss.NewStyle().Foreground(ColorWarning).Render(
+				fmt.Sprintf("✎ retrying… (%d/%d)", cur, max),
+			)
+		}
 		return lipgloss.NewStyle().Foreground(ColorWarning).Render("✎ drafting…")
 	}
 	if sess.IsRevising() {
