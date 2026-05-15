@@ -3069,6 +3069,9 @@ func (a App) updateRepoPicker(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.setError(err.Error())
 			return a, nil
 		}
+		if mgr != nil {
+			mgr.Shutdown()
+		}
 		delete(a.managers, msg.path)
 		delete(a.repoSettings, msg.path)
 		delete(a.resolvedCache, msg.path)

@@ -144,6 +144,7 @@ func (m repoPickerModel) Update(msg tea.Msg) (repoPickerModel, tea.Cmd) {
 					break
 				}
 				path := m.repos[idx].Path
+				m.pendingRemoveIdx = -1
 				return m, func() tea.Msg { return repoPickerEditSettingsMsg{path: path} }
 			}
 			m.pendingRemoveIdx = -1
