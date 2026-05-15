@@ -49,8 +49,11 @@ jobs:
           mkdir -p reports
           for pkg in $PACKAGES; do
             slug="${pkg//\//_}"
-            echo "::group::gremlins unleash ./$pkg/..."
-            gremlins unleash "./$pkg/..." > "reports/${slug}.txt" 2>&1
+            echo "::group::gremlins unleash ./$pkg"
+            gremlins unleash \
+              --timeout-coefficient 4 \
+              -o "reports/${slug}.json" \
+              "./$pkg" > "reports/${slug}.txt" 2>&1
             status=$?
             echo "exit=$status" >> "reports/${slug}.txt"
             echo "::endgroup::"
@@ -61,19 +64,41 @@ jobs:
           {
             echo "# Mutation testing baseline"
             echo
-            echo "| Package | Mutation score | Killed | Lived | Not covered | Not viable | Timed out |"
-            echo "| --- | --- | --- | --- | --- | --- | --- |"
+            echo "| Package | Test efficacy | Mutator coverage | Killed | Lived | Not covered | Timed out | Not viable |"
+            echo "| --- | --- | --- | --- | --- | --- | --- | --- |"
           } > reports/summary.md
           for pkg in $PACKAGES; do
             slug="${pkg//\//_}"
-            file="reports/${slug}.txt"
-            score=$(grep -Eo 'Mutator coverage: [0-9.]+%' "$file" | tail -1 | awk '{print $3}')
-            killed=$(grep -Eo 'Killed: [0-9]+' "$file" | tail -1 | awk '{print $2}')
-            lived=$(grep -Eo 'Lived: [0-9]+' "$file" | tail -1 | awk '{print $2}')
-            notcov=$(grep -Eo 'Not covered: [0-9]+' "$file" | tail -1 | awk '{print $3}')
-            notvia=$(grep -Eo 'Not viable: [0-9]+' "$file" | tail -1 | awk '{print $3}')
-            timeout=$(grep -Eo 'Timed out: [0-9]+' "$file" | tail -1 | awk '{print $3}')
-            echo "| \`$pkg\` | ${score:-n/a} | ${killed:-0} | ${lived:-0} | ${notcov:-0} | ${notvia:-0} | ${timeout:-0} |" >> reports/summary.md
+            json="reports/${slug}.json"
+            if [ ! -s "$json" ]; then
+              echo "| \`$pkg\` | n/a | n/a | 0 | 0 | 0 | 0 | 0 |" >> reports/summary.md
+              continue
+            fi
+            counts=$(jq -r '
+              [.files[]?.mutations[]?.status] as $s
+              | {
+                  killed: ($s | map(select(. == "KILLED")) | length),
+                  lived: ($s | map(select(. == "LIVED")) | length),
+                  notcov: ($s | map(select(. == "NOT COVERED")) | length),
+                  timeout: ($s | map(select(. == "TIMED OUT")) | length),
+                  notvia: ($s | map(select(. == "NOT VIABLE")) | length)
+                }
+              | "\(.killed) \(.lived) \(.notcov) \(.timeout) \(.notvia)"
+            ' "$json")
+            read killed lived notcov timeout notvia <<< "$counts"
+            covered=$(( killed + lived ))
+            total=$(( covered + notcov + notvia + timeout ))
+            if [ "$covered" -gt 0 ]; then
+              efficacy=$(awk -v k="$killed" -v c="$covered" 'BEGIN { printf "%.2f%%", (k/c)*100 }')
+            else
+              efficacy="n/a"
+            fi
+            if [ "$total" -gt 0 ]; then
+              mcov=$(awk -v c="$covered" -v t="$total" 'BEGIN { printf "%.2f%%", (c/t)*100 }')
+            else
+              mcov="n/a"
+            fi
+            echo "| \`$pkg\` | $efficacy | $mcov | $killed | $lived | $notcov | $timeout | $notvia |" >> reports/summary.md
           done
           {
             echo
