@@ -16,18 +16,15 @@ jobs:
   mutation:
     runs-on: ubuntu-latest
     continue-on-error: true
-    env:
-      PACKAGES: >-
-        internal/config
-        internal/editor
-        internal/git
-        internal/hook
-        internal/agent
-        internal/state
-        internal/github
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Fetch base branch
+        run: git fetch origin ${{ github.base_ref }}
 
       - name: Setup Go
         uses: actions/setup-go@v6
@@ -39,41 +36,46 @@ jobs:
           git config --global user.name "CI"
           git config --global user.email "ci@test.com"
 
+      - name: Skip when no Go changes
+        id: gocheck
+        run: |
+          if git diff --name-only "origin/${{ github.base_ref }}...HEAD" | grep -E '\.go$' | grep -v '_test\.go$' > /tmp/changed-go.txt; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            echo "Go files changed:"
+            cat /tmp/changed-go.txt
+          else
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            echo "No production Go files changed; skipping mutation testing."
+          fi
+
       - name: Install gremlins
+        if: steps.gocheck.outputs.has_changes == 'true'
         run: go install github.com/go-gremlins/gremlins/cmd/gremlins@latest
 
-      - name: Run gremlins per package
-        id: gremlins
+      - name: Run gremlins (diff mode)
+        if: steps.gocheck.outputs.has_changes == 'true'
         run: |
           set +e
           mkdir -p reports
-          for pkg in $PACKAGES; do
-            slug="${pkg//\//_}"
-            echo "::group::gremlins unleash ./$pkg"
-            gremlins unleash \
-              --timeout-coefficient 4 \
-              -o "reports/${slug}.json" \
-              "./$pkg" > "reports/${slug}.txt" 2>&1
-            status=$?
-            echo "exit=$status" >> "reports/${slug}.txt"
-            echo "::endgroup::"
-          done
+          gremlins unleash \
+            --diff "origin/${{ github.base_ref }}" \
+            --timeout-coefficient 4 \
+            -o reports/mutation.json \
+            . > reports/mutation.txt 2>&1
+          status=$?
+          echo "exit=$status" >> reports/mutation.txt
 
       - name: Build summary
         run: |
           {
             echo "# Mutation testing baseline"
             echo
-            echo "| Package | Test efficacy | Mutator coverage | Killed | Lived | Not covered | Timed out | Not viable |"
-            echo "| --- | --- | --- | --- | --- | --- | --- | --- |"
           } > reports/summary.md
-          for pkg in $PACKAGES; do
-            slug="${pkg//\//_}"
-            json="reports/${slug}.json"
-            if [ ! -s "$json" ]; then
-              echo "| \`$pkg\` | n/a | n/a | 0 | 0 | 0 | 0 | 0 |" >> reports/summary.md
-              continue
-            fi
+          if [ "${{ steps.gocheck.outputs.has_changes }}" != "true" ]; then
+            echo "_No production Go files changed in this PR; mutation testing skipped._" >> reports/summary.md
+          elif [ ! -s reports/mutation.json ]; then
+            echo "_gremlins produced no JSON output. See the \`gremlins-reports\` artifact for the raw log._" >> reports/summary.md
+          else
             counts=$(jq -r '
               [.files[]?.mutations[]?.status] as $s
               | {
@@ -84,7 +86,7 @@ jobs:
                   notvia: ($s | map(select(. == "NOT VIABLE")) | length)
                 }
               | "\(.killed) \(.lived) \(.notcov) \(.timeout) \(.notvia)"
-            ' "$json")
+            ' reports/mutation.json)
             read killed lived notcov timeout notvia <<< "$counts"
             covered=$(( killed + lived ))
             total=$(( covered + notcov + notvia + timeout ))
@@ -98,24 +100,43 @@ jobs:
             else
               mcov="n/a"
             fi
-            echo "| \`$pkg\` | $efficacy | $mcov | $killed | $lived | $notcov | $timeout | $notvia |" >> reports/summary.md
-          done
+            {
+              echo "Scoped to lines changed vs \`origin/${{ github.base_ref }}\`."
+              echo
+              echo "| Test efficacy | Mutator coverage | Killed | Lived | Not covered | Timed out | Not viable |"
+              echo "| --- | --- | --- | --- | --- | --- | --- |"
+              echo "| $efficacy | $mcov | $killed | $lived | $notcov | $timeout | $notvia |"
+              echo
+              echo "**Per-file breakdown:**"
+              echo
+              echo "| File | Killed | Lived | Not covered | Timed out | Not viable |"
+              echo "| --- | --- | --- | --- | --- | --- |"
+              jq -r '
+                .files[]? as $f
+                | [$f.mutations[].status] as $s
+                | "| `\($f.file_name)` | \($s | map(select(. == "KILLED")) | length) | \($s | map(select(. == "LIVED")) | length) | \($s | map(select(. == "NOT COVERED")) | length) | \($s | map(select(. == "TIMED OUT")) | length) | \($s | map(select(. == "NOT VIABLE")) | length) |"
+              ' reports/mutation.json
+            } >> reports/summary.md
+          fi
           {
             echo
-            echo "Per-package reports are attached as the \`gremlins-reports\` workflow artifact."
+            echo "Full report attached as the \`gremlins-reports\` workflow artifact."
             echo
-            echo "This job is **non-blocking** while we establish a baseline. See \`.gremlins.yaml\` and the follow-up issue for how thresholds will be tuned and gated."
+            echo "This job is **non-blocking** while we establish a baseline. Diff-mode is used so the run scales with PR size, not codebase size; thresholds will be tuned and gated in a follow-up."
           } >> reports/summary.md
           cat reports/summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload reports
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: gremlins-reports
           path: reports/
           retention-days: 14
+          if-no-files-found: ignore
 
       - name: Post PR comment
+        if: always()
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: gremlins
