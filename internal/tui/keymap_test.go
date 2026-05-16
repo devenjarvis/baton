@@ -91,12 +91,11 @@ func TestKeyMapMatch(t *testing.T) {
 		{"n", km.NewSession, true},
 	}
 	for _, tc := range cases {
-		msg := tea.KeyPressMsg{Code: 0, Text: tc.key}
 		// tea.KeyPressMsg.String() reads from the underlying Key; build via
 		// the documented public Key fields. For single-rune keys String()
 		// returns the rune; for named keys ("ctrl+c", "up") it returns the
 		// label. The cleanest portable path is to construct the Key manually.
-		msg = synthesizeKeyPress(tc.key)
+		msg := synthesizeKeyPress(tc.key)
 		got := km.Match(msg, tc.action)
 		if got != tc.want {
 			t.Errorf("Match(%q, %v) = %v; want %v", tc.key, tc.action, got, tc.want)

@@ -24,6 +24,7 @@ func (a App) returnFromConfigForm() (tea.Model, tea.Cmd) {
 	a.dashboard.repoConfigForm = nil
 	return a, nil
 }
+
 func (a App) updateDiff(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg.(type) {
 	case diffCloseMsg:
@@ -35,6 +36,7 @@ func (a App) updateDiff(msg tea.Msg) (tea.Model, tea.Cmd) {
 	a.diff, cmd = a.diff.Update(msg)
 	return a, cmd
 }
+
 func (a *App) initRepoConfigForm(repoPath string) {
 	rs := a.repoSettings[repoPath]
 	if rs == nil {
@@ -133,6 +135,7 @@ func (a App) extractRepoSettings() *config.RepoSettings {
 	}
 	return s
 }
+
 func (a App) updateGlobalConfig(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case globalConfigSaveMsg:

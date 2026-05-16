@@ -214,8 +214,9 @@ func (a App) handleMergePR(msg mergePRMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 	sess.SetLifecyclePhase(agent.LifecycleComplete)
-	var agentIDs []string
-	for _, ag := range sess.Agents() {
+	agents := sess.Agents()
+	agentIDs := make([]string, 0, len(agents))
+	for _, ag := range agents {
 		agentIDs = append(agentIDs, ag.ID)
 		a.closingAgents[ag.ID] = true
 	}
@@ -230,6 +231,7 @@ func (a App) handleMergePR(msg mergePRMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 }
+
 func (a *App) pollAllSessions() []tea.Cmd {
 	const (
 		maxConcurrent    = 3

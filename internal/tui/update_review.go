@@ -77,6 +77,7 @@ func (a App) handleReviewVerdict(msg reviewVerdictMsg) (tea.Model, tea.Cmd) {
 	}
 	return a, nil
 }
+
 func reviewTaskGroupAtCursor(entry *reviewDiffEntry, cursor int) *taskReviewGroup {
 	if entry == nil {
 		return nil

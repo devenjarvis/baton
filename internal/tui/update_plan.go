@@ -254,6 +254,7 @@ func (a App) handlePlanEditorRestore(msg planEditorRestoreMsg) (tea.Model, tea.C
 	}
 	return a, nil
 }
+
 func (a *App) submitPromptModal(msg promptModalSubmitMsg) (tea.Model, tea.Cmd) {
 	prompt := strings.TrimSpace(msg.prompt)
 	if prompt == "" {

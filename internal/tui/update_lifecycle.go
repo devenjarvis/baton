@@ -114,7 +114,7 @@ func (a App) handleInit(msg initAppMsg) (tea.Model, tea.Cmd) {
 		resumeCfg agent.Config
 		sessions  []state.SessionState
 	}
-	var resumeItems []resumeItem
+	resumeItems := make([]resumeItem, 0, len(msg.cfg.Repos))
 	totalPruned := 0
 	for _, repo := range msg.cfg.Repos {
 		bs, err := state.Load(repo.Path)
