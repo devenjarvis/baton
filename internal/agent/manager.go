@@ -149,9 +149,14 @@ var (
 // before exiting non-zero, so the outer loop stays small: 3 attempts with 2s
 // and 5s gaps keeps worst-case wall-clock under ~15s of added overhead.
 // Declared as vars so tests can swap to fast values via setPlanDraftRetryForTesting.
+//
+// planDraftPerAttemptCap is 10 minutes (not 5): the richer prompt introduced
+// in dcf8b94 instructs the drafter to research aggressively before writing,
+// and on larger codebases that research phase routinely exceeds 5 minutes,
+// causing a SIGKILL (signal killed, empty stdout) before any output is written.
 var (
 	planDraftAttempts      = 3
-	planDraftPerAttemptCap = 5 * time.Minute
+	planDraftPerAttemptCap = 10 * time.Minute
 	planDraftBackoff       = []time.Duration{2 * time.Second, 5 * time.Second}
 )
 
