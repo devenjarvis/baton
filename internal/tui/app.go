@@ -3397,11 +3397,7 @@ func (a *App) refreshAgentList() {
 	a.dashboard.focusBreakAnimFrame = a.focusBreakAnimFrame
 	a.dashboard.focusBreakShortWarning = a.focusBreakShortWarning
 	a.dashboard.focusBreakTimerUp = a.focusBreakTimerUp
-	a.dashboard.focusPlanningIdx = a.cursor.Index(focusSectionPlanning)
-	a.dashboard.focusBuildingIdx = a.cursor.Index(focusSectionBuilding)
-	a.dashboard.focusReviewIdx = a.cursor.Index(focusSectionReview)
-	a.dashboard.focusShippingIdx = a.cursor.Index(focusSectionShipping)
-	a.dashboard.focusCursorSection = a.cursor.Section()
+	a.dashboard.cursor = a.cursor
 	a.dashboard.prDraftSessionID = a.prDraftSessionID
 	a.dashboard.activeRepoName = a.activeRepoDisplayName()
 	a.dashboard.activeRepoPath = a.activeRepo
@@ -3597,11 +3593,7 @@ func (a *App) cursorSelectedRepoPath() string {
 // dashboard model so the next render reflects navigation immediately, without
 // waiting for the 100ms tick that drives refreshAgentList.
 func (a *App) syncFocusCursorToDashboard() {
-	a.dashboard.focusPlanningIdx = a.cursor.Index(focusSectionPlanning)
-	a.dashboard.focusBuildingIdx = a.cursor.Index(focusSectionBuilding)
-	a.dashboard.focusReviewIdx = a.cursor.Index(focusSectionReview)
-	a.dashboard.focusShippingIdx = a.cursor.Index(focusSectionShipping)
-	a.dashboard.focusCursorSection = a.cursor.Section()
+	a.dashboard.cursor = a.cursor
 	a.dashboard.prDraftSessionID = a.prDraftSessionID
 }
 

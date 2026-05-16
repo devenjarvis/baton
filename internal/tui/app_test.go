@@ -1550,8 +1550,8 @@ func TestFocusModeNavigationCrossesSections(t *testing.T) {
 	}
 
 	// Verify the dashboard model received the synced state immediately.
-	if app.dashboard.focusCursorSection != focusSectionBuilding || app.dashboard.focusBuildingIdx != 1 {
-		t.Fatalf("dashboard not synced: section=%v active=%d", app.dashboard.focusCursorSection, app.dashboard.focusBuildingIdx)
+	if app.dashboard.cursor.Section() != focusSectionBuilding || app.dashboard.cursor.Index(focusSectionBuilding) != 1 {
+		t.Fatalf("dashboard not synced: section=%v active=%d", app.dashboard.cursor.Section(), app.dashboard.cursor.Index(focusSectionBuilding))
 	}
 }
 
@@ -1643,22 +1643,22 @@ func TestFocusModeNavigationVisibleOnActiveOnly(t *testing.T) {
 	// j moves within active (active is the only non-empty section).
 	model, _ := app.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
 	app = model.(App)
-	if app.dashboard.focusBuildingIdx != 1 {
-		t.Fatalf("expected dashboard.focusBuildingIdx=1 after j, got %d", app.dashboard.focusBuildingIdx)
+	if app.dashboard.cursor.Index(focusSectionBuilding) != 1 {
+		t.Fatalf("expected dashboard.focusBuildingIdx=1 after j, got %d", app.dashboard.cursor.Index(focusSectionBuilding))
 	}
 
 	// j again at the bottom: no-op (no other section to fall through to).
 	model, _ = app.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
 	app = model.(App)
-	if app.dashboard.focusBuildingIdx != 1 {
-		t.Fatalf("expected dashboard.focusBuildingIdx=1 (no-op at end), got %d", app.dashboard.focusBuildingIdx)
+	if app.dashboard.cursor.Index(focusSectionBuilding) != 1 {
+		t.Fatalf("expected dashboard.focusBuildingIdx=1 (no-op at end), got %d", app.dashboard.cursor.Index(focusSectionBuilding))
 	}
 
 	// k moves back up.
 	model, _ = app.Update(tea.KeyPressMsg{Code: 'k', Text: "k"})
 	app = model.(App)
-	if app.dashboard.focusBuildingIdx != 0 {
-		t.Fatalf("expected dashboard.focusBuildingIdx=0 after k, got %d", app.dashboard.focusBuildingIdx)
+	if app.dashboard.cursor.Index(focusSectionBuilding) != 0 {
+		t.Fatalf("expected dashboard.focusBuildingIdx=0 after k, got %d", app.dashboard.cursor.Index(focusSectionBuilding))
 	}
 }
 
