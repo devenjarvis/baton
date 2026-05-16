@@ -109,38 +109,18 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.focusBreakShortWarning = false
 		}
 
-		// Plan editor key handling. The editor has its own internal modes
-		// (scroll/edit/revise-input) and emits planEditor*Msg values handled
-		// by the App below. All keys are consumed by the editor while focused.
-		if a.dashboard.panelFocus == focusPlanEditor && a.planEditor != nil {
-			cmd := a.planEditor.Update(msg)
-			return a, cmd
+		// Forward to whichever overlay panel owns focus. Each helper is a
+		// no-op when its panel is inactive, so the dispatch order only
+		// matters when multiple panels could theoretically be active —
+		// which is forbidden by the panelFocus state machine.
+		if newA, cmd, handled := a.handleKeysPlanEditor(msg); handled {
+			return newA, cmd
 		}
-
-		// Review panel key handling: delegate to the reviewPanelModel.
-		if a.dashboard.panelFocus == focusReview && a.reviewPanel != nil {
-			snapshot := a.reviewPanel
-			updated, cmd := snapshot.Update(msg, a.panelServices())
-			// If svc.ClosePanel fired during Update, a.reviewPanel is now nil
-			// and panelFocus is focusList. Don't restore — close has won.
-			if a.reviewPanel == snapshot {
-				if rp, ok := updated.(*reviewPanelModel); ok {
-					a.reviewPanel = rp
-				}
-			}
-			return a, cmd
+		if newA, cmd, handled := a.handleKeysReviewPanel(msg); handled {
+			return newA, cmd
 		}
-
-		// Shipping panel key handling: delegate to the shippingPanelModel.
-		if a.dashboard.panelFocus == focusShipping && a.shippingPanel != nil {
-			snapshot := a.shippingPanel
-			updated, cmd := snapshot.Update(msg, a.panelServices())
-			if a.shippingPanel == snapshot {
-				if sp, ok := updated.(*shippingPanelModel); ok {
-					a.shippingPanel = sp
-				}
-			}
-			return a, cmd
+		if newA, cmd, handled := a.handleKeysShippingPanel(msg); handled {
+			return newA, cmd
 		}
 
 		// Pipeline view key handling (the only dashboard mode).
@@ -333,410 +313,8 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.confirmQuit = false
 		}
 
-		switch msg.String() {
-		case "b":
-			switch {
-			case !a.focusBreakMode:
-				// Enter break. Round(0) strips the monotonic reading so
-				// time.Since uses wall-clock arithmetic, which keeps the
-				// timer honest across suspend/resume.
-				a.focusBreakMode = true
-				a.focusBreakStart = time.Now().Round(0)
-				a.focusBreakShortWarning = false
-				a.focusBreakTimerUp = false
-				a.focusBreakAnimFrame = 0
-			case a.focusBreakTimerUp:
-				// Break is fully elapsed; user is opting back in. Exit
-				// without any "are you sure" friction.
-				a.sessionStart = time.Now()
-				a.focusBlockCount++
-				a.focusBreakMode = false
-				a.focusBreakShortWarning = false
-				a.focusBreakTimerUp = false
-				a.focusBreakAnimFrame = 0
-			case !a.focusBreakShortWarning:
-				a.focusBreakShortWarning = true
-			default:
-				// Third b press while still inside the break window:
-				// override the short-break guard and end early.
-				a.sessionStart = time.Now()
-				a.focusBlockCount++
-				a.focusBreakMode = false
-				a.focusBreakShortWarning = false
-				a.focusBreakTimerUp = false
-				a.focusBreakAnimFrame = 0
-			}
-			return a, nil
-
-		case "n":
-			// Create a new session in the repo of the currently selected item.
-			repoPath := a.dashboard.selectedRepoPath()
-			if repoPath == "" {
-				repoPath = a.activeRepo
-			}
-			if repoPath == "" {
-				return a, nil
-			}
-			a.activeRepo = repoPath
-
-			// Soft agent-count guidance.
-			resolved := a.resolvedCache[repoPath]
-			if resolved.MaxConcurrentAgents > 0 && a.activeAgentCount() >= resolved.MaxConcurrentAgents {
-				if !a.agentLimitModalActive {
-					a.agentLimitModalActive = true
-					return a, nil
-				}
-				// Second press: proceed, clear modal flag.
-				a.agentLimitModalActive = false
-			}
-
-			// Soft review-backlog limit.
-			resolvedForBacklog := a.resolvedCache[a.activeRepo]
-			if resolvedForBacklog.MaxReviewBacklog > 0 {
-				var backlogCount int
-				if mgr := a.managers[a.activeRepo]; mgr != nil {
-					for _, sess := range mgr.ListSessions() {
-						if sess.LifecyclePhase() == agent.LifecycleReadyForReview {
-							backlogCount++
-						}
-					}
-				}
-				if backlogCount >= resolvedForBacklog.MaxReviewBacklog {
-					if !a.focusBacklogWarning {
-						a.focusBacklogWarning = true
-						a.setError(fmt.Sprintf("n again to override — %d sessions awaiting review", backlogCount))
-						return a, nil
-					}
-					a.focusBacklogWarning = false // second n: proceed
-				} else {
-					a.focusBacklogWarning = false
-				}
-			}
-
-			fixedW := a.dashboard.fixedTermWidth()
-			fixedH := a.dashboard.fixedTermHeight()
-			if fixedW <= 0 || fixedH <= 0 {
-				a.setError("Terminal size not yet known; try again")
-				return a, nil
-			}
-			mgr := a.managers[repoPath]
-			if mgr == nil {
-				return a, nil
-			}
-
-			// Plan-first flow: open the prompt modal so the user can describe
-			// the task before any subprocess spawns. The modal's submit
-			// message routes through submitPromptModal which decides between
-			// the planning path (StartDraft + editor) and the skip path
-			// (today's flow).
-			if resolved.PlanFirstEnabled {
-				return a, a.promptModal.Open()
-			}
-
-			cfg := agent.Config{
-				Rows:              fixedH,
-				Cols:              fixedW,
-				BypassPermissions: resolved.BypassPermissions,
-				AgentProgram:      resolved.AgentProgram,
-				AgentModel:        resolved.AgentModel,
-				BuildSystemPrompt: resolved.BuildSystemPrompt,
-			}
-			return a, func() tea.Msg {
-				sess, ag, err := mgr.CreateSession(cfg)
-				if err != nil {
-					return createResultMsg{err: err}
-				}
-				// Legacy n (PlanFirstEnabled=false) spawns the agent
-				// immediately, so the session belongs in BUILDING from the
-				// start. Without this transition the row would land in
-				// PLANNING, where the dashboard renders plan-status badges
-				// rather than agent activity. The skip path in
-				// submitPromptModal does the same — keeping both call sites
-				// consistent.
-				sess.SetLifecyclePhase(agent.LifecycleInProgress)
-				return createResultMsg{sessionID: sess.ID, agentID: ag.ID, isNewSession: true}
-			}
-
-		case "c":
-			// Add an agent to the cursor-selected session.
-			sess := a.cursorSelectedSession()
-			if sess == nil {
-				a.setError("No session selected")
-				return a, nil
-			}
-			repoPath := a.cursorSelectedRepoPath()
-			mgr := a.managers[repoPath]
-			if mgr == nil {
-				return a, nil
-			}
-			fixedW := a.dashboard.fixedTermWidth()
-			fixedH := a.dashboard.fixedTermHeight()
-			if fixedW <= 0 || fixedH <= 0 {
-				a.setError("Terminal size not yet known; try again")
-				return a, nil
-			}
-			resolved := a.resolvedCache[repoPath]
-			cfg := agent.Config{
-				Rows:              fixedH,
-				Cols:              fixedW,
-				BypassPermissions: resolved.BypassPermissions,
-				AgentProgram:      resolved.AgentProgram,
-				AgentModel:        resolved.AgentModel,
-				BuildSystemPrompt: resolved.BuildSystemPrompt,
-			}
-			sessionID := sess.ID
-			return a, func() tea.Msg {
-				ag, err := mgr.AddAgent(sessionID, cfg)
-				if err != nil {
-					return createResultMsg{err: err}
-				}
-				return createResultMsg{sessionID: sessionID, agentID: ag.ID}
-			}
-
-		case "e":
-			// Open the cursor-selected session's worktree in the configured IDE.
-			sess := a.cursorSelectedSession()
-			if sess == nil {
-				a.setError("No session selected")
-				return a, nil
-			}
-			repoPath := a.cursorSelectedRepoPath()
-			ideCmd := strings.TrimSpace(a.resolvedCache[repoPath].IDECommand)
-			if ideCmd == "" {
-				a.setError("No IDE configured (set 'IDE Command' in settings)")
-				return a, nil
-			}
-			parts := splitIDECommand(ideCmd)
-			if len(parts) == 0 {
-				a.setError("No IDE configured (set 'IDE Command' in settings)")
-				return a, nil
-			}
-			worktreePath := sess.Worktree.Path
-			exe := parts[0]
-			args := append(parts[1:], worktreePath)
-			go func() {
-				cmd := exec.Command(exe, args...)
-				cmd.Dir = worktreePath
-				_ = cmd.Start()
-			}()
-			return a, nil
-
-		case "a":
-			// Open file browser to add a new repo.
-			a.repoBrowser = newFileBrowserModel()
-			a.repoBrowser.width = a.width
-			a.repoBrowser.height = a.height - 1
-			a.view = ViewFileBrowser
-			return a, nil
-
-		case "o":
-			// Open branch picker to create session on existing branch/PR.
-			// `o` is not session-scoped; the picker always targets the active repo.
-			repoPath := a.cursorSelectedRepoPath()
-			if repoPath == "" {
-				a.setError("No repo available")
-				return a, nil
-			}
-			// Build set of branches that already have active sessions.
-			mgr := a.managers[repoPath]
-			activeBranches := make(map[string]bool)
-			if mgr != nil {
-				for _, sess := range mgr.ListSessions() {
-					activeBranches[sess.Branch()] = true
-				}
-			}
-			a.branchPicker = newBranchPickerModel()
-			a.branchPicker.width = a.width
-			a.branchPicker.height = a.height - 1
-			a.activeRepo = repoPath
-			a.view = ViewBranchPicker
-			return a, loadBranchPickerData(repoPath, a.ghClient, activeBranches)
-
-		case "t":
-			// Open or focus a shell terminal in the cursor-selected session.
-			sess := a.cursorSelectedSession()
-			if sess == nil {
-				a.setError("No session selected")
-				return a, nil
-			}
-			if sess.HasShell() {
-				// Shell exists — open it in focusLaunch directly.
-				for _, ag := range sess.Agents() {
-					if ag.IsShell {
-						a.focusLaunchAgent = ag
-						a.focusLaunchSession = sess
-						a.dashboard.panelFocus = focusLaunch
-						a.dashboard.scrollOffset = 0
-						ag.Resize(a.focusLaunchTermHeight(), a.dashboard.width)
-						break
-					}
-				}
-				return a, nil
-			}
-			repoPath := a.cursorSelectedRepoPath()
-			mgr := a.managers[repoPath]
-			if mgr == nil {
-				return a, nil
-			}
-			fixedW := a.dashboard.fixedTermWidth()
-			fixedH := a.dashboard.fixedTermHeight()
-			if fixedW <= 0 || fixedH <= 0 {
-				a.setError("Terminal size not yet known; try again")
-				return a, nil
-			}
-			cfg := agent.Config{
-				Rows: fixedH,
-				Cols: fixedW,
-			}
-			sessionID := sess.ID
-			return a, func() tea.Msg {
-				ag, err := mgr.AddShell(sessionID, cfg)
-				if err != nil {
-					return createResultMsg{err: err}
-				}
-				return createResultMsg{sessionID: sessionID, agentID: ag.ID}
-			}
-
-		case "p":
-			// Open the cursor-selected session's PR in the browser, or push
-			// and draft a new one if no open PR exists yet.
-			sess := a.cursorSelectedSession()
-			if sess != nil {
-				if entry := a.prCache[sess.ID]; entry != nil && entry.pr != nil && entry.pr.URL != "" {
-					if err := openURL(entry.pr.URL); err != nil {
-						a.setError(err.Error())
-					}
-				} else {
-					if a.ghClient == nil {
-						a.setError("GitHub auth not available")
-						return a, nil
-					}
-					phase := sess.LifecyclePhase()
-					if phase != agent.LifecycleReadyForReview && phase != agent.LifecycleInReview {
-						return a, nil
-					}
-					if a.prDraftInFlight {
-						return a, nil
-					}
-					a.prDraftInFlight = true
-					a.prDraftSessionID = sess.ID
-					repoPath := a.cursorSelectedRepoPath()
-					return a, a.startPRDraftCmd(sess, repoPath, false)
-				}
-			}
-			return a, nil
-
-		case "R":
-			// Open repo picker in manage mode (switch active repo, edit settings, remove).
-			counts := make(map[string]int, len(a.cfg.Repos))
-			for _, repo := range a.cfg.Repos {
-				if mgr := a.managers[repo.Path]; mgr != nil {
-					counts[repo.Path] = mgr.AgentCount()
-				}
-			}
-			a.repoPicker = newRepoPickerModel()
-			a.repoPicker.width = a.width
-			a.repoPicker.height = a.height - 1
-			a.repoPicker.SetMode(repoPickerModeManage)
-			a.repoPicker.setRepos(a.cfg.Repos, counts, a.activeRepo)
-			a.view = ViewRepoPicker
-			return a, nil
-
-		case "s":
-			// Open global settings overlay.
-			a.globalConfig = newGlobalConfigModel(a.globalSettings, a.width, a.height)
-			a.view = ViewGlobalConfig
-			return a, nil
-
-		case "d":
-			// Diff the cursor-selected session's worktree.
-			sess := a.cursorSelectedSession()
-			if sess == nil {
-				return a, nil
-			}
-			repoPath := a.cursorSelectedRepoPath()
-			rawDiff, err := git.Diff(repoPath, sess.Worktree)
-			if err != nil {
-				a.setError(err.Error())
-				return a, nil
-			}
-			m, err := diffmodel.Parse(rawDiff)
-			if err != nil {
-				a.setError(err.Error())
-				return a, nil
-			}
-			a.view = ViewDiff
-			a.diff = newDiffModel(sess.GetDisplayName(), m, a.width, a.height-1)
-			return a, nil
-
-		case "x":
-			// Kill the cursor-selected session's primary agent asynchronously.
-			sess := a.cursorSelectedSession()
-			if sess == nil {
-				a.setError("No session selected")
-				return a, nil
-			}
-			ag := sess.PrimaryAgent()
-			if ag == nil {
-				a.setError("Session has no agents")
-				return a, nil
-			}
-			repoPath := a.cursorSelectedRepoPath()
-			mgr := a.managers[repoPath]
-			if mgr == nil {
-				return a, nil
-			}
-			agentID := ag.ID
-			sessionID := sess.ID
-			// Already dispatched — no-op to avoid double-kills.
-			if a.closingAgents[agentID] {
-				return a, nil
-			}
-			a.closingAgents[agentID] = true
-			a.refreshAgentList()
-			return a, func() tea.Msg {
-				err := mgr.KillAgent(sessionID, agentID)
-				return killResultMsg{
-					scope:     killScopeAgent,
-					sessionID: sessionID,
-					agentID:   agentID,
-					err:       err,
-				}
-			}
-
-		case "X":
-			// Kill the cursor-selected session entirely.
-			sess := a.cursorSelectedSession()
-			if sess == nil {
-				return a, nil
-			}
-			repoPath := a.cursorSelectedRepoPath()
-			mgr := a.managers[repoPath]
-			if mgr == nil {
-				return a, nil
-			}
-			sessID := sess.ID
-			// Already dispatched — no-op.
-			if a.closingSessions[sessID] {
-				return a, nil
-			}
-			var agentIDs []string
-			for _, ag := range sess.Agents() {
-				agentIDs = append(agentIDs, ag.ID)
-				a.closingAgents[ag.ID] = true
-			}
-			a.closingSessions[sessID] = true
-			a.refreshAgentList()
-			return a, func() tea.Msg {
-				err := mgr.KillSession(sessID)
-				return killResultMsg{
-					scope:     killScopeSession,
-					sessionID: sessID,
-					agentIDs:  agentIDs,
-					err:       err,
-				}
-			}
-
+		if newA, cmd, handled := a.handleKeysWorkflow(msg); handled {
+			return newA, cmd
 		}
 	}
 
@@ -1128,4 +706,463 @@ func (a App) closeFocusLaunchAgent() (tea.Model, tea.Cmd) {
 			err:       err,
 		}
 	}
+}
+
+// handleKeysPlanEditor forwards a keypress to the open plan editor. handled is
+// true exactly when the editor owns focus, signalling to the caller that no
+// further dispatch is needed.
+func (a App) handleKeysPlanEditor(msg tea.KeyPressMsg) (App, tea.Cmd, bool) {
+	if a.dashboard.panelFocus != focusPlanEditor || a.planEditor == nil {
+		return a, nil, false
+	}
+	cmd := a.planEditor.Update(msg)
+	return a, cmd, true
+}
+
+// handleKeysReviewPanel forwards a keypress to the review panel. handled is true
+// exactly when the review panel owns focus. The snapshot dance preserves the
+// invariant that svc.ClosePanel wins over a stale restore — if the panel was
+// closed mid-Update, we leave a.reviewPanel nil rather than restoring it.
+func (a App) handleKeysReviewPanel(msg tea.KeyPressMsg) (App, tea.Cmd, bool) {
+	if a.dashboard.panelFocus != focusReview || a.reviewPanel == nil {
+		return a, nil, false
+	}
+	snapshot := a.reviewPanel
+	updated, cmd := snapshot.Update(msg, a.panelServices())
+	if a.reviewPanel == snapshot {
+		if rp, ok := updated.(*reviewPanelModel); ok {
+			a.reviewPanel = rp
+		}
+	}
+	return a, cmd, true
+}
+
+// handleKeysShippingPanel forwards a keypress to the shipping panel. Mirrors the
+// review-panel snapshot-and-restore pattern.
+func (a App) handleKeysShippingPanel(msg tea.KeyPressMsg) (App, tea.Cmd, bool) {
+	if a.dashboard.panelFocus != focusShipping || a.shippingPanel == nil {
+		return a, nil, false
+	}
+	snapshot := a.shippingPanel
+	updated, cmd := snapshot.Update(msg, a.panelServices())
+	if a.shippingPanel == snapshot {
+		if sp, ok := updated.(*shippingPanelModel); ok {
+			a.shippingPanel = sp
+		}
+	}
+	return a, cmd, true
+}
+
+// handleKeysWorkflow handles the dashboard-wide workflow keypresses (new
+// session, add agent, advance phase, open review, open shell, etc.). Returns
+// handled=false when the key did not match any binding, letting the caller
+// fall through to default dashboard navigation (e.g. dashboard.Update for
+// scrolling).
+func (a App) handleKeysWorkflow(msg tea.KeyPressMsg) (App, tea.Cmd, bool) {
+	switch msg.String() {
+	case "b":
+		switch {
+		case !a.focusBreakMode:
+			// Enter break. Round(0) strips the monotonic reading so
+			// time.Since uses wall-clock arithmetic, which keeps the
+			// timer honest across suspend/resume.
+			a.focusBreakMode = true
+			a.focusBreakStart = time.Now().Round(0)
+			a.focusBreakShortWarning = false
+			a.focusBreakTimerUp = false
+			a.focusBreakAnimFrame = 0
+		case a.focusBreakTimerUp:
+			// Break is fully elapsed; user is opting back in. Exit
+			// without any "are you sure" friction.
+			a.sessionStart = time.Now()
+			a.focusBlockCount++
+			a.focusBreakMode = false
+			a.focusBreakShortWarning = false
+			a.focusBreakTimerUp = false
+			a.focusBreakAnimFrame = 0
+		case !a.focusBreakShortWarning:
+			a.focusBreakShortWarning = true
+		default:
+			// Third b press while still inside the break window:
+			// override the short-break guard and end early.
+			a.sessionStart = time.Now()
+			a.focusBlockCount++
+			a.focusBreakMode = false
+			a.focusBreakShortWarning = false
+			a.focusBreakTimerUp = false
+			a.focusBreakAnimFrame = 0
+		}
+		return a, nil, true
+
+	case "n":
+		// Create a new session in the repo of the currently selected item.
+		repoPath := a.dashboard.selectedRepoPath()
+		if repoPath == "" {
+			repoPath = a.activeRepo
+		}
+		if repoPath == "" {
+			return a, nil, true
+		}
+		a.activeRepo = repoPath
+
+		// Soft agent-count guidance.
+		resolved := a.resolvedCache[repoPath]
+		if resolved.MaxConcurrentAgents > 0 && a.activeAgentCount() >= resolved.MaxConcurrentAgents {
+			if !a.agentLimitModalActive {
+				a.agentLimitModalActive = true
+				return a, nil, true
+			}
+			// Second press: proceed, clear modal flag.
+			a.agentLimitModalActive = false
+		}
+
+		// Soft review-backlog limit.
+		resolvedForBacklog := a.resolvedCache[a.activeRepo]
+		if resolvedForBacklog.MaxReviewBacklog > 0 {
+			var backlogCount int
+			if mgr := a.managers[a.activeRepo]; mgr != nil {
+				for _, sess := range mgr.ListSessions() {
+					if sess.LifecyclePhase() == agent.LifecycleReadyForReview {
+						backlogCount++
+					}
+				}
+			}
+			if backlogCount >= resolvedForBacklog.MaxReviewBacklog {
+				if !a.focusBacklogWarning {
+					a.focusBacklogWarning = true
+					a.setError(fmt.Sprintf("n again to override — %d sessions awaiting review", backlogCount))
+					return a, nil, true
+				}
+				a.focusBacklogWarning = false // second n: proceed
+			} else {
+				a.focusBacklogWarning = false
+			}
+		}
+
+		fixedW := a.dashboard.fixedTermWidth()
+		fixedH := a.dashboard.fixedTermHeight()
+		if fixedW <= 0 || fixedH <= 0 {
+			a.setError("Terminal size not yet known; try again")
+			return a, nil, true
+		}
+		mgr := a.managers[repoPath]
+		if mgr == nil {
+			return a, nil, true
+		}
+
+		// Plan-first flow: open the prompt modal so the user can describe
+		// the task before any subprocess spawns. The modal's submit
+		// message routes through submitPromptModal which decides between
+		// the planning path (StartDraft + editor) and the skip path
+		// (today's flow).
+		if resolved.PlanFirstEnabled {
+			return a, a.promptModal.Open(), true
+		}
+
+		cfg := agent.Config{
+			Rows:              fixedH,
+			Cols:              fixedW,
+			BypassPermissions: resolved.BypassPermissions,
+			AgentProgram:      resolved.AgentProgram,
+			AgentModel:        resolved.AgentModel,
+			BuildSystemPrompt: resolved.BuildSystemPrompt,
+		}
+		return a, func() tea.Msg {
+			sess, ag, err := mgr.CreateSession(cfg)
+			if err != nil {
+				return createResultMsg{err: err}
+			}
+			// Legacy n (PlanFirstEnabled=false) spawns the agent
+			// immediately, so the session belongs in BUILDING from the
+			// start. Without this transition the row would land in
+			// PLANNING, where the dashboard renders plan-status badges
+			// rather than agent activity. The skip path in
+			// submitPromptModal does the same — keeping both call sites
+			// consistent.
+			sess.SetLifecyclePhase(agent.LifecycleInProgress)
+			return createResultMsg{sessionID: sess.ID, agentID: ag.ID, isNewSession: true}
+		}, true
+
+	case "c":
+		// Add an agent to the cursor-selected session.
+		sess := a.cursorSelectedSession()
+		if sess == nil {
+			a.setError("No session selected")
+			return a, nil, true
+		}
+		repoPath := a.cursorSelectedRepoPath()
+		mgr := a.managers[repoPath]
+		if mgr == nil {
+			return a, nil, true
+		}
+		fixedW := a.dashboard.fixedTermWidth()
+		fixedH := a.dashboard.fixedTermHeight()
+		if fixedW <= 0 || fixedH <= 0 {
+			a.setError("Terminal size not yet known; try again")
+			return a, nil, true
+		}
+		resolved := a.resolvedCache[repoPath]
+		cfg := agent.Config{
+			Rows:              fixedH,
+			Cols:              fixedW,
+			BypassPermissions: resolved.BypassPermissions,
+			AgentProgram:      resolved.AgentProgram,
+			AgentModel:        resolved.AgentModel,
+			BuildSystemPrompt: resolved.BuildSystemPrompt,
+		}
+		sessionID := sess.ID
+		return a, func() tea.Msg {
+			ag, err := mgr.AddAgent(sessionID, cfg)
+			if err != nil {
+				return createResultMsg{err: err}
+			}
+			return createResultMsg{sessionID: sessionID, agentID: ag.ID}
+		}, true
+
+	case "e":
+		// Open the cursor-selected session's worktree in the configured IDE.
+		sess := a.cursorSelectedSession()
+		if sess == nil {
+			a.setError("No session selected")
+			return a, nil, true
+		}
+		repoPath := a.cursorSelectedRepoPath()
+		ideCmd := strings.TrimSpace(a.resolvedCache[repoPath].IDECommand)
+		if ideCmd == "" {
+			a.setError("No IDE configured (set 'IDE Command' in settings)")
+			return a, nil, true
+		}
+		parts := splitIDECommand(ideCmd)
+		if len(parts) == 0 {
+			a.setError("No IDE configured (set 'IDE Command' in settings)")
+			return a, nil, true
+		}
+		worktreePath := sess.Worktree.Path
+		exe := parts[0]
+		args := append(parts[1:], worktreePath)
+		go func() {
+			cmd := exec.Command(exe, args...)
+			cmd.Dir = worktreePath
+			_ = cmd.Start()
+		}()
+		return a, nil, true
+
+	case "a":
+		// Open file browser to add a new repo.
+		a.repoBrowser = newFileBrowserModel()
+		a.repoBrowser.width = a.width
+		a.repoBrowser.height = a.height - 1
+		a.view = ViewFileBrowser
+		return a, nil, true
+
+	case "o":
+		// Open branch picker to create session on existing branch/PR.
+		// `o` is not session-scoped; the picker always targets the active repo.
+		repoPath := a.cursorSelectedRepoPath()
+		if repoPath == "" {
+			a.setError("No repo available")
+			return a, nil, true
+		}
+		// Build set of branches that already have active sessions.
+		mgr := a.managers[repoPath]
+		activeBranches := make(map[string]bool)
+		if mgr != nil {
+			for _, sess := range mgr.ListSessions() {
+				activeBranches[sess.Branch()] = true
+			}
+		}
+		a.branchPicker = newBranchPickerModel()
+		a.branchPicker.width = a.width
+		a.branchPicker.height = a.height - 1
+		a.activeRepo = repoPath
+		a.view = ViewBranchPicker
+		return a, loadBranchPickerData(repoPath, a.ghClient, activeBranches), true
+
+	case "t":
+		// Open or focus a shell terminal in the cursor-selected session.
+		sess := a.cursorSelectedSession()
+		if sess == nil {
+			a.setError("No session selected")
+			return a, nil, true
+		}
+		if sess.HasShell() {
+			// Shell exists — open it in focusLaunch directly.
+			for _, ag := range sess.Agents() {
+				if ag.IsShell {
+					a.focusLaunchAgent = ag
+					a.focusLaunchSession = sess
+					a.dashboard.panelFocus = focusLaunch
+					a.dashboard.scrollOffset = 0
+					ag.Resize(a.focusLaunchTermHeight(), a.dashboard.width)
+					break
+				}
+			}
+			return a, nil, true
+		}
+		repoPath := a.cursorSelectedRepoPath()
+		mgr := a.managers[repoPath]
+		if mgr == nil {
+			return a, nil, true
+		}
+		fixedW := a.dashboard.fixedTermWidth()
+		fixedH := a.dashboard.fixedTermHeight()
+		if fixedW <= 0 || fixedH <= 0 {
+			a.setError("Terminal size not yet known; try again")
+			return a, nil, true
+		}
+		cfg := agent.Config{
+			Rows: fixedH,
+			Cols: fixedW,
+		}
+		sessionID := sess.ID
+		return a, func() tea.Msg {
+			ag, err := mgr.AddShell(sessionID, cfg)
+			if err != nil {
+				return createResultMsg{err: err}
+			}
+			return createResultMsg{sessionID: sessionID, agentID: ag.ID}
+		}, true
+
+	case "p":
+		// Open the cursor-selected session's PR in the browser, or push
+		// and draft a new one if no open PR exists yet.
+		sess := a.cursorSelectedSession()
+		if sess != nil {
+			if entry := a.prCache[sess.ID]; entry != nil && entry.pr != nil && entry.pr.URL != "" {
+				if err := openURL(entry.pr.URL); err != nil {
+					a.setError(err.Error())
+				}
+			} else {
+				if a.ghClient == nil {
+					a.setError("GitHub auth not available")
+					return a, nil, true
+				}
+				phase := sess.LifecyclePhase()
+				if phase != agent.LifecycleReadyForReview && phase != agent.LifecycleInReview {
+					return a, nil, true
+				}
+				if a.prDraftInFlight {
+					return a, nil, true
+				}
+				a.prDraftInFlight = true
+				a.prDraftSessionID = sess.ID
+				repoPath := a.cursorSelectedRepoPath()
+				return a, a.startPRDraftCmd(sess, repoPath, false), true
+			}
+		}
+		return a, nil, true
+
+	case "R":
+		// Open repo picker in manage mode (switch active repo, edit settings, remove).
+		counts := make(map[string]int, len(a.cfg.Repos))
+		for _, repo := range a.cfg.Repos {
+			if mgr := a.managers[repo.Path]; mgr != nil {
+				counts[repo.Path] = mgr.AgentCount()
+			}
+		}
+		a.repoPicker = newRepoPickerModel()
+		a.repoPicker.width = a.width
+		a.repoPicker.height = a.height - 1
+		a.repoPicker.SetMode(repoPickerModeManage)
+		a.repoPicker.setRepos(a.cfg.Repos, counts, a.activeRepo)
+		a.view = ViewRepoPicker
+		return a, nil, true
+
+	case "s":
+		// Open global settings overlay.
+		a.globalConfig = newGlobalConfigModel(a.globalSettings, a.width, a.height)
+		a.view = ViewGlobalConfig
+		return a, nil, true
+
+	case "d":
+		// Diff the cursor-selected session's worktree.
+		sess := a.cursorSelectedSession()
+		if sess == nil {
+			return a, nil, true
+		}
+		repoPath := a.cursorSelectedRepoPath()
+		rawDiff, err := git.Diff(repoPath, sess.Worktree)
+		if err != nil {
+			a.setError(err.Error())
+			return a, nil, true
+		}
+		m, err := diffmodel.Parse(rawDiff)
+		if err != nil {
+			a.setError(err.Error())
+			return a, nil, true
+		}
+		a.view = ViewDiff
+		a.diff = newDiffModel(sess.GetDisplayName(), m, a.width, a.height-1)
+		return a, nil, true
+
+	case "x":
+		// Kill the cursor-selected session's primary agent asynchronously.
+		sess := a.cursorSelectedSession()
+		if sess == nil {
+			a.setError("No session selected")
+			return a, nil, true
+		}
+		ag := sess.PrimaryAgent()
+		if ag == nil {
+			a.setError("Session has no agents")
+			return a, nil, true
+		}
+		repoPath := a.cursorSelectedRepoPath()
+		mgr := a.managers[repoPath]
+		if mgr == nil {
+			return a, nil, true
+		}
+		agentID := ag.ID
+		sessionID := sess.ID
+		// Already dispatched — no-op to avoid double-kills.
+		if a.closingAgents[agentID] {
+			return a, nil, true
+		}
+		a.closingAgents[agentID] = true
+		a.refreshAgentList()
+		return a, func() tea.Msg {
+			err := mgr.KillAgent(sessionID, agentID)
+			return killResultMsg{
+				scope:     killScopeAgent,
+				sessionID: sessionID,
+				agentID:   agentID,
+				err:       err,
+			}
+		}, true
+
+	case "X":
+		// Kill the cursor-selected session entirely.
+		sess := a.cursorSelectedSession()
+		if sess == nil {
+			return a, nil, true
+		}
+		repoPath := a.cursorSelectedRepoPath()
+		mgr := a.managers[repoPath]
+		if mgr == nil {
+			return a, nil, true
+		}
+		sessID := sess.ID
+		// Already dispatched — no-op.
+		if a.closingSessions[sessID] {
+			return a, nil, true
+		}
+		var agentIDs []string
+		for _, ag := range sess.Agents() {
+			agentIDs = append(agentIDs, ag.ID)
+			a.closingAgents[ag.ID] = true
+		}
+		a.closingSessions[sessID] = true
+		a.refreshAgentList()
+		return a, func() tea.Msg {
+			err := mgr.KillSession(sessID)
+			return killResultMsg{
+				scope:     killScopeSession,
+				sessionID: sessID,
+				agentIDs:  agentIDs,
+				err:       err,
+			}
+		}, true
+
+	}
+	return a, nil, false
 }

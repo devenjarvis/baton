@@ -218,6 +218,10 @@ type App struct {
 	prDraftInFlight  bool                       // true while startPRDraftCmd is running; prevents double-trigger
 	prDraftSessionID string                     // ID of the session whose PR draft is in flight; "" when idle
 
+	// keys holds the dashboard action→key bindings. Stored on App so tests
+	// and future rebinding flows can swap a non-default map.
+	keys KeyMap
+
 	// PR compose modal and its associated session context.
 	prComposeModal   prComposeModal
 	prModalSessionID string
@@ -236,6 +240,7 @@ func NewApp() App {
 		view:            ViewDashboard,
 		dashboard:       newDashboardModel(),
 		cursor:          NewFocusedCursor(),
+		keys:            DefaultKeyMap(),
 		managers:        make(map[string]*agent.Manager),
 		repoSettings:    make(map[string]*config.RepoSettings),
 		resolvedCache:   make(map[string]config.ResolvedSettings),
