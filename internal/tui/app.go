@@ -196,11 +196,8 @@ type App struct {
 	focusBreakAnimFrame    int
 	reviewDiffCache        map[string]*reviewDiffEntry                // keyed by session ID; lifetime exceeds panel
 	reviewPanel            *reviewPanelModel                          // non-nil while panelFocus == focusReview
-	shippingSession        *agent.Session                             // session currently open in shipping panel
+	shippingPanel          *shippingPanelModel                        // non-nil while panelFocus == focusShipping
 	feedbackTriage         map[string]map[string]*feedbackTriageEntry // keyed by sessionID → itemKey
-	shippingFeedbackCursor int                                        // cursor row in the feedback list pane
-	shippingDetailScroll   int                                        // scroll offset in the feedback detail pane
-	feedbackNote           feedbackNoteModal                          // overlay for adding a guidance note to a feedback item
 	planEditor             *planEditorModel                           // non-nil while panelFocus == focusPlanEditor
 	promptModal            promptModalModel                           // overlay for plan-first new-session prompt
 
@@ -258,7 +255,6 @@ func NewApp() App {
 		closingAgents:   make(map[string]bool),
 		closingSessions: make(map[string]bool),
 		feedbackTriage:  make(map[string]map[string]*feedbackTriageEntry),
-		feedbackNote:    newFeedbackNoteModal(),
 		promptModal:     newPromptModal(),
 		prComposeModal:  newPRComposeModal(),
 	}
@@ -352,11 +348,16 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			a.promptModal.SetSize(msg.Width, msg.Height-1)
 			a.prComposeModal.SetSize(msg.Width, msg.Height-1)
-			a.feedbackNote.SetSize(msg.Width, msg.Height)
+			if a.shippingPanel != nil {
+				a.shippingPanel.Resize(msg.Width, msg.Height-1)
+			}
 		}
 
 	case reviewReworkRequestMsg:
 		return a.handleReviewReworkRequest(msg)
+
+	case shippingFeedbackRequestMsg:
+		return a.handleShippingFeedbackRequest(msg)
 
 	case initAppMsg:
 		if msg.err != nil {
@@ -1241,8 +1242,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							if !a.closingSessions[sessID] {
 								sess.SetLifecyclePhase(agent.LifecycleComplete)
 								// Close the shipping panel if this session is currently open in it.
-								if a.shippingSession != nil && a.shippingSession.ID == sessID {
-									a.shippingSession = nil
+								if a.shippingPanel != nil && a.shippingPanel.SessionID() == sessID {
+									a.shippingPanel = nil
 									a.dashboard.panelFocus = focusList
 								}
 								var agentIDs []string
@@ -1296,7 +1297,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.setError("merge failed: " + msg.err.Error())
 			return a, nil
 		}
-		a.shippingSession = nil
+		a.shippingPanel = nil
 		a.dashboard.panelFocus = focusList
 		repoPath := a.repoPathForSession(msg.sessionID)
 		if repoPath == "" {
@@ -1751,114 +1752,16 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, cmd
 		}
 
-		// Shipping panel key handling.
-		if a.dashboard.panelFocus == focusShipping && a.shippingSession != nil {
-			// Modal intercepts all keys first.
-			if a.feedbackNote.Active() {
-				cmd, submitted, note := a.feedbackNote.Update(msg)
-				if submitted {
-					a.setFeedbackNote(a.shippingSession.ID, a.feedbackNote.itemKey, note)
+		// Shipping panel key handling: delegate to the shippingPanelModel.
+		if a.dashboard.panelFocus == focusShipping && a.shippingPanel != nil {
+			snapshot := a.shippingPanel
+			updated, cmd := snapshot.Update(msg, a.panelServices())
+			if a.shippingPanel == snapshot {
+				if sp, ok := updated.(*shippingPanelModel); ok {
+					a.shippingPanel = sp
 				}
-				return a, cmd
 			}
-			entry := a.prCache[a.shippingSession.ID]
-			items := feedbackItems(entryThreads(entry))
-			halfPane := a.height / 4
-			if halfPane < 1 {
-				halfPane = 1
-			}
-			switch msg.String() {
-			case "j", "down":
-				max := len(items) - 1
-				if max < 0 {
-					max = 0
-				}
-				if a.shippingFeedbackCursor < max {
-					a.shippingFeedbackCursor++
-				}
-				a.shippingDetailScroll = 0
-			case "k", "up":
-				if a.shippingFeedbackCursor > 0 {
-					a.shippingFeedbackCursor--
-				}
-				a.shippingDetailScroll = 0
-			case "pgdown", "ctrl+d":
-				a.shippingDetailScroll += halfPane
-				if a.shippingDetailScroll < 0 { // overflow guard only; render clamps to real max
-					a.shippingDetailScroll = 0
-				}
-			case "pgup", "ctrl+u":
-				a.shippingDetailScroll -= halfPane
-				if a.shippingDetailScroll < 0 {
-					a.shippingDetailScroll = 0
-				}
-			case "a":
-				if len(items) > 0 && a.shippingFeedbackCursor < len(items) {
-					key := feedbackItemKey(items[a.shippingFeedbackCursor])
-					a.setFeedbackVerdict(a.shippingSession.ID, key, feedbackApproved)
-				}
-			case "x":
-				if len(items) > 0 && a.shippingFeedbackCursor < len(items) {
-					key := feedbackItemKey(items[a.shippingFeedbackCursor])
-					a.setFeedbackVerdict(a.shippingSession.ID, key, feedbackDisagreed)
-				}
-			case "u":
-				if len(items) > 0 && a.shippingFeedbackCursor < len(items) {
-					key := feedbackItemKey(items[a.shippingFeedbackCursor])
-					a.setFeedbackVerdict(a.shippingSession.ID, key, feedbackNeutral)
-				}
-			case "n":
-				if len(items) > 0 && a.shippingFeedbackCursor < len(items) {
-					item := items[a.shippingFeedbackCursor]
-					key := feedbackItemKey(item)
-					existing := ""
-					if m := a.feedbackTriage[a.shippingSession.ID]; m != nil {
-						if e := m[key]; e != nil {
-							existing = e.Note
-						}
-					}
-					return a, a.feedbackNote.Open(key, existing)
-				}
-			case "esc":
-				a.dashboard.panelFocus = focusList
-				a.shippingSession = nil
-			case "t":
-				sess := a.shippingSession
-				a.shippingSession = nil
-				a.dashboard.panelFocus = focusList
-				if !a.openSessionInFocusLaunch(sess) {
-					a.setError("session has no agents to open")
-				}
-			case "p":
-				if entry != nil && entry.pr != nil && entry.pr.URL != "" {
-					if err := openURL(entry.pr.URL); err != nil {
-						a.setError(err.Error())
-					}
-				} else {
-					a.setError("no PR URL available")
-				}
-			case "m":
-				// Merge: gated on isMergeReady.
-				if !isMergeReady(entry) {
-					a.setError("not ready to merge — use M to force")
-					return a, nil
-				}
-				return a, a.mergePRCmd(a.shippingSession.ID)
-			case "M":
-				// Force merge: bypasses the isMergeReady gate AND the
-				// pre-merge mergeable-state recheck. State (open/closed/
-				// merged) is still verified — you cannot force-merge a PR
-				// that no longer exists or has already merged.
-				if entry == nil || entry.pr == nil {
-					a.setError("no PR found")
-					return a, nil
-				}
-				return a, a.forceMergePRCmd(a.shippingSession.ID)
-			case "r":
-				// Address feedback: synthesize a prompt and spawn a new agent.
-				return a.addressFeedback(a.shippingSession)
-			}
-			return a, nil
+			return a, cmd
 		}
 
 		// Pipeline view key handling (the only dashboard mode).
@@ -3170,6 +3073,7 @@ func (a *App) panelServices() PanelServices {
 			// Each panel reference is mutated; only the matching one will be
 			// non-nil at any given time so the others are no-ops.
 			a.reviewPanel = nil
+			a.shippingPanel = nil
 			a.dashboard.panelFocus = focusList
 		},
 		OpenInLaunch: func(sess *agent.Session) bool {
@@ -3219,6 +3123,9 @@ func (a *App) panelServices() PanelServices {
 		},
 		FetchReviewDiff:    func(sess *agent.Session) tea.Cmd { return a.fetchReviewDiffCmd(sess) },
 		prDraftInFlightFor: func(sessionID string) bool { return a.prDraftInFlight && a.prDraftSessionID == sessionID },
+		FeedbackTriage:     func(sessionID string) map[string]*feedbackTriageEntry { return a.feedbackTriage[sessionID] },
+		SetFeedbackVerdict: a.setFeedbackVerdict,
+		SetFeedbackNote:    a.setFeedbackNote,
 	}
 }
 
@@ -3490,9 +3397,7 @@ func (a *App) activateFocusCursor() (tea.Cmd, bool) {
 		a.reviewPanel.RefreshDiffViewport(a.panelServices())
 		return nil, true
 	case focusSectionShipping:
-		a.shippingSession = sess
-		a.shippingFeedbackCursor = 0
-		a.shippingDetailScroll = 0
+		a.shippingPanel = newShippingPanel(sess, a.width, a.height-1)
 		a.dashboard.panelFocus = focusShipping
 		return nil, true
 	}
@@ -3743,12 +3648,10 @@ func (a App) View() tea.View {
 			v.AltScreen = true
 			return v
 		}
-		if a.dashboard.panelFocus == focusShipping && a.shippingSession != nil {
-			entry := a.prCache[a.shippingSession.ID]
-			sessID := a.shippingSession.ID
-			panel := renderShippingPanel(a.shippingSession, entry, a.width, a.height, a.shippingFeedbackCursor, a.shippingDetailScroll, a.feedbackTriage[sessID])
-			if a.feedbackNote.Active() {
-				panel = lipgloss.Place(a.width, a.height, lipgloss.Center, lipgloss.Center, a.feedbackNote.View())
+		if a.dashboard.panelFocus == focusShipping && a.shippingPanel != nil {
+			panel := a.shippingPanel.View(a.panelServices())
+			if a.shippingPanel.NoteActive() {
+				panel = lipgloss.Place(a.width, a.height, lipgloss.Center, lipgloss.Center, a.shippingPanel.NoteView())
 			}
 			v := tea.NewView(panel)
 			v.AltScreen = true
@@ -4418,10 +4321,12 @@ func (a *App) setFeedbackNote(sessID, itemKey, note string) {
 	}
 }
 
-// addressFeedback synthesizes a prompt from failing CI checks and unresolved
-// review comments, spawns a new agent in the session's existing worktree, and
-// transitions the session back to LifecycleInProgress. The PR stays open.
-func (a *App) addressFeedback(sess *agent.Session) (tea.Model, tea.Cmd) {
+// handleShippingFeedbackRequest spawns a new agent in the session's existing
+// worktree, synthesised from failing CI checks and unresolved review
+// comments, and transitions the session back to LifecycleInProgress. The
+// PR stays open.
+func (a App) handleShippingFeedbackRequest(req shippingFeedbackRequestMsg) (tea.Model, tea.Cmd) {
+	sess := a.sessionByID(req.sessionID)
 	if sess == nil {
 		return a, nil
 	}
@@ -4437,10 +4342,6 @@ func (a *App) addressFeedback(sess *agent.Session) (tea.Model, tea.Cmd) {
 	}
 
 	entry := a.prCache[sess.ID]
-	// Cache may be a few seconds stale, but a merged/closed PR doesn't flip
-	// back to open — so any non-"open" state is grounds to refuse a respawn.
-	// Without this gate, pressing `r` after the PR was merged externally
-	// spawns a feedback-fixing agent on work that's already shipped.
 	if entry != nil && entry.pr != nil && entry.pr.State != "" && entry.pr.State != "open" {
 		a.setError(fmt.Sprintf("PR is %s; cannot address feedback on a closed/merged PR", entry.pr.State))
 		return a, nil
@@ -4468,7 +4369,7 @@ func (a *App) addressFeedback(sess *agent.Session) (tea.Model, tea.Cmd) {
 	}
 
 	sessID := sess.ID
-	a.shippingSession = nil
+	a.shippingPanel = nil
 	a.dashboard.panelFocus = focusList
 	delete(a.feedbackTriage, sessID)
 	return a, func() tea.Msg {
@@ -4641,7 +4542,7 @@ func fenceAsData(s string) string {
 // and user flags, then transitions the session back to LifecycleInProgress.
 // The reviewDiffCache entry is cleared so the next entry into review re-runs
 // the AI reviewer on the new commit history.
-func (a *App) handleReviewReworkRequest(req reviewReworkRequestMsg) (tea.Model, tea.Cmd) {
+func (a App) handleReviewReworkRequest(req reviewReworkRequestMsg) (tea.Model, tea.Cmd) {
 	sess := a.sessionByID(req.sessionID)
 	if sess == nil {
 		return a, nil

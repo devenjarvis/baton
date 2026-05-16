@@ -2925,7 +2925,7 @@ func TestActivateFocusCursor_Shipping_OpensShippingPanel(t *testing.T) {
 	if app.dashboard.panelFocus != focusShipping {
 		t.Fatalf("expected panelFocus=focusShipping, got %v", app.dashboard.panelFocus)
 	}
-	if app.shippingSession != sessS {
+	if app.shippingPanel == nil || app.shippingPanel.Session() != sessS {
 		t.Fatalf("expected shippingSession to be set to the selected session")
 	}
 }
@@ -2970,7 +2970,7 @@ func TestMergePRMsg_ClosesPanel(t *testing.T) {
 	mgr.AddSessionForTest(sess)
 
 	app := NewApp()
-	app.shippingSession = sess
+	app.shippingPanel = newShippingPanel(sess, app.width, app.height)
 	app.dashboard.panelFocus = focusShipping
 	app.managers[dir] = mgr
 	app.cfg = &config.Config{Repos: []config.Repo{{Path: dir}}}
@@ -2981,7 +2981,7 @@ func TestMergePRMsg_ClosesPanel(t *testing.T) {
 	if got.dashboard.panelFocus == focusShipping {
 		t.Error("shipping panel should close after successful merge")
 	}
-	if got.shippingSession != nil {
+	if got.shippingPanel != nil {
 		t.Error("shippingSession should be nil after merge")
 	}
 	if cmd == nil {
@@ -3014,7 +3014,7 @@ func TestPRPollMsg_ExternalMergeClosesPanelAndTransitions(t *testing.T) {
 	mgr.AddSessionForTest(sess)
 
 	app := NewApp()
-	app.shippingSession = sess
+	app.shippingPanel = newShippingPanel(sess, app.width, app.height)
 	app.dashboard.panelFocus = focusShipping
 	app.managers[dir] = mgr
 	app.cfg = &config.Config{Repos: []config.Repo{{Path: dir}}}
@@ -3029,7 +3029,7 @@ func TestPRPollMsg_ExternalMergeClosesPanelAndTransitions(t *testing.T) {
 	if got.dashboard.panelFocus == focusShipping {
 		t.Error("shipping panel should close when external merge is detected")
 	}
-	if got.shippingSession != nil {
+	if got.shippingPanel != nil {
 		t.Error("shippingSession should be nil after external merge")
 	}
 	if cmd == nil {
@@ -3061,7 +3061,7 @@ func TestPRPollMsg_ExternalCloseCleansSession(t *testing.T) {
 	mgr.AddSessionForTest(sess)
 
 	app := NewApp()
-	app.shippingSession = sess
+	app.shippingPanel = newShippingPanel(sess, app.width, app.height)
 	app.dashboard.panelFocus = focusShipping
 	app.managers[dir] = mgr
 	app.cfg = &config.Config{Repos: []config.Repo{{Path: dir}}}
@@ -3076,7 +3076,7 @@ func TestPRPollMsg_ExternalCloseCleansSession(t *testing.T) {
 	if got.dashboard.panelFocus == focusShipping {
 		t.Error("shipping panel should close when PR is closed")
 	}
-	if got.shippingSession != nil {
+	if got.shippingPanel != nil {
 		t.Error("shippingSession should be nil after PR close")
 	}
 	if cmd == nil {
@@ -3294,7 +3294,7 @@ func TestPRPollMsg_CompleteNotPromoted(t *testing.T) {
 func TestMergePRMsg_ErrorSetsError(t *testing.T) {
 	app := NewApp()
 	app.dashboard.panelFocus = focusShipping
-	app.shippingSession = agent.NewSessionForTest("s", "ship")
+	app.shippingPanel = newShippingPanel(agent.NewSessionForTest("s", "ship"), app.width, app.height)
 
 	model, _ := app.Update(mergePRMsg{sessionID: "s", err: errors.New("403 forbidden")})
 	got := model.(App)
@@ -3314,7 +3314,7 @@ func TestShippingPanel_MKeyGatedOnReady(t *testing.T) {
 	sess.SetLifecyclePhase(agent.LifecycleShipping)
 
 	app := NewApp()
-	app.shippingSession = sess
+	app.shippingPanel = newShippingPanel(sess, app.width, app.height)
 	app.dashboard.panelFocus = focusShipping
 	app.prCache = map[string]*prCacheEntry{
 		sess.ID: {pr: &github.PRState{Number: 1, MergeableState: "dirty"}},
@@ -4305,7 +4305,7 @@ func TestShippingPanel_CursorAndScrollKeys(t *testing.T) {
 	sess := agent.NewSessionForTest("ship-cs", "ship")
 	sess.SetLifecyclePhase(agent.LifecycleShipping)
 	app := NewApp()
-	app.shippingSession = sess
+	app.shippingPanel = newShippingPanel(sess, app.width, app.height)
 	app.dashboard.panelFocus = focusShipping
 	app.width = 120
 	app.height = 40
@@ -4321,47 +4321,47 @@ func TestShippingPanel_CursorAndScrollKeys(t *testing.T) {
 	// j moves cursor down.
 	m, _ := app.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
 	got := m.(App)
-	if got.shippingFeedbackCursor != 1 {
-		t.Errorf("after j: cursor = %d, want 1", got.shippingFeedbackCursor)
+	if got.shippingPanel.feedbackCursor != 1 {
+		t.Errorf("after j: cursor = %d, want 1", got.shippingPanel.feedbackCursor)
 	}
-	if got.shippingDetailScroll != 0 {
-		t.Errorf("after j: scroll should reset to 0, got %d", got.shippingDetailScroll)
+	if got.shippingPanel.detailScroll != 0 {
+		t.Errorf("after j: scroll should reset to 0, got %d", got.shippingPanel.detailScroll)
 	}
 
 	// j again.
 	m, _ = got.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
 	got = m.(App)
-	if got.shippingFeedbackCursor != 2 {
-		t.Errorf("after j×2: cursor = %d, want 2", got.shippingFeedbackCursor)
+	if got.shippingPanel.feedbackCursor != 2 {
+		t.Errorf("after j×2: cursor = %d, want 2", got.shippingPanel.feedbackCursor)
 	}
 
 	// j past end clamps.
 	m, _ = got.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
 	got = m.(App)
-	if got.shippingFeedbackCursor != 2 {
-		t.Errorf("j past end: cursor = %d, want 2 (clamped)", got.shippingFeedbackCursor)
+	if got.shippingPanel.feedbackCursor != 2 {
+		t.Errorf("j past end: cursor = %d, want 2 (clamped)", got.shippingPanel.feedbackCursor)
 	}
 
 	// k moves cursor up.
 	m, _ = got.Update(tea.KeyPressMsg{Code: 'k', Text: "k"})
 	got = m.(App)
-	if got.shippingFeedbackCursor != 1 {
-		t.Errorf("after k: cursor = %d, want 1", got.shippingFeedbackCursor)
+	if got.shippingPanel.feedbackCursor != 1 {
+		t.Errorf("after k: cursor = %d, want 1", got.shippingPanel.feedbackCursor)
 	}
 
 	// pgdn increments detail scroll.
-	got.shippingDetailScroll = 0
+	got.shippingPanel.detailScroll = 0
 	m, _ = got.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
 	got = m.(App)
-	if got.shippingDetailScroll <= 0 {
-		t.Errorf("pgdn: scroll = %d, want >0", got.shippingDetailScroll)
+	if got.shippingPanel.detailScroll <= 0 {
+		t.Errorf("pgdn: scroll = %d, want >0", got.shippingPanel.detailScroll)
 	}
 
 	// j resets detail scroll to 0.
 	m, _ = got.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
 	got = m.(App)
-	if got.shippingDetailScroll != 0 {
-		t.Errorf("j after scroll: scroll should reset to 0, got %d", got.shippingDetailScroll)
+	if got.shippingPanel.detailScroll != 0 {
+		t.Errorf("j after scroll: scroll should reset to 0, got %d", got.shippingPanel.detailScroll)
 	}
 }
 
@@ -4369,7 +4369,7 @@ func TestShippingPanel_VerdictKeys(t *testing.T) {
 	sess := agent.NewSessionForTest("ship-v", "ship")
 	sess.SetLifecyclePhase(agent.LifecycleShipping)
 	app := NewApp()
-	app.shippingSession = sess
+	app.shippingPanel = newShippingPanel(sess, app.width, app.height)
 	app.dashboard.panelFocus = focusShipping
 	app.width = 120
 	app.height = 40
@@ -4420,7 +4420,7 @@ func TestAddressFeedback_ClearsTriage(t *testing.T) {
 	mgr.AddSessionForTest(sess)
 
 	app := NewApp()
-	app.shippingSession = sess
+	app.shippingPanel = newShippingPanel(sess, app.width, app.height)
 	app.dashboard.panelFocus = focusShipping
 	app.managers[dir] = mgr
 	app.cfg = &config.Config{Repos: []config.Repo{{Path: dir}}}
@@ -4439,17 +4439,16 @@ func TestAddressFeedback_ClearsTriage(t *testing.T) {
 		"thread:alice": {Verdict: feedbackDisagreed, Note: "n/a"},
 	}
 
-	// Press 'r' → dispatches addressFeedback, which should clear triage.
-	// addressFeedback uses pointer receiver so may return *App — handle both.
-	model, _ := app.Update(tea.KeyPressMsg{Code: 'r', Text: "r"})
-	var gotApp App
-	switch v := model.(type) {
-	case App:
-		gotApp = v
-	case *App:
-		gotApp = *v
-	default:
-		t.Fatalf("unexpected model type %T", model)
+	// Press 'r' → panel emits shippingFeedbackRequestMsg → App handles it
+	// (clears triage, spawns agent). The cmd dispatch must run for state
+	// to settle, so execute the cmd and feed the message back through Update.
+	model, cmd := app.Update(tea.KeyPressMsg{Code: 'r', Text: "r"})
+	gotApp := model.(App)
+	if cmd != nil {
+		if msg := cmd(); msg != nil {
+			model, _ = gotApp.Update(msg)
+			gotApp = model.(App)
+		}
 	}
 
 	if m := gotApp.feedbackTriage[sess.ID]; len(m) != 0 {
@@ -4481,7 +4480,7 @@ func TestAddressFeedback_RefusesOnMergedPR(t *testing.T) {
 			mgr.AddSessionForTest(sess)
 
 			app := NewApp()
-			app.shippingSession = sess
+			app.shippingPanel = newShippingPanel(sess, app.width, app.height)
 			app.dashboard.panelFocus = focusShipping
 			app.managers[dir] = mgr
 			app.cfg = &config.Config{Repos: []config.Repo{{Path: dir}}}
@@ -4497,15 +4496,13 @@ func TestAddressFeedback_RefusesOnMergedPR(t *testing.T) {
 			}
 
 			before := sess.LifecyclePhase()
-			model, _ := app.Update(tea.KeyPressMsg{Code: 'r', Text: "r"})
-			var gotApp App
-			switch v := model.(type) {
-			case App:
-				gotApp = v
-			case *App:
-				gotApp = *v
-			default:
-				t.Fatalf("unexpected model type %T", model)
+			model, cmd := app.Update(tea.KeyPressMsg{Code: 'r', Text: "r"})
+			gotApp := model.(App)
+			if cmd != nil {
+				if msg := cmd(); msg != nil {
+					model, _ = gotApp.Update(msg)
+					gotApp = model.(App)
+				}
 			}
 
 			if gotApp.err == "" {

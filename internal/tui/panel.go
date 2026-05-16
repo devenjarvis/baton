@@ -66,4 +66,11 @@ type PanelServices struct {
 	// flight for the given session ID. The review panel uses this to render
 	// the "Drafting PR…" footer hint.
 	prDraftInFlightFor func(sessionID string) bool
+
+	// Shipping-panel feedback triage state. Reads return the live map (or
+	// nil); the setters lazily allocate and apply the same cleanup rules as
+	// the original App methods (neutral+empty -> delete entry).
+	FeedbackTriage     func(sessionID string) map[string]*feedbackTriageEntry
+	SetFeedbackVerdict func(sessionID, itemKey string, v feedbackVerdict)
+	SetFeedbackNote    func(sessionID, itemKey, note string)
 }
