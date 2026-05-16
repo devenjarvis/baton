@@ -403,6 +403,35 @@ func (d dashboardModel) buildingSessions() []listItem {
 	return result
 }
 
+// sectionItems returns the listItem slice that backs the given fullscreen-focus
+// section. The panic case enforces the focusSection enum invariant: a new
+// section added without updating this switch fails loudly at the first call
+// rather than silently rendering empty.
+func (d dashboardModel) sectionItems(s focusSection) []listItem {
+	switch s {
+	case focusSectionPlanning:
+		return d.planningSessions()
+	case focusSectionBuilding:
+		return d.buildingSessions()
+	case focusSectionReview:
+		return d.reviewQueueSessions()
+	case focusSectionShipping:
+		return d.shippingSessions()
+	}
+	panic(fmt.Sprintf("dashboardModel.sectionItems: unknown focusSection %d", s))
+}
+
+// sectionCounts returns the number of rows in each fullscreen-focus section,
+// indexed by focusSection. Used by FocusedCursor navigation methods.
+func (d dashboardModel) sectionCounts() [4]int {
+	return [4]int{
+		focusSectionPlanning: len(d.planningSessions()),
+		focusSectionBuilding: len(d.buildingSessions()),
+		focusSectionReview:   len(d.reviewQueueSessions()),
+		focusSectionShipping: len(d.shippingSessions()),
+	}
+}
+
 // renderCardProgressBar returns a progress bar + muted "done/total" suffix
 // right-padded to exactly width display cells. Returns "" when total == 0.
 // At 100% the bar is colored ColorSuccess; otherwise it uses primary.

@@ -183,13 +183,9 @@ type App struct {
 	sessionStart            time.Time // per-block work timer; reset on each break completion
 	lastReviewAt            time.Time
 	agentLimitModalActive   bool
-	focusSessionMinutes     int          // cached from resolved global settings
-	focusBreakMinutes       int          // cached from resolved global settings
-	focusPlanningIdx        int          // index into planningSessions()
-	focusBuildingIdx        int          // index into buildingSessions()
-	focusReviewIdx          int          // index into reviewQueueSessions()
-	focusShippingIdx        int          // index into shippingSessions()
-	focusCursorSection      focusSection // which section the pipeline cursor is on
+	focusSessionMinutes     int           // cached from resolved global settings
+	focusBreakMinutes       int           // cached from resolved global settings
+	cursor                  FocusedCursor // pipeline cursor: section + per-section indices
 	focusLaunchAgent        *agent.Agent
 	focusLaunchSession      *agent.Session
 	focusBacklogWarning     bool // first n at backlog limit shows warning; second proceeds
@@ -256,6 +252,7 @@ func NewApp() App {
 	return App{
 		view:                  ViewDashboard,
 		dashboard:             newDashboardModel(),
+		cursor:                NewFocusedCursor(),
 		managers:              make(map[string]*agent.Manager),
 		repoSettings:          make(map[string]*config.RepoSettings),
 		resolvedCache:         make(map[string]config.ResolvedSettings),
@@ -388,7 +385,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.dashboard.sidebarWidth = resolved.SidebarWidth
 		a.focusSessionMinutes = resolved.FocusSessionMinutes
 		a.focusBreakMinutes = resolved.FocusBreakMinutes
-		a.focusCursorSection = focusSectionPlanning
+		a.cursor.SetSection(focusSectionPlanning)
 		// Default activeRepo to the first registered repo so the pipeline
 		// header shows "repo: <name>" and workflow keys ('n', 'a', 'o') target
 		// a known repo on a fresh dashboard.
@@ -883,10 +880,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if item.session != nil {
 					Sections:
 						for _, section := range focusSectionsInOrder() {
-							for idx, s := range a.focusSectionItems(section) {
+							for idx, s := range a.dashboard.sectionItems(section) {
 								if s.session == item.session {
-									*a.focusSectionIdx(section) = idx
-									a.focusCursorSection = section
+									a.cursor.JumpTo(section, idx)
 									a.syncFocusCursorToDashboard()
 									break Sections
 								}
@@ -2072,11 +2068,11 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.dashboard.panelFocus != focusReview && a.dashboard.panelFocus != focusShipping {
 			switch msg.String() {
 			case "up", "k":
-				a.moveFocusCursorUp()
+				a.cursor.MoveUp(a.dashboard.sectionCounts())
 				a.syncFocusCursorToDashboard()
 				return a, nil
 			case "down", "j":
-				a.moveFocusCursorDown()
+				a.cursor.MoveDown(a.dashboard.sectionCounts())
 				a.syncFocusCursorToDashboard()
 				return a, nil
 			case "space", "enter":
@@ -2106,16 +2102,16 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// to advance is a deliberate action, while taking a break is
 				// the catch-all everywhere else — so the cursor location is
 				// the disambiguator the user already has at hand.
-				if !a.focusBreakMode && a.focusCursorSection == focusSectionPlanning {
+				if !a.focusBreakMode && a.cursor.Section() == focusSectionPlanning {
 					planning := a.dashboard.planningSessions()
 					if len(planning) > 0 {
-						idx := a.focusPlanningIdx
+						idx := a.cursor.Index(focusSectionPlanning)
 						if idx >= len(planning) {
 							idx = len(planning) - 1
 						}
 						if sess := planning[idx].session; sess != nil {
 							sess.SetLifecyclePhase(agent.LifecycleInProgress)
-							a.clampFocusCursor()
+							a.cursor.Clamp(a.dashboard.sectionCounts())
 							a.syncFocusCursorToDashboard()
 						}
 					}
@@ -2133,16 +2129,16 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// any reviewable session regardless of phase, and pressing m
 				// shouldn't surprise the user with an error in that case.
 				var sess *agent.Session
-				switch a.focusCursorSection {
+				switch a.cursor.Section() {
 				case focusSectionPlanning:
 					planning := a.dashboard.planningSessions()
-					if a.focusPlanningIdx < len(planning) {
-						sess = planning[a.focusPlanningIdx].session
+					if pi := a.cursor.Index(focusSectionPlanning); pi < len(planning) {
+						sess = planning[pi].session
 					}
 				case focusSectionBuilding:
 					building := a.dashboard.buildingSessions()
-					if a.focusBuildingIdx < len(building) {
-						sess = building[a.focusBuildingIdx].session
+					if bi := a.cursor.Index(focusSectionBuilding); bi < len(building) {
+						sess = building[bi].session
 					}
 				default:
 					a.setError("nothing to mark — cursor isn't on a Planning or Building session")
@@ -2164,7 +2160,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return a, nil
 				}
 				sess.SetLifecyclePhase(agent.LifecycleReadyForReview)
-				a.focusReviewIdx = 0
+				a.cursor.SetIndex(focusSectionReview, 0)
 				return a, a.fetchReviewDiffCmd(sess)
 			case "r":
 				reviewItems := a.dashboard.reviewQueueSessions()
@@ -2172,7 +2168,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.setError("review queue is empty — press m on a finished session first")
 					return a, nil
 				}
-				idx := a.focusReviewIdx
+				idx := a.cursor.Index(focusSectionReview)
 				if idx >= len(reviewItems) {
 					idx = len(reviewItems) - 1
 				}
@@ -2767,7 +2763,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// is right-aligned on the card; the X-column check below narrows the
 		// hit region without needing per-row Y granularity from pipelineHitTest.
 		if section == focusSectionReview || section == focusSectionShipping {
-			items := a.focusSectionItems(section)
+			items := a.dashboard.sectionItems(section)
 			if idx < len(items) {
 				sess := items[idx].session
 				if entry := a.prCache[sess.ID]; entry != nil && entry.pr != nil && entry.pr.URL != "" {
@@ -2797,8 +2793,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.lastPipelineClickSec = section
 		a.lastPipelineClickIdx = idx
 
-		a.focusCursorSection = section
-		*a.focusSectionIdx(section) = idx
+		a.cursor.JumpTo(section, idx)
 		a.syncFocusCursorToDashboard()
 
 		if isDoubleClick {
@@ -3402,11 +3397,11 @@ func (a *App) refreshAgentList() {
 	a.dashboard.focusBreakAnimFrame = a.focusBreakAnimFrame
 	a.dashboard.focusBreakShortWarning = a.focusBreakShortWarning
 	a.dashboard.focusBreakTimerUp = a.focusBreakTimerUp
-	a.dashboard.focusPlanningIdx = a.focusPlanningIdx
-	a.dashboard.focusBuildingIdx = a.focusBuildingIdx
-	a.dashboard.focusReviewIdx = a.focusReviewIdx
-	a.dashboard.focusShippingIdx = a.focusShippingIdx
-	a.dashboard.focusCursorSection = a.focusCursorSection
+	a.dashboard.focusPlanningIdx = a.cursor.Index(focusSectionPlanning)
+	a.dashboard.focusBuildingIdx = a.cursor.Index(focusSectionBuilding)
+	a.dashboard.focusReviewIdx = a.cursor.Index(focusSectionReview)
+	a.dashboard.focusShippingIdx = a.cursor.Index(focusSectionShipping)
+	a.dashboard.focusCursorSection = a.cursor.Section()
 	a.dashboard.prDraftSessionID = a.prDraftSessionID
 	a.dashboard.activeRepoName = a.activeRepoDisplayName()
 	a.dashboard.activeRepoPath = a.activeRepo
@@ -3501,54 +3496,7 @@ func (a *App) refreshAgentList() {
 			}
 		}
 	}
-	a.clampFocusCursor()
-}
-
-// focusSectionCounts returns the number of rows in each fullscreen-focus
-// section, indexed by focusSection. Order matches focusSectionsInOrder().
-func (a *App) focusSectionCounts() [4]int {
-	return [4]int{
-		focusSectionPlanning: len(a.dashboard.planningSessions()),
-		focusSectionBuilding: len(a.dashboard.buildingSessions()),
-		focusSectionReview:   len(a.dashboard.reviewQueueSessions()),
-		focusSectionShipping: len(a.dashboard.shippingSessions()),
-	}
-}
-
-// focusSectionIdx returns a pointer to the per-section cursor index field for
-// the given section, so navigation/clamp logic can move and bound-check them
-// without a fan-out switch in every caller. Panics on an unknown section so a
-// future focusSection constant added without updating this switch surfaces as
-// a clear test failure rather than silently corrupting focusBuildingIdx.
-func (a *App) focusSectionIdx(s focusSection) *int {
-	switch s {
-	case focusSectionPlanning:
-		return &a.focusPlanningIdx
-	case focusSectionBuilding:
-		return &a.focusBuildingIdx
-	case focusSectionReview:
-		return &a.focusReviewIdx
-	case focusSectionShipping:
-		return &a.focusShippingIdx
-	}
-	panic(fmt.Sprintf("focusSectionIdx: unknown focusSection %d", s))
-}
-
-// focusSectionItems returns the listItem slice that backs the given section.
-// Panics on an unknown section, matching focusSectionIdx, so a missing case
-// fails fast in tests instead of silently rendering an empty section.
-func (a *App) focusSectionItems(s focusSection) []listItem {
-	switch s {
-	case focusSectionPlanning:
-		return a.dashboard.planningSessions()
-	case focusSectionBuilding:
-		return a.dashboard.buildingSessions()
-	case focusSectionReview:
-		return a.dashboard.reviewQueueSessions()
-	case focusSectionShipping:
-		return a.dashboard.shippingSessions()
-	}
-	panic(fmt.Sprintf("focusSectionItems: unknown focusSection %d", s))
+	a.cursor.Clamp(a.dashboard.sectionCounts())
 }
 
 // pipelineHitTest maps a mouse-click Y coordinate (relative to the dashboard
@@ -3586,26 +3534,26 @@ func (a *App) pipelineHitTest(dashboardContentY int) (focusSection, int, bool) {
 		}
 	}
 
-	cursor := headerRows + sepRows + pipelineRows + blankRows
+	rowCursor := headerRows + sepRows + pipelineRows + blankRows
 	for _, section := range focusSectionsInOrder() {
-		items := a.focusSectionItems(section)
+		items := a.dashboard.sectionItems(section)
 		if len(items) == 0 {
 			continue
 		}
-		cursor += labelRows
+		rowCursor += labelRows
 		for i := range items {
 			rowH := rowsPerItem(section)
-			start := cursor
+			start := rowCursor
 			end := start + rowH
 			if dashboardContentY >= start && dashboardContentY < end {
 				return section, i, true
 			}
-			cursor = end
+			rowCursor = end
 			if i < len(items)-1 {
-				cursor += blankRows
+				rowCursor += blankRows
 			}
 		}
-		cursor += blankRows
+		rowCursor += blankRows
 	}
 	return focusSectionPlanning, 0, false
 }
@@ -3615,11 +3563,12 @@ func (a *App) pipelineHitTest(dashboardContentY int) (focusSection, int, bool) {
 // this rather than dashboard.selectedSession() because the pipeline addresses
 // sessions by section + index, not by a `selected` row in the items list.
 func (a *App) cursorSelectedSession() *agent.Session {
-	items := a.focusSectionItems(a.focusCursorSection)
+	section := a.cursor.Section()
+	items := a.dashboard.sectionItems(section)
 	if len(items) == 0 {
 		return nil
 	}
-	idx := *a.focusSectionIdx(a.focusCursorSection)
+	idx := a.cursor.Index(section)
 	if idx < 0 || idx >= len(items) {
 		idx = 0
 	}
@@ -3644,107 +3593,15 @@ func (a *App) cursorSelectedRepoPath() string {
 	return a.activeRepo
 }
 
-// clampFocusCursor keeps the per-section indices and the cursor section in
-// valid ranges as the underlying lists change (sessions transition phases, etc.).
-// When the cursor's current section becomes empty, it falls through to the next
-// non-empty section in render order so the cursor stays on a visible row.
-func (a *App) clampFocusCursor() {
-	counts := a.focusSectionCounts()
-
-	clamp := func(idx, n int) int {
-		if n <= 0 {
-			return 0
-		}
-		if idx >= n {
-			return n - 1
-		}
-		if idx < 0 {
-			return 0
-		}
-		return idx
-	}
-	a.focusPlanningIdx = clamp(a.focusPlanningIdx, counts[focusSectionPlanning])
-	a.focusBuildingIdx = clamp(a.focusBuildingIdx, counts[focusSectionBuilding])
-	a.focusReviewIdx = clamp(a.focusReviewIdx, counts[focusSectionReview])
-	a.focusShippingIdx = clamp(a.focusShippingIdx, counts[focusSectionShipping])
-
-	if counts[a.focusCursorSection] > 0 {
-		return
-	}
-	for _, s := range focusSectionsInOrder() {
-		if counts[s] > 0 {
-			a.focusCursorSection = s
-			return
-		}
-	}
-	a.focusCursorSection = focusSectionPlanning
-}
-
-// moveFocusCursorUp moves the fullscreen-focus cursor up one row. When at the
-// top of the current section, it transitions to the previous non-empty section.
-func (a *App) moveFocusCursorUp() {
-	idx := a.focusSectionIdx(a.focusCursorSection)
-	if *idx > 0 {
-		*idx--
-		return
-	}
-	// Walk render-order sections backwards from the current one; jump to the
-	// last row of the first non-empty earlier section.
-	order := focusSectionsInOrder()
-	cur := -1
-	for i, s := range order {
-		if s == a.focusCursorSection {
-			cur = i
-			break
-		}
-	}
-	counts := a.focusSectionCounts()
-	for i := cur - 1; i >= 0; i-- {
-		s := order[i]
-		if counts[s] > 0 {
-			a.focusCursorSection = s
-			*a.focusSectionIdx(s) = counts[s] - 1
-			return
-		}
-	}
-}
-
-// moveFocusCursorDown moves the fullscreen-focus cursor down one row. When at
-// the bottom of the current section, it transitions to the next non-empty section.
-func (a *App) moveFocusCursorDown() {
-	counts := a.focusSectionCounts()
-	idx := a.focusSectionIdx(a.focusCursorSection)
-	if *idx < counts[a.focusCursorSection]-1 {
-		*idx++
-		return
-	}
-	order := focusSectionsInOrder()
-	cur := -1
-	for i, s := range order {
-		if s == a.focusCursorSection {
-			cur = i
-			break
-		}
-	}
-	for i := cur + 1; i < len(order); i++ {
-		s := order[i]
-		if counts[s] > 0 {
-			a.focusCursorSection = s
-			*a.focusSectionIdx(s) = 0
-			return
-		}
-	}
-}
-
 // syncFocusCursorToDashboard mirrors the cursor-related App fields onto the
 // dashboard model so the next render reflects navigation immediately, without
 // waiting for the 100ms tick that drives refreshAgentList.
 func (a *App) syncFocusCursorToDashboard() {
-	a.dashboard.focusPlanningIdx = a.focusPlanningIdx
-	a.dashboard.focusBuildingIdx = a.focusBuildingIdx
-	a.dashboard.focusReviewIdx = a.focusReviewIdx
-	a.dashboard.focusShippingIdx = a.focusShippingIdx
-	a.dashboard.focusCursorSection = a.focusCursorSection
+	a.dashboard.focusPlanningIdx = a.cursor.Index(focusSectionPlanning)
+	a.dashboard.focusBuildingIdx = a.cursor.Index(focusSectionBuilding)
+	a.dashboard.focusReviewIdx = a.cursor.Index(focusSectionReview)
+	a.dashboard.focusShippingIdx = a.cursor.Index(focusSectionShipping)
+	a.dashboard.focusCursorSection = a.cursor.Section()
 	a.dashboard.prDraftSessionID = a.prDraftSessionID
 }
 
@@ -3755,17 +3612,18 @@ func (a *App) syncFocusCursorToDashboard() {
 // terminal so the user can run gh manually. Returns ok=false when the cursor's
 // section has no actionable row.
 func (a *App) activateFocusCursor() (tea.Cmd, bool) {
-	items := a.focusSectionItems(a.focusCursorSection)
+	section := a.cursor.Section()
+	items := a.dashboard.sectionItems(section)
 	if len(items) == 0 {
 		return nil, false
 	}
-	idx := *a.focusSectionIdx(a.focusCursorSection)
+	idx := a.cursor.Index(section)
 	if idx >= len(items) {
 		idx = len(items) - 1
 	}
 	sess := items[idx].session
 
-	switch a.focusCursorSection {
+	switch section {
 	case focusSectionPlanning:
 		// Planning rows open the plan editor — there is no agent yet to drop
 		// into a focusLaunch terminal. Drafting sessions also live in the
@@ -3919,8 +3777,7 @@ func (a *App) submitPromptModal(msg promptModalSubmitMsg) (tea.Model, tea.Cmd) {
 	// auto-opens if the planner raises a clarifying question.
 	for idx, item := range a.dashboard.planningSessions() {
 		if item.session != nil && item.session.ID == sess.ID {
-			a.focusPlanningIdx = idx
-			a.focusCursorSection = focusSectionPlanning
+			a.cursor.JumpTo(focusSectionPlanning, idx)
 			a.syncFocusCursorToDashboard()
 			break
 		}
@@ -4082,7 +3939,7 @@ func (a App) View() tea.View {
 				} else {
 					hints = []keyHint{{key: "b", desc: "exit early"}}
 				}
-			} else if a.focusCursorSection != focusSectionPlanning && a.focusSessionMinutes > 0 {
+			} else if a.cursor.Section() != focusSectionPlanning && a.focusSessionMinutes > 0 {
 				// Copy first — `hints := dashboardHints` aliases the package
 				// var's backing array, and we'd otherwise mutate it globally.
 				hints = append([]keyHint(nil), hints...)
