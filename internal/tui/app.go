@@ -169,33 +169,20 @@ type App struct {
 	lastKnownStatus map[string]agent.Status
 	audioPlayer     *audio.Player
 
-	// Wellness state.
-	appStart               time.Time // set once at init; never reset; used for total session duration in wellness log
-	sessionStart           time.Time // per-block work timer; reset on each break completion
-	lastReviewAt           time.Time
-	agentLimitModalActive  bool
-	focusSessionMinutes    int           // cached from resolved global settings
-	focusBreakMinutes      int           // cached from resolved global settings
-	cursor                 FocusedCursor // pipeline cursor: section + per-section indices
-	focusLaunchAgent       *agent.Agent
-	focusLaunchSession     *agent.Session
-	focusBacklogWarning    bool // first n at backlog limit shows warning; second proceeds
-	focusBreakMode         bool
-	focusBreakStart        time.Time // wall-clock; monotonic stripped so suspend counts toward elapsed
-	focusBlockCount        int
-	focusBreakShortWarning bool
-	focusBreakTimerUp      bool // break duration elapsed; waiting on user to resume
-	focusBreakAnimFrame    int
-	reviewDiffCache        map[string]*reviewDiffEntry                // keyed by session ID; lifetime exceeds panel
-	reviewPanel            *reviewPanelModel                          // non-nil while panelFocus == focusReview
-	shippingPanel          *shippingPanelModel                        // non-nil while panelFocus == focusShipping
-	feedbackTriage         map[string]map[string]*feedbackTriageEntry // keyed by sessionID → itemKey
-	planEditor             *planEditorModel                           // non-nil while panelFocus == focusPlanEditor
-	promptModal            promptModalModel                           // overlay for plan-first new-session prompt
+	// wellness owns the focus-block timer, break overlay, and counters
+	// flushed to the wellness log on quit. See wellness.go.
+	wellness wellnessState
 
-	// Wellness counters (written to log on quit).
-	agentsCreatedCount   int
-	sessionsCreatedCount int
+	agentLimitModalActive bool
+	cursor                FocusedCursor // pipeline cursor: section + per-section indices
+	focusLaunchAgent      *agent.Agent
+	focusLaunchSession    *agent.Session
+	reviewDiffCache       map[string]*reviewDiffEntry                // keyed by session ID; lifetime exceeds panel
+	reviewPanel           *reviewPanelModel                          // non-nil while panelFocus == focusReview
+	shippingPanel         *shippingPanelModel                        // non-nil while panelFocus == focusShipping
+	feedbackTriage        map[string]map[string]*feedbackTriageEntry // keyed by sessionID → itemKey
+	planEditor            *planEditorModel                           // non-nil while panelFocus == focusPlanEditor
+	promptModal           promptModalModel                           // overlay for plan-first new-session prompt
 
 	// closingAgents and closingSessions track in-flight kill requests so the
 	// dashboard can render a "closing…" indicator while the async teardown runs.
@@ -241,6 +228,7 @@ func NewApp() App {
 		dashboard:       newDashboardModel(),
 		cursor:          NewFocusedCursor(),
 		keys:            DefaultKeyMap(),
+		wellness:        newWellnessState(),
 		managers:        make(map[string]*agent.Manager),
 		repoSettings:    make(map[string]*config.RepoSettings),
 		resolvedCache:   make(map[string]config.ResolvedSettings),
@@ -638,20 +626,20 @@ func (a *App) dashboardTopY() int {
 func (a *App) refreshAgentList() {
 	a.dashboard.closingAgents = a.closingAgents
 	a.dashboard.closingSessions = a.closingSessions
-	a.dashboard.sessionElapsed = time.Since(a.sessionStart)
-	a.dashboard.lastReviewAt = a.lastReviewAt
-	a.dashboard.focusSessionMinutes = a.focusSessionMinutes
-	a.dashboard.focusBreakMode = a.focusBreakMode
-	if a.focusBreakMode {
-		a.dashboard.focusBreakElapsed = time.Since(a.focusBreakStart)
+	a.dashboard.sessionElapsed = time.Since(a.wellness.sessionStart)
+	a.dashboard.lastReviewAt = a.wellness.lastReviewAt
+	a.dashboard.focusSessionMinutes = a.wellness.focusSessionMinutes
+	a.dashboard.focusBreakMode = a.wellness.focusBreakMode
+	if a.wellness.focusBreakMode {
+		a.dashboard.focusBreakElapsed = time.Since(a.wellness.focusBreakStart)
 	} else {
 		a.dashboard.focusBreakElapsed = 0
 	}
-	a.dashboard.focusBlockCount = a.focusBlockCount
-	a.dashboard.focusBreakMinutes = a.focusBreakMinutes
-	a.dashboard.focusBreakAnimFrame = a.focusBreakAnimFrame
-	a.dashboard.focusBreakShortWarning = a.focusBreakShortWarning
-	a.dashboard.focusBreakTimerUp = a.focusBreakTimerUp
+	a.dashboard.focusBlockCount = a.wellness.focusBlockCount
+	a.dashboard.focusBreakMinutes = a.wellness.focusBreakMinutes
+	a.dashboard.focusBreakAnimFrame = a.wellness.focusBreakAnimFrame
+	a.dashboard.focusBreakShortWarning = a.wellness.focusBreakShortWarning
+	a.dashboard.focusBreakTimerUp = a.wellness.focusBreakTimerUp
 	a.dashboard.cursor = a.cursor
 	a.dashboard.prDraftSessionID = a.prDraftSessionID
 	a.dashboard.activeRepoName = a.activeRepoDisplayName()
@@ -974,13 +962,13 @@ func (a App) View() tea.View {
 		// wellness timer is enabled, swap the desc on the static `b` entry to
 		// "break". Skip in focusLaunch: b routes to the agent terminal there.
 		if a.dashboard.panelFocus != focusLaunch {
-			if a.focusBreakMode {
-				if a.focusBreakTimerUp {
+			if a.wellness.focusBreakMode {
+				if a.wellness.focusBreakTimerUp {
 					hints = []keyHint{{key: "b", desc: "resume focus"}}
 				} else {
 					hints = []keyHint{{key: "b", desc: "exit early"}}
 				}
-			} else if a.cursor.Section() != focusSectionPlanning && a.focusSessionMinutes > 0 {
+			} else if a.cursor.Section() != focusSectionPlanning && a.wellness.focusSessionMinutes > 0 {
 				// Copy first — `hints := dashboardHints` aliases the package
 				// var's backing array, and we'd otherwise mutate it globally.
 				hints = append([]keyHint(nil), hints...)
@@ -1257,13 +1245,13 @@ func (a *App) writeWellnessLog() {
 		return
 	}
 
-	elapsed := time.Since(a.appStart)
+	elapsed := time.Since(a.wellness.appStart)
 	entry := wellnessLogEntry{
 		Date:            time.Now().UTC().Format(time.RFC3339),
 		DurationMin:     int(elapsed.Minutes()),
-		AgentsCreated:   a.agentsCreatedCount,
-		SessionsCreated: a.sessionsCreatedCount,
-		BlocksCompleted: a.focusBlockCount,
+		AgentsCreated:   a.wellness.agentsCreatedCount,
+		SessionsCreated: a.wellness.sessionsCreatedCount,
+		BlocksCompleted: a.wellness.focusBlockCount,
 	}
 	data, err := json.Marshal(entry)
 	if err != nil {

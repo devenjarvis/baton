@@ -59,8 +59,8 @@ func (a App) handleInit(msg initAppMsg) (tea.Model, tea.Cmd) {
 	}
 	a.cfg = msg.cfg
 	now := time.Now()
-	a.appStart = now
-	a.sessionStart = now
+	a.wellness.appStart = now
+	a.wellness.sessionStart = now
 
 	// Load global settings and run one-time migration.
 	globalSettings, err := config.LoadGlobalSettings()
@@ -72,8 +72,8 @@ func (a App) handleInit(msg initAppMsg) (tea.Model, tea.Cmd) {
 	}
 	resolved := config.Resolve(a.globalSettings, nil)
 	a.dashboard.sidebarWidth = resolved.SidebarWidth
-	a.focusSessionMinutes = resolved.FocusSessionMinutes
-	a.focusBreakMinutes = resolved.FocusBreakMinutes
+	a.wellness.focusSessionMinutes = resolved.FocusSessionMinutes
+	a.wellness.focusBreakMinutes = resolved.FocusBreakMinutes
 	a.cursor.SetSection(focusSectionPlanning)
 	// Default activeRepo to the first registered repo so the pipeline
 	// header shows "repo: <name>" and workflow keys ('n', 'a', 'o') target
@@ -209,13 +209,13 @@ func (a App) handleTick(msg tickMsg) (tea.Model, tea.Cmd) {
 	// "ready" state and wait for the user to explicitly resume. This
 	// avoids dropping the user back into focus mode while they're still
 	// away from the keyboard.
-	if a.focusBreakMode {
-		a.focusBreakAnimFrame++
-		if a.focusBreakMinutes > 0 && !a.focusBreakTimerUp &&
-			time.Since(a.focusBreakStart) >= time.Duration(a.focusBreakMinutes)*time.Minute {
-			a.focusBreakTimerUp = true
-			a.focusBreakShortWarning = false
-			a.focusBreakAnimFrame = 0
+	if a.wellness.focusBreakMode {
+		a.wellness.focusBreakAnimFrame++
+		if a.wellness.focusBreakMinutes > 0 && !a.wellness.focusBreakTimerUp &&
+			time.Since(a.wellness.focusBreakStart) >= time.Duration(a.wellness.focusBreakMinutes)*time.Minute {
+			a.wellness.focusBreakTimerUp = true
+			a.wellness.focusBreakShortWarning = false
+			a.wellness.focusBreakAnimFrame = 0
 			// One unmistakable cue when the break ends. Played even in
 			// focus mode (the normal suppression path), since the whole
 			// point is to grab attention.
@@ -223,9 +223,9 @@ func (a App) handleTick(msg tickMsg) (tea.Model, tea.Cmd) {
 				a.audioPlayer.Play()
 			}
 		}
-	} else if a.focusSessionMinutes > 0 &&
+	} else if a.wellness.focusSessionMinutes > 0 &&
 		a.dashboard.panelFocus == focusList &&
-		time.Since(a.sessionStart) >= time.Duration(a.focusSessionMinutes)*time.Minute {
+		time.Since(a.wellness.sessionStart) >= time.Duration(a.wellness.focusSessionMinutes)*time.Minute {
 		// Auto-enter break when the work block elapses. The asymmetry
 		// with break-end (which waits for explicit `b`) is intentional:
 		// end-of-block SHOULD interrupt the user — that's the whole
@@ -239,11 +239,11 @@ func (a App) handleTick(msg tickMsg) (tea.Model, tea.Cmd) {
 		// the overlay during a merge would hide the merge result behind
 		// the break screen; deferring until the user is back on the
 		// pipeline keeps interrupts at safe checkpoints.
-		a.focusBreakMode = true
-		a.focusBreakStart = time.Now().Round(0)
-		a.focusBreakShortWarning = false
-		a.focusBreakTimerUp = false
-		a.focusBreakAnimFrame = 0
+		a.wellness.focusBreakMode = true
+		a.wellness.focusBreakStart = time.Now().Round(0)
+		a.wellness.focusBreakShortWarning = false
+		a.wellness.focusBreakTimerUp = false
+		a.wellness.focusBreakAnimFrame = 0
 		// Bypass the dashboard chime suppression — same rationale as
 		// the break-end branch above.
 		if a.audioPlayer != nil {
@@ -461,9 +461,9 @@ func (a App) handleCreateResult(msg createResultMsg) (tea.Model, tea.Cmd) {
 		a.setError(msg.err.Error())
 		return a, nil
 	}
-	a.agentsCreatedCount++
+	a.wellness.agentsCreatedCount++
 	if msg.isNewSession {
-		a.sessionsCreatedCount++
+		a.wellness.sessionsCreatedCount++
 	}
 	a.refreshAgentList()
 	// Find the new agent by ID. Cursor always moves to the new session's

@@ -100,13 +100,13 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Clear the backlog warning flag on any key that isn't n.
 		// Done here (before focus-mode early returns) so navigation keys clear it too.
-		if a.focusBacklogWarning && msg.String() != "n" {
-			a.focusBacklogWarning = false
+		if a.wellness.focusBacklogWarning && msg.String() != "n" {
+			a.wellness.focusBacklogWarning = false
 		}
 
 		// Clear the break short-warning on any key that isn't b.
-		if a.focusBreakShortWarning && msg.String() != "b" {
-			a.focusBreakShortWarning = false
+		if a.wellness.focusBreakShortWarning && msg.String() != "b" {
+			a.wellness.focusBreakShortWarning = false
 		}
 
 		// Forward to whichever overlay panel owns focus. Each helper is a
@@ -161,7 +161,7 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// to advance is a deliberate action, while taking a break is
 				// the catch-all everywhere else — so the cursor location is
 				// the disambiguator the user already has at hand.
-				if !a.focusBreakMode && a.cursor.Section() == focusSectionPlanning {
+				if !a.wellness.focusBreakMode && a.cursor.Section() == focusSectionPlanning {
 					planning := a.dashboard.planningSessions()
 					if len(planning) > 0 {
 						idx := a.cursor.Index(focusSectionPlanning)
@@ -762,35 +762,35 @@ func (a App) handleKeysWorkflow(msg tea.KeyPressMsg) (App, tea.Cmd, bool) {
 	switch msg.String() {
 	case "b":
 		switch {
-		case !a.focusBreakMode:
+		case !a.wellness.focusBreakMode:
 			// Enter break. Round(0) strips the monotonic reading so
 			// time.Since uses wall-clock arithmetic, which keeps the
 			// timer honest across suspend/resume.
-			a.focusBreakMode = true
-			a.focusBreakStart = time.Now().Round(0)
-			a.focusBreakShortWarning = false
-			a.focusBreakTimerUp = false
-			a.focusBreakAnimFrame = 0
-		case a.focusBreakTimerUp:
+			a.wellness.focusBreakMode = true
+			a.wellness.focusBreakStart = time.Now().Round(0)
+			a.wellness.focusBreakShortWarning = false
+			a.wellness.focusBreakTimerUp = false
+			a.wellness.focusBreakAnimFrame = 0
+		case a.wellness.focusBreakTimerUp:
 			// Break is fully elapsed; user is opting back in. Exit
 			// without any "are you sure" friction.
-			a.sessionStart = time.Now()
-			a.focusBlockCount++
-			a.focusBreakMode = false
-			a.focusBreakShortWarning = false
-			a.focusBreakTimerUp = false
-			a.focusBreakAnimFrame = 0
-		case !a.focusBreakShortWarning:
-			a.focusBreakShortWarning = true
+			a.wellness.sessionStart = time.Now()
+			a.wellness.focusBlockCount++
+			a.wellness.focusBreakMode = false
+			a.wellness.focusBreakShortWarning = false
+			a.wellness.focusBreakTimerUp = false
+			a.wellness.focusBreakAnimFrame = 0
+		case !a.wellness.focusBreakShortWarning:
+			a.wellness.focusBreakShortWarning = true
 		default:
 			// Third b press while still inside the break window:
 			// override the short-break guard and end early.
-			a.sessionStart = time.Now()
-			a.focusBlockCount++
-			a.focusBreakMode = false
-			a.focusBreakShortWarning = false
-			a.focusBreakTimerUp = false
-			a.focusBreakAnimFrame = 0
+			a.wellness.sessionStart = time.Now()
+			a.wellness.focusBlockCount++
+			a.wellness.focusBreakMode = false
+			a.wellness.focusBreakShortWarning = false
+			a.wellness.focusBreakTimerUp = false
+			a.wellness.focusBreakAnimFrame = 0
 		}
 		return a, nil, true
 
@@ -828,14 +828,14 @@ func (a App) handleKeysWorkflow(msg tea.KeyPressMsg) (App, tea.Cmd, bool) {
 				}
 			}
 			if backlogCount >= resolvedForBacklog.MaxReviewBacklog {
-				if !a.focusBacklogWarning {
-					a.focusBacklogWarning = true
+				if !a.wellness.focusBacklogWarning {
+					a.wellness.focusBacklogWarning = true
 					a.setError(fmt.Sprintf("n again to override — %d sessions awaiting review", backlogCount))
 					return a, nil, true
 				}
-				a.focusBacklogWarning = false // second n: proceed
+				a.wellness.focusBacklogWarning = false // second n: proceed
 			} else {
-				a.focusBacklogWarning = false
+				a.wellness.focusBacklogWarning = false
 			}
 		}
 

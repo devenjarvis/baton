@@ -156,8 +156,8 @@ func (a App) updateGlobalConfig(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.resizeAllForDashboard()
 		}
 		// Refresh wellness settings from updated global config.
-		a.focusSessionMinutes = newResolved.FocusSessionMinutes
-		a.focusBreakMinutes = newResolved.FocusBreakMinutes
+		a.wellness.focusSessionMinutes = newResolved.FocusSessionMinutes
+		a.wellness.focusBreakMinutes = newResolved.FocusBreakMinutes
 		a.view = ViewDashboard
 		return a, nil
 	case globalConfigCancelMsg:
