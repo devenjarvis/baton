@@ -23,19 +23,10 @@ type PanelModel interface {
 	Resize(w, h int)
 }
 
-// panelClosedMsg is the canonical "I'm done; route back to the pipeline"
-// signal. App's outer Update recognises it and clears the matching panel
-// field + resets panelFocus to focusList.
-type panelClosedMsg struct {
-	kind panelFocus
-}
-
-// closePanelCmd returns a tea.Cmd that signals the given panel to close.
-// Panels use this rather than mutating App state directly so the close
-// ritual lives in one place.
-func closePanelCmd(kind panelFocus) tea.Cmd {
-	return func() tea.Msg { return panelClosedMsg{kind: kind} }
-}
+// Panels close synchronously by calling svc.ClosePanel(). The callback is
+// built each Update over &a (App's local copy), so the close ritual is a
+// direct field mutation rather than an async tea.Msg round-trip — this keeps
+// the test pattern simple (assert state immediately after panel.Update).
 
 // PanelServices is the slice of App state and behavior that panels are
 // allowed to reach. Keep this struct narrow: every field here is a coupling
@@ -58,6 +49,7 @@ type PanelServices struct {
 	ReviewCache func(sessionID string) *reviewDiffEntry
 
 	// Navigation / cross-panel actions.
+	ClosePanel     func()
 	OpenInLaunch   func(sess *agent.Session) bool
 	OpenPlanEditor func(sess *agent.Session, repoPath string)
 	OpenURL        func(url string) error
@@ -69,4 +61,9 @@ type PanelServices struct {
 	StartPRDraftCmd func(sess *agent.Session, repoPath string, transitionShipping bool) tea.Cmd
 	KillSessionCmd  func(sess *agent.Session) tea.Cmd
 	FetchReviewDiff func(sess *agent.Session) tea.Cmd
+
+	// prDraftInFlightFor reports whether a PR draft request is currently in
+	// flight for the given session ID. The review panel uses this to render
+	// the "Drafting PR…" footer hint.
+	prDraftInFlightFor func(sessionID string) bool
 }

@@ -15,7 +15,6 @@ import (
 	"sync"
 	"time"
 
-	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -179,36 +178,31 @@ type App struct {
 	audioPlayer     *audio.Player
 
 	// Wellness state.
-	appStart                time.Time // set once at init; never reset; used for total session duration in wellness log
-	sessionStart            time.Time // per-block work timer; reset on each break completion
-	lastReviewAt            time.Time
-	agentLimitModalActive   bool
-	focusSessionMinutes     int           // cached from resolved global settings
-	focusBreakMinutes       int           // cached from resolved global settings
-	cursor                  FocusedCursor // pipeline cursor: section + per-section indices
-	focusLaunchAgent        *agent.Agent
-	focusLaunchSession      *agent.Session
-	focusBacklogWarning     bool // first n at backlog limit shows warning; second proceeds
-	focusBreakMode          bool
-	focusBreakStart         time.Time // wall-clock; monotonic stripped so suspend counts toward elapsed
-	focusBlockCount         int
-	focusBreakShortWarning  bool
-	focusBreakTimerUp       bool // break duration elapsed; waiting on user to resume
-	focusBreakAnimFrame     int
-	reviewDiffCache         map[string]*reviewDiffEntry                // keyed by session ID
-	reviewSession           *agent.Session                             // session currently open in review panel
-	reviewTaskCursor        int                                        // selected task row in the review task list
-	reviewDiffVP            viewport.Model                             // scroll state for the inline diff viewport
-	reviewDiffCacheByTask   map[int]*diffmodel.Model                   // parsed diff per task index; cleared with reviewDiffCache
-	reviewSpecOverlayActive bool                                       // true while the ? Spec overlay is open
-	reviewSpecOverlayScroll int                                        // scroll offset for the Spec overlay (line index)
-	shippingSession         *agent.Session                             // session currently open in shipping panel
-	feedbackTriage          map[string]map[string]*feedbackTriageEntry // keyed by sessionID → itemKey
-	shippingFeedbackCursor  int                                        // cursor row in the feedback list pane
-	shippingDetailScroll    int                                        // scroll offset in the feedback detail pane
-	feedbackNote            feedbackNoteModal                          // overlay for adding a guidance note to a feedback item
-	planEditor              *planEditorModel                           // non-nil while panelFocus == focusPlanEditor
-	promptModal             promptModalModel                           // overlay for plan-first new-session prompt
+	appStart               time.Time // set once at init; never reset; used for total session duration in wellness log
+	sessionStart           time.Time // per-block work timer; reset on each break completion
+	lastReviewAt           time.Time
+	agentLimitModalActive  bool
+	focusSessionMinutes    int           // cached from resolved global settings
+	focusBreakMinutes      int           // cached from resolved global settings
+	cursor                 FocusedCursor // pipeline cursor: section + per-section indices
+	focusLaunchAgent       *agent.Agent
+	focusLaunchSession     *agent.Session
+	focusBacklogWarning    bool // first n at backlog limit shows warning; second proceeds
+	focusBreakMode         bool
+	focusBreakStart        time.Time // wall-clock; monotonic stripped so suspend counts toward elapsed
+	focusBlockCount        int
+	focusBreakShortWarning bool
+	focusBreakTimerUp      bool // break duration elapsed; waiting on user to resume
+	focusBreakAnimFrame    int
+	reviewDiffCache        map[string]*reviewDiffEntry                // keyed by session ID; lifetime exceeds panel
+	reviewPanel            *reviewPanelModel                          // non-nil while panelFocus == focusReview
+	shippingSession        *agent.Session                             // session currently open in shipping panel
+	feedbackTriage         map[string]map[string]*feedbackTriageEntry // keyed by sessionID → itemKey
+	shippingFeedbackCursor int                                        // cursor row in the feedback list pane
+	shippingDetailScroll   int                                        // scroll offset in the feedback detail pane
+	feedbackNote           feedbackNoteModal                          // overlay for adding a guidance note to a feedback item
+	planEditor             *planEditorModel                           // non-nil while panelFocus == focusPlanEditor
+	promptModal            promptModalModel                           // overlay for plan-first new-session prompt
 
 	// Wellness counters (written to log on quit).
 	agentsCreatedCount   int
@@ -250,25 +244,23 @@ type App struct {
 
 func NewApp() App {
 	return App{
-		view:                  ViewDashboard,
-		dashboard:             newDashboardModel(),
-		cursor:                NewFocusedCursor(),
-		managers:              make(map[string]*agent.Manager),
-		repoSettings:          make(map[string]*config.RepoSettings),
-		resolvedCache:         make(map[string]config.ResolvedSettings),
-		lastKnownStatus:       make(map[string]agent.Status),
-		diffStatsCache:        make(map[string]*diffStatsEntry),
-		reviewDiffCache:       make(map[string]*reviewDiffEntry),
-		reviewDiffVP:          viewport.New(),
-		reviewDiffCacheByTask: make(map[int]*diffmodel.Model),
-		prCache:               make(map[string]*prCacheEntry),
-		prPollStates:          make(map[string]*prSessionState),
-		closingAgents:         make(map[string]bool),
-		closingSessions:       make(map[string]bool),
-		feedbackTriage:        make(map[string]map[string]*feedbackTriageEntry),
-		feedbackNote:          newFeedbackNoteModal(),
-		promptModal:           newPromptModal(),
-		prComposeModal:        newPRComposeModal(),
+		view:            ViewDashboard,
+		dashboard:       newDashboardModel(),
+		cursor:          NewFocusedCursor(),
+		managers:        make(map[string]*agent.Manager),
+		repoSettings:    make(map[string]*config.RepoSettings),
+		resolvedCache:   make(map[string]config.ResolvedSettings),
+		lastKnownStatus: make(map[string]agent.Status),
+		diffStatsCache:  make(map[string]*diffStatsEntry),
+		reviewDiffCache: make(map[string]*reviewDiffEntry),
+		prCache:         make(map[string]*prCacheEntry),
+		prPollStates:    make(map[string]*prSessionState),
+		closingAgents:   make(map[string]bool),
+		closingSessions: make(map[string]bool),
+		feedbackTriage:  make(map[string]map[string]*feedbackTriageEntry),
+		feedbackNote:    newFeedbackNoteModal(),
+		promptModal:     newPromptModal(),
+		prComposeModal:  newPRComposeModal(),
 	}
 }
 
@@ -362,6 +354,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.prComposeModal.SetSize(msg.Width, msg.Height-1)
 			a.feedbackNote.SetSize(msg.Width, msg.Height)
 		}
+
+	case reviewReworkRequestMsg:
+		return a.handleReviewReworkRequest(msg)
 
 	case initAppMsg:
 		if msg.err != nil {
@@ -1131,9 +1126,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.transitionShipping {
 			if sess := a.sessionByID(msg.sessionID); sess != nil {
 				sess.SetLifecyclePhase(agent.LifecycleShipping)
-				if a.reviewSession != nil && a.reviewSession.ID == msg.sessionID {
+				if a.reviewPanel != nil && a.reviewPanel.SessionID() == msg.sessionID {
 					a.dashboard.panelFocus = focusList
-					a.reviewSession = nil
+					a.reviewPanel = nil
 				}
 			}
 		}
@@ -1227,9 +1222,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				switch sess.LifecyclePhase() {
 				case agent.LifecycleInProgress, agent.LifecycleReadyForReview, agent.LifecycleInReview:
 					sess.SetLifecyclePhase(agent.LifecycleShipping)
-					if a.reviewSession != nil && a.reviewSession.ID == msg.sessionID {
+					if a.reviewPanel != nil && a.reviewPanel.SessionID() == msg.sessionID {
 						a.dashboard.panelFocus = focusList
-						a.reviewSession = nil
+						a.reviewPanel = nil
 					}
 				}
 			}
@@ -1340,8 +1335,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err == nil && msg.entry != nil {
 			a.reviewDiffCache[msg.sessionID] = msg.entry
 			// Refresh the inline diff viewport when data arrives for the open session.
-			if a.reviewSession != nil && a.reviewSession.ID == msg.sessionID && len(msg.entry.groups) > 0 {
-				a.refreshReviewDiffViewport()
+			if a.reviewPanel != nil && a.reviewPanel.SessionID() == msg.sessionID && len(msg.entry.groups) > 0 {
+				a.reviewPanel.RefreshDiffViewport(a.panelServices())
 			}
 			// If the entry has task groups, dispatch a reviewer per group.
 			if len(msg.entry.groups) > 0 {
@@ -1742,216 +1737,18 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, cmd
 		}
 
-		// Review panel key handling.
-		if a.dashboard.panelFocus == focusReview && a.reviewSession != nil {
-			// Spec overlay intercepts all keys while active.
-			if a.reviewSpecOverlayActive {
-				switch msg.String() {
-				case "esc":
-					a.reviewSpecOverlayActive = false
-				case "pgdown":
-					a.reviewSpecOverlayScroll += a.height - 4
-				case "pgup":
-					a.reviewSpecOverlayScroll -= a.height - 4
-					if a.reviewSpecOverlayScroll < 0 {
-						a.reviewSpecOverlayScroll = 0
-					}
-				case "g":
-					a.reviewSpecOverlayScroll = 0
-				case "G":
-					a.reviewSpecOverlayScroll = 9999 // clamped at render time
+		// Review panel key handling: delegate to the reviewPanelModel.
+		if a.dashboard.panelFocus == focusReview && a.reviewPanel != nil {
+			snapshot := a.reviewPanel
+			updated, cmd := snapshot.Update(msg, a.panelServices())
+			// If svc.ClosePanel fired during Update, a.reviewPanel is now nil
+			// and panelFocus is focusList. Don't restore — close has won.
+			if a.reviewPanel == snapshot {
+				if rp, ok := updated.(*reviewPanelModel); ok {
+					a.reviewPanel = rp
 				}
-				return a, nil
 			}
-			switch msg.String() {
-			case "esc":
-				// Return to focus mode; session stays InReview.
-				a.dashboard.panelFocus = focusList
-				a.reviewSession = nil
-				a.reviewSpecOverlayActive = false
-				return a, nil
-			case "d":
-				// Defer: back to ReadyForReview, return to focus.
-				a.reviewSession.SetLifecyclePhase(agent.LifecycleReadyForReview)
-				a.dashboard.panelFocus = focusList
-				a.reviewSession = nil
-				return a, nil
-			case "p":
-				// Ship: if an open PR exists, open it in the browser and transition
-				// to Shipping. If no open PR, push the branch and draft a new one.
-				// TODO(stacked-PR): when entry.stack is non-empty, offer a way
-				// to cycle through stack entries instead of always opening the
-				// head PR.
-				sess := a.reviewSession
-				if entry := a.prCache[sess.ID]; entry != nil && entry.pr != nil && entry.pr.URL != "" {
-					if err := openURL(entry.pr.URL); err != nil {
-						a.setError(err.Error())
-						return a, nil
-					}
-					sess.SetLifecyclePhase(agent.LifecycleShipping)
-					a.dashboard.panelFocus = focusList
-					a.reviewSession = nil
-				} else {
-					if a.ghClient == nil {
-						a.setError("GitHub auth not available")
-						return a, nil
-					}
-					if a.prDraftInFlight {
-						return a, nil
-					}
-					a.prDraftInFlight = true
-					a.prDraftSessionID = sess.ID
-					repoPath := a.repoPathForSession(sess.ID)
-					return a, a.startPRDraftCmd(sess, repoPath, true)
-				}
-				return a, nil
-			case "t":
-				// Open the session's most-active agent in the fullscreen
-				// focusLaunch terminal. Useful for sessions with no PR yet
-				// (run gh pr create manually) or for inspecting individual
-				// agents within a multi-agent session via the tab bar.
-				sess := a.reviewSession
-				a.reviewSession = nil
-				if !a.openSessionInFocusLaunch(sess) {
-					a.setError("session has no agents to open")
-				}
-				return a, nil
-			case "c":
-				// Mark complete without a PR (e.g. design docs, exploratory
-				// branches). Closes the panel and cleans up the session.
-				sess := a.reviewSession
-				a.dashboard.panelFocus = focusList
-				a.reviewSession = nil
-				repoPath := a.repoPathForSession(sess.ID)
-				if repoPath == "" {
-					return a, nil
-				}
-				mgr := a.managers[repoPath]
-				if mgr == nil || mgr.GetSession(sess.ID) == nil || a.closingSessions[sess.ID] {
-					return a, nil
-				}
-				sess.SetLifecyclePhase(agent.LifecycleComplete)
-				var agentIDs []string
-				for _, ag := range sess.Agents() {
-					agentIDs = append(agentIDs, ag.ID)
-					a.closingAgents[ag.ID] = true
-				}
-				sessID := sess.ID
-				a.closingSessions[sessID] = true
-				return a, func() tea.Msg {
-					return killResultMsg{
-						scope:     killScopeSession,
-						sessionID: sessID,
-						agentIDs:  agentIDs,
-						err:       filterNotFound(mgr.KillSession(sessID)),
-					}
-				}
-			case "e":
-				// Open in editor — same pattern as the existing "i" key handler.
-				sess := a.reviewSession
-				if sess != nil && sess.Worktree != nil {
-					// Resolve the IDE command from the session's owning repo
-					// rather than a.activeRepo: pipeline cursor selection lets
-					// the user reach a session in any registered repo.
-					repoPath := a.repoPathForSession(sess.ID)
-					if repoPath == "" {
-						repoPath = a.activeRepo
-					}
-					ideCmd := strings.TrimSpace(a.resolvedCache[repoPath].IDECommand)
-					if ideCmd == "" {
-						a.setError("No IDE configured (set 'IDE Command' in settings)")
-						return a, nil
-					}
-					parts := splitIDECommand(ideCmd)
-					if len(parts) == 0 {
-						a.setError("No IDE configured (set 'IDE Command' in settings)")
-						return a, nil
-					}
-					worktreePath := sess.Worktree.Path
-					exe := parts[0]
-					args := append(parts[1:], worktreePath)
-					go func() {
-						cmd := exec.Command(exe, args...)
-						cmd.Dir = worktreePath
-						_ = cmd.Start()
-					}()
-				}
-				return a, nil
-			case "j", "down":
-				// Move cursor down in the task list.
-				if entry := a.reviewDiffCache[a.reviewSession.ID]; entry != nil {
-					maxIdx := reviewTaskCount(entry) - 1
-					if a.reviewTaskCursor < maxIdx {
-						a.reviewTaskCursor++
-						a.refreshReviewDiffViewport()
-					}
-				}
-				return a, nil
-			case "k", "up":
-				// Move cursor up in the task list.
-				if a.reviewTaskCursor > 0 {
-					a.reviewTaskCursor--
-					a.refreshReviewDiffViewport()
-				}
-				return a, nil
-			case "f":
-				// Toggle the user-flag on the cursor row. The flag survives
-				// panel close/re-open and is folded into the `b` rework prompt
-				// alongside any AI concerns/fails.
-				entry := a.reviewDiffCache[a.reviewSession.ID]
-				if entry == nil {
-					return a, nil
-				}
-				idx, ok := reviewTaskIndexAtCursor(entry, a.reviewTaskCursor)
-				if !ok {
-					// Synthetic Overview row (no-plan session): nothing to flag.
-					return a, nil
-				}
-				if entry.verdicts == nil {
-					entry.verdicts = make(map[int]*taskVerdictRecord)
-				}
-				rec := entry.verdicts[idx]
-				if rec == nil {
-					rec = &taskVerdictRecord{state: verdictPending}
-					entry.verdicts[idx] = rec
-				}
-				rec.userFlagged = !rec.userFlagged
-				return a, nil
-			case "b":
-				// Back to build: spawn a new agent in the existing worktree with
-				// a prompt built from the AI reviewer's concerns/fails plus any
-				// rows the user flagged with `f`. Session returns to InProgress.
-				return a.addressReviewFeedback(a.reviewSession)
-			case "enter", "space":
-				// Inline diff is shown in the right pane; enter/space are no-ops here.
-				return a, nil
-			case "pgdown":
-				a.reviewDiffVP.PageDown()
-				return a, nil
-			case "pgup":
-				a.reviewDiffVP.PageUp()
-				return a, nil
-			case "ctrl+d":
-				a.reviewDiffVP.HalfPageDown()
-				return a, nil
-			case "ctrl+u":
-				a.reviewDiffVP.HalfPageUp()
-				return a, nil
-			case "g":
-				a.reviewDiffVP.GotoTop()
-				return a, nil
-			case "G":
-				a.reviewDiffVP.GotoBottom()
-				return a, nil
-			case "?":
-				if a.reviewSession.HasPlan() {
-					a.reviewSpecOverlayActive = true
-					a.reviewSpecOverlayScroll = 0
-				}
-				return a, nil
-			}
-			// All other keys are no-ops in review panel.
-			return a, nil
+			return a, cmd
 		}
 
 		// Shipping panel key handling.
@@ -2174,15 +1971,12 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				sess := reviewItems[idx].session
 				sess.SetLifecyclePhase(agent.LifecycleInReview)
-				a.reviewSession = sess
-				a.reviewTaskCursor = 0
-				a.reviewDiffCacheByTask = make(map[int]*diffmodel.Model)
+				a.reviewPanel = newReviewPanel(sess, a.width, a.height)
 				a.dashboard.panelFocus = focusReview
-				// Fetch diff stats if not already cached.
 				if _, ok := a.reviewDiffCache[sess.ID]; !ok {
 					return a, a.fetchReviewDiffCmd(sess)
 				}
-				a.refreshReviewDiffViewport()
+				a.reviewPanel.RefreshDiffViewport(a.panelServices())
 				return a, nil
 			case "n":
 				if a.cfg != nil && len(a.cfg.Repos) > 1 {
@@ -2708,47 +2502,12 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 
-		// focusReview: left-pane row clicks move the review task cursor.
-		if a.dashboard.panelFocus == focusReview && a.reviewSession != nil {
-			entry := a.reviewDiffCache[a.reviewSession.ID]
-			if entry != nil && a.width >= 80 {
-				headerH := len(renderReviewHeader(a.reviewSession, a.width))
-				leftW := a.width * 4 / 10
-				if leftW < 32 {
-					leftW = 32
-				}
-				paneTop := dashboardTopY + headerH
-				if rowIdx := reviewListPaneRowAt(entry, msg.X, msg.Y, paneTop, 0, leftW); rowIdx >= 0 {
-					// renderTaskListPane scrolls so the cursor stays centred; reproduce
-					// its offset computation so clicking visual row N maps to data row
-					// offset+N rather than jumping the cursor back to N.
-					footerLines := 3
-					if a.prDraftInFlight {
-						footerLines++
-					}
-					bodyH := a.height - dashboardTopY - headerH - footerLines
-					if bodyH < 4 {
-						bodyH = 4
-					}
-					const listHeaderLines = 2
-					rowsH := bodyH - listHeaderLines
-					if rowsH < 1 {
-						rowsH = 1
-					}
-					nRows := reviewTaskCount(entry)
-					offset := a.reviewTaskCursor - rowsH/2
-					if offset < 0 {
-						offset = 0
-					}
-					if offset+rowsH > nRows {
-						offset = nRows - rowsH
-						if offset < 0 {
-							offset = 0
-						}
-					}
-					a.reviewTaskCursor = offset + rowIdx
-					return a, nil
-				}
+		// focusReview: delegate left-pane row clicks to the panel.
+		if a.dashboard.panelFocus == focusReview && a.reviewPanel != nil {
+			before := a.reviewPanel.TaskCursor()
+			a.reviewPanel.handleClick(msg, a.panelServices())
+			if a.reviewPanel.TaskCursor() != before {
+				return a, nil
 			}
 		}
 
@@ -3380,6 +3139,102 @@ func (a *App) screenToTermCellFocusLaunch(screenX, screenY int) (termX, termY in
 	return termX, termY, inViewport
 }
 
+// panelServices builds a fresh PanelServices struct closing over a's current
+// state. Panels receive this on every Update so they always see live App
+// state without holding a back-pointer. Cmd factories returned here must be
+// pure: they produce tea.Cmds, never mutate App directly.
+func (a *App) panelServices() PanelServices {
+	return PanelServices{
+		Width:         a.width,
+		Height:        a.height,
+		DashboardTopY: a.dashboardTopY(),
+		ManagerFor: func(sessionID string) (*agent.Manager, string) {
+			repoPath := a.repoPathForSession(sessionID)
+			if repoPath == "" {
+				return nil, ""
+			}
+			return a.managers[repoPath], repoPath
+		},
+		Resolved: func(repoPath string) config.ResolvedSettings {
+			return a.resolvedCache[repoPath]
+		},
+		GHClient: func() *github.Client { return a.ghClient },
+		PRCache: func(sessionID string) *prCacheEntry {
+			return a.prCache[sessionID]
+		},
+		ReviewCache: func(sessionID string) *reviewDiffEntry {
+			return a.reviewDiffCache[sessionID]
+		},
+		ClosePanel: func() {
+			// Drop the active overlay panel and return focus to the pipeline.
+			// Each panel reference is mutated; only the matching one will be
+			// non-nil at any given time so the others are no-ops.
+			a.reviewPanel = nil
+			a.dashboard.panelFocus = focusList
+		},
+		OpenInLaunch: func(sess *agent.Session) bool {
+			return a.openSessionInFocusLaunch(sess)
+		},
+		OpenPlanEditor: func(sess *agent.Session, repoPath string) {
+			a.openPlanEditor(sess, repoPath)
+		},
+		OpenURL:  openURL,
+		SetError: a.setError,
+		MergePRCmd: func(sessionID string, force bool) tea.Cmd {
+			if force {
+				return a.forceMergePRCmd(sessionID)
+			}
+			return a.mergePRCmd(sessionID)
+		},
+		StartPRDraftCmd: func(sess *agent.Session, repoPath string, transitionShipping bool) tea.Cmd {
+			a.prDraftInFlight = true
+			a.prDraftSessionID = sess.ID
+			a.prModalTransitionShipping = transitionShipping
+			return a.startPRDraftCmd(sess, repoPath, transitionShipping)
+		},
+		KillSessionCmd: func(sess *agent.Session) tea.Cmd {
+			repoPath := a.repoPathForSession(sess.ID)
+			if repoPath == "" {
+				return nil
+			}
+			mgr := a.managers[repoPath]
+			if mgr == nil {
+				return nil
+			}
+			var agentIDs []string
+			for _, ag := range sess.Agents() {
+				agentIDs = append(agentIDs, ag.ID)
+				a.closingAgents[ag.ID] = true
+			}
+			sessID := sess.ID
+			a.closingSessions[sessID] = true
+			return func() tea.Msg {
+				return killResultMsg{
+					scope:     killScopeSession,
+					sessionID: sessID,
+					agentIDs:  agentIDs,
+					err:       filterNotFound(mgr.KillSession(sessID)),
+				}
+			}
+		},
+		FetchReviewDiff:    func(sess *agent.Session) tea.Cmd { return a.fetchReviewDiffCmd(sess) },
+		prDraftInFlightFor: func(sessionID string) bool { return a.prDraftInFlight && a.prDraftSessionID == sessionID },
+	}
+}
+
+// dashboardTopY returns the screen Y offset where the dashboard content
+// begins, accounting for any error or confirm-quit rows rendered above it.
+func (a *App) dashboardTopY() int {
+	y := 0
+	if a.err != "" {
+		y++
+	}
+	if a.confirmQuit {
+		y++
+	}
+	return y
+}
+
 func (a *App) refreshAgentList() {
 	a.dashboard.closingAgents = a.closingAgents
 	a.dashboard.closingSessions = a.closingSessions
@@ -3627,14 +3482,12 @@ func (a *App) activateFocusCursor() (tea.Cmd, bool) {
 		return nil, a.openSessionInFocusLaunch(sess)
 	case focusSectionReview:
 		sess.SetLifecyclePhase(agent.LifecycleInReview)
-		a.reviewSession = sess
-		a.reviewTaskCursor = 0
-		a.reviewDiffCacheByTask = make(map[int]*diffmodel.Model)
+		a.reviewPanel = newReviewPanel(sess, a.width, a.height)
 		a.dashboard.panelFocus = focusReview
 		if _, ok := a.reviewDiffCache[sess.ID]; !ok {
 			return a.fetchReviewDiffCmd(sess), true
 		}
-		a.refreshReviewDiffViewport()
+		a.reviewPanel.RefreshDiffViewport(a.panelServices())
 		return nil, true
 	case focusSectionShipping:
 		a.shippingSession = sess
@@ -3879,16 +3732,12 @@ func (a App) View() tea.View {
 
 	switch a.view {
 	case ViewDashboard:
-		if a.dashboard.panelFocus == focusReview && a.reviewSession != nil {
-			entry := a.reviewDiffCache[a.reviewSession.ID]
+		if a.dashboard.panelFocus == focusReview && a.reviewPanel != nil {
 			var panelStr string
-			if a.reviewSpecOverlayActive {
-				plan, _ := a.reviewSession.CachedPlan()
-				panelStr = renderReviewSpecOverlay(a.reviewSession, plan, a.reviewSpecOverlayScroll, a.width, a.height)
-			} else if a.prComposeModal.Active() {
+			if a.prComposeModal.Active() {
 				panelStr = lipgloss.Place(a.width, a.height-1, lipgloss.Center, lipgloss.Center, a.prComposeModal.View())
 			} else {
-				panelStr = renderReviewPanel(a.reviewSession, entry, a.width, a.height, a.reviewTaskCursor, a.prDraftInFlight && a.prDraftSessionID == a.reviewSession.ID, a.reviewDiffVP.View())
+				panelStr = a.reviewPanel.View(a.panelServices())
 			}
 			v := tea.NewView(panelStr)
 			v.AltScreen = true
@@ -4787,20 +4636,14 @@ func fenceAsData(s string) string {
 	return fence + "\n" + body + "\n" + fence + "\n"
 }
 
-// addressReviewFeedback spawns a new agent in the session's existing worktree
-// with a prompt synthesized from the review panel's AI verdicts and user flags,
-// then transitions the session back to LifecycleInProgress. The reviewDiffCache
-// entry is cleared so the next entry into review re-runs the AI reviewer on the
-// new commit history. Mirrors addressFeedback (the shipping→build path) but
-// draws from in-panel verdicts rather than PR state.
-func (a *App) addressReviewFeedback(sess *agent.Session) (tea.Model, tea.Cmd) {
+// handleReviewReworkRequest spawns a new agent in the session's existing
+// worktree using a prompt synthesised by the review panel from AI verdicts
+// and user flags, then transitions the session back to LifecycleInProgress.
+// The reviewDiffCache entry is cleared so the next entry into review re-runs
+// the AI reviewer on the new commit history.
+func (a *App) handleReviewReworkRequest(req reviewReworkRequestMsg) (tea.Model, tea.Cmd) {
+	sess := a.sessionByID(req.sessionID)
 	if sess == nil {
-		return a, nil
-	}
-	entry := a.reviewDiffCache[sess.ID]
-	prompt := buildReviewReworkPrompt(entry)
-	if prompt == "" {
-		a.setError("no tasks flagged or marked concerns/fail")
 		return a, nil
 	}
 	repoPath := a.repoPathForSession(sess.ID)
@@ -4827,16 +4670,11 @@ func (a *App) addressReviewFeedback(sess *agent.Session) (tea.Model, tea.Cmd) {
 		AgentProgram:      resolved.AgentProgram,
 		AgentModel:        resolved.AgentModel,
 		BuildSystemPrompt: resolved.BuildSystemPrompt,
-		Task:              prompt,
+		Task:              req.prompt,
 	}
 	sessID := sess.ID
-	// Drop the panel and the cached diff/verdicts: when the user returns to
-	// review after the rework round, fetchReviewDiffCmd will re-parse the plan
-	// and re-run verdicts over the augmented commit history.
-	a.reviewSession = nil
-	a.reviewTaskCursor = 0
+	a.reviewPanel = nil
 	delete(a.reviewDiffCache, sessID)
-	a.reviewDiffCacheByTask = make(map[int]*diffmodel.Model)
 	a.dashboard.panelFocus = focusList
 	return a, func() tea.Msg {
 		ag, err := mgr.AddAgent(sessID, cfg)
@@ -5253,63 +5091,6 @@ func (a App) fetchReviewDiffCmd(sess *agent.Session) tea.Cmd {
 
 		return reviewDiffMsg{sessionID: sessID, entry: entry}
 	}
-}
-
-// refreshReviewDiffViewport updates the inline diff viewport content for the
-// currently selected task. This ensures scroll clamping (PageDown/PageUp) works
-// correctly. Call this whenever the task cursor changes or when the review panel
-// is first entered. Also resets the scroll to the top.
-func (a *App) refreshReviewDiffViewport() {
-	// Compute layout dimensions mirroring renderReviewPanel's wide-mode formula so
-	// that SetHeight/SetWidth are correct and View()/PageDown/PageUp clamp properly.
-	headerLines := len(renderReviewHeader(a.reviewSession, a.width))
-	footerH := 3
-	bodyH := a.height - headerLines - footerH
-	if bodyH < 4 {
-		bodyH = 4
-	}
-	maxSummaryH := bodyH / 3
-	if maxSummaryH < 4 {
-		maxSummaryH = 4
-	}
-	diffH := bodyH - maxSummaryH - 1
-	if diffH < 1 {
-		diffH = 1
-	}
-	rightW := a.width*6/10 - 5
-	if rightW < 20 {
-		rightW = 20
-	}
-	a.reviewDiffVP.SetHeight(diffH)
-	a.reviewDiffVP.SetWidth(rightW)
-	a.reviewDiffVP.GotoTop()
-	if a.reviewSession == nil {
-		a.reviewDiffVP.SetContent("")
-		return
-	}
-	entry := a.reviewDiffCache[a.reviewSession.ID]
-	if entry == nil {
-		a.reviewDiffVP.SetContent("")
-		return
-	}
-	group := reviewTaskGroupAtCursor(entry, a.reviewTaskCursor)
-	if group == nil || group.rawDiff == "" {
-		a.reviewDiffVP.SetContent("(no diff for this task)")
-		return
-	}
-	// Use cache to avoid re-parsing on each keystroke.
-	idx := a.reviewTaskCursor
-	m, ok := a.reviewDiffCacheByTask[idx]
-	if !ok {
-		var err error
-		m, err = diffmodel.Parse(group.rawDiff)
-		if err != nil || m == nil {
-			a.reviewDiffVP.SetContent("(no diff for this task)")
-			return
-		}
-		a.reviewDiffCacheByTask[idx] = m
-	}
-	a.reviewDiffVP.SetContent(renderAllFilesUnified(m, rightW))
 }
 
 // populateNoDiffVerdicts stamps verdictNoDiff on every plan task in entry that

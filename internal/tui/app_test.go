@@ -604,8 +604,8 @@ func TestPipelineDoubleClickActivatesReview(t *testing.T) {
 	if app.dashboard.panelFocus != focusReview {
 		t.Fatalf("expected focusReview after double-click, got %v", app.dashboard.panelFocus)
 	}
-	if app.reviewSession != sessR {
-		t.Fatalf("expected reviewSession=sessR, got %v", app.reviewSession)
+	if app.reviewPanel == nil || app.reviewPanel.Session() != sessR {
+		t.Fatalf("expected reviewSession=sessR, got %v", app.reviewPanel)
 	}
 }
 
@@ -1207,8 +1207,8 @@ func TestFocusMode_RKey_OpensReviewWithItems(t *testing.T) {
 	if app.dashboard.panelFocus != focusReview {
 		t.Fatalf("expected panelFocus=focusReview after r, got %v", app.dashboard.panelFocus)
 	}
-	if app.reviewSession != sessR {
-		t.Fatalf("expected reviewSession=sessR, got %v", app.reviewSession)
+	if app.reviewPanel == nil || app.reviewPanel.Session() != sessR {
+		t.Fatalf("expected reviewSession=sessR, got %v", app.reviewPanel)
 	}
 	if sessR.LifecyclePhase() != agent.LifecycleInReview {
 		t.Errorf("expected sessR phase=InReview, got %v", sessR.LifecyclePhase())
@@ -1768,8 +1768,8 @@ func TestFocusLaunch_FocusModeKeysForwardToAgent(t *testing.T) {
 		if sessR.LifecyclePhase() != agent.LifecycleReadyForReview {
 			t.Fatalf("press %q: expected sessR phase unchanged=ReadyForReview, got %v", ch, sessR.LifecyclePhase())
 		}
-		if app.reviewSession != nil {
-			t.Fatalf("press %q: expected reviewSession=nil, got %v", ch, app.reviewSession)
+		if app.reviewPanel != nil {
+			t.Fatalf("press %q: expected reviewSession=nil, got %v", ch, app.reviewPanel)
 		}
 	}
 }
@@ -1936,8 +1936,8 @@ func TestFocusMode_RKey_EmptyQueue_ShowsError(t *testing.T) {
 	if app.dashboard.panelFocus == focusReview {
 		t.Error("expected panelFocus to stay focusList, got focusReview")
 	}
-	if app.reviewSession != nil {
-		t.Errorf("expected reviewSession to stay nil, got %v", app.reviewSession)
+	if app.reviewPanel != nil {
+		t.Errorf("expected reviewSession to stay nil, got %v", app.reviewPanel)
 	}
 }
 
@@ -1958,8 +1958,8 @@ func TestFocusMode_RKey_NonEmptyQueue_OpensReviewPanel(t *testing.T) {
 	if app.dashboard.panelFocus != focusReview {
 		t.Errorf("expected panelFocus=focusReview, got %v", app.dashboard.panelFocus)
 	}
-	if app.reviewSession != sessR {
-		t.Errorf("expected reviewSession=sessR, got %v", app.reviewSession)
+	if app.reviewPanel == nil || app.reviewPanel.Session() != sessR {
+		t.Errorf("expected reviewSession=sessR, got %v", app.reviewPanel)
 	}
 	if sessR.LifecyclePhase() != agent.LifecycleInReview {
 		t.Errorf("expected sessR phase=InReview, got %v", sessR.LifecyclePhase())
@@ -1972,7 +1972,7 @@ func TestFocusMode_RKey_NonEmptyQueue_OpensReviewPanel(t *testing.T) {
 func TestReviewPanel_CKey_MarksComplete(t *testing.T) {
 	app, _, sessR := makeFocusModeMRApp(t)
 	sessR.SetLifecyclePhase(agent.LifecycleInReview)
-	app.reviewSession = sessR
+	app.reviewPanel = newReviewPanel(sessR, app.width, app.height)
 	app.dashboard.panelFocus = focusReview
 
 	model, _ := app.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
@@ -1981,8 +1981,8 @@ func TestReviewPanel_CKey_MarksComplete(t *testing.T) {
 	if app.dashboard.panelFocus != focusList {
 		t.Errorf("expected panelFocus=focusList after c, got %v", app.dashboard.panelFocus)
 	}
-	if app.reviewSession != nil {
-		t.Errorf("expected reviewSession cleared, got %v", app.reviewSession)
+	if app.reviewPanel != nil {
+		t.Errorf("expected reviewSession cleared, got %v", app.reviewPanel)
 	}
 }
 
@@ -1999,7 +1999,7 @@ func TestReviewPanel_CMarkCompleteClosesSession(t *testing.T) {
 	mgr.AddSessionForTest(sess)
 
 	app := NewApp()
-	app.reviewSession = sess
+	app.reviewPanel = newReviewPanel(sess, app.width, app.height)
 	app.dashboard.panelFocus = focusReview
 	app.managers[dir] = mgr
 	app.cfg = &config.Config{Repos: []config.Repo{{Path: dir}}}
@@ -2010,8 +2010,8 @@ func TestReviewPanel_CMarkCompleteClosesSession(t *testing.T) {
 	if got.dashboard.panelFocus != focusList {
 		t.Errorf("expected panelFocus=focusList after c, got %v", got.dashboard.panelFocus)
 	}
-	if got.reviewSession != nil {
-		t.Errorf("expected reviewSession cleared after c, got %v", got.reviewSession)
+	if got.reviewPanel != nil {
+		t.Errorf("expected reviewSession cleared after c, got %v", got.reviewPanel)
 	}
 	if cmd == nil {
 		t.Fatal("expected a cmd to trigger async session cleanup after marking complete")
@@ -2038,7 +2038,7 @@ func TestReviewPanel_CMarkCompleteClosesSession(t *testing.T) {
 func TestReviewPanel_TKey_NoAgents_ShowsError(t *testing.T) {
 	app, _, sessR := makeFocusModeMRApp(t)
 	sessR.SetLifecyclePhase(agent.LifecycleInReview)
-	app.reviewSession = sessR
+	app.reviewPanel = newReviewPanel(sessR, app.width, app.height)
 	app.dashboard.panelFocus = focusReview
 
 	model, _ := app.Update(tea.KeyPressMsg{Code: 't', Text: "t"})
@@ -2050,8 +2050,8 @@ func TestReviewPanel_TKey_NoAgents_ShowsError(t *testing.T) {
 	if !strings.Contains(app.err, "no agents") {
 		t.Errorf("expected error to mention no agents, got %q", app.err)
 	}
-	if app.reviewSession != nil {
-		t.Errorf("expected reviewSession cleared after t, got %v", app.reviewSession)
+	if app.reviewPanel != nil {
+		t.Errorf("expected reviewSession cleared after t, got %v", app.reviewPanel)
 	}
 	// Phase preserved so the session is still in REVIEW QUEUE.
 	if sessR.LifecyclePhase() != agent.LifecycleInReview {
@@ -2071,7 +2071,7 @@ func TestReviewPanel_ComposeModalRendersOverPanel(t *testing.T) {
 	app.height = 40
 	app.dashboard.width = 120
 	app.dashboard.height = 39
-	app.reviewSession = sessR
+	app.reviewPanel = newReviewPanel(sessR, app.width, app.height)
 	app.dashboard.panelFocus = focusReview
 	app.prComposeModal.SetSize(120, 39)
 	_ = app.prComposeModal.Open("My PR Title", "My PR Body", false)
@@ -2092,7 +2092,7 @@ func TestReviewPanel_ComposeModalRendersOverPanel(t *testing.T) {
 func TestReviewPanel_PKey_NoPR_DoesNotOrphan(t *testing.T) {
 	app, _, sessR := makeFocusModeMRApp(t)
 	sessR.SetLifecyclePhase(agent.LifecycleInReview)
-	app.reviewSession = sessR
+	app.reviewPanel = newReviewPanel(sessR, app.width, app.height)
 	app.dashboard.panelFocus = focusReview
 	// ghClient must be non-nil to pass the auth guard before startPRDraftCmd.
 	app.ghClient = &github.Client{}
@@ -3162,7 +3162,7 @@ func TestPRPollMsg_ExternalOpenPRPromotesInReviewToShipping_ClosesReviewPanel(t 
 	mgr.AddSessionForTest(sess)
 
 	app := NewApp()
-	app.reviewSession = sess
+	app.reviewPanel = newReviewPanel(sess, app.width, app.height)
 	app.dashboard.panelFocus = focusReview
 	app.managers[dir] = mgr
 	app.cfg = &config.Config{Repos: []config.Repo{{Path: dir}}}
@@ -3180,7 +3180,7 @@ func TestPRPollMsg_ExternalOpenPRPromotesInReviewToShipping_ClosesReviewPanel(t 
 	if got.dashboard.panelFocus != focusList {
 		t.Errorf("panelFocus = %v, want focusList", got.dashboard.panelFocus)
 	}
-	if got.reviewSession != nil {
+	if got.reviewPanel != nil {
 		t.Error("reviewSession should be nil after auto-promotion closes the panel")
 	}
 }
@@ -4552,7 +4552,7 @@ func TestReviewPanel_EnterDoesNotChangeView(t *testing.T) {
 	app := NewApp()
 	app.width = 120
 	app.height = 40
-	app.reviewSession = sessR
+	app.reviewPanel = newReviewPanel(sessR, app.width, app.height)
 	app.dashboard.panelFocus = focusReview
 	app.reviewDiffCache[sessR.ID] = entry
 
@@ -4606,13 +4606,13 @@ func TestReviewPanel_ScrollBindingsAdvanceViewport(t *testing.T) {
 	app := NewApp()
 	app.width = 120
 	app.height = 40
-	app.reviewSession = sessR
+	app.reviewPanel = newReviewPanel(sessR, app.width, app.height)
 	app.dashboard.panelFocus = focusReview
 	app.reviewDiffCache[sessR.ID] = entry
 	// Load diff content and set viewport dimensions before sending scroll keys.
-	app.refreshReviewDiffViewport()
+	app.reviewPanel.RefreshDiffViewport(app.panelServices())
 
-	if !app.reviewDiffVP.AtTop() {
+	if !app.reviewPanel.diffVP.AtTop() {
 		t.Fatal("expected viewport at top before scrolling")
 	}
 
@@ -4620,7 +4620,7 @@ func TestReviewPanel_ScrollBindingsAdvanceViewport(t *testing.T) {
 	model, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
 	updated := model.(App)
 
-	if updated.reviewDiffVP.AtTop() {
+	if updated.reviewPanel.diffVP.AtTop() {
 		t.Error("pgdown: inline diff viewport did not scroll; viewport must advance when diff content exceeds viewport height")
 	}
 	if updated.dashboard.panelFocus != focusReview {
