@@ -19,53 +19,14 @@ import (
 func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case configFormSaveMsg:
-		// Repo config form saved.
-		if form := a.modals.Config(); form != nil && a.modals.ConfigRepoPath() != "" {
-			repoPath := a.modals.ConfigRepoPath()
-			alias := strings.TrimSpace(form.textValue("Alias"))
-			settings := a.extractRepoSettings()
-			if err := config.SaveRepoSettings(repoPath, settings); err != nil {
-				a.setError(err.Error())
-			} else {
-				a.repoSettings[repoPath] = settings
-				a.resolvedCache[repoPath] = config.Resolve(a.globalSettings, settings)
-				if mgr := a.managers[repoPath]; mgr != nil {
-					mgr.UpdateSettings(a.resolvedCache[repoPath])
-				}
-			}
-			for i, r := range a.cfg.Repos {
-				if r.Path == repoPath && r.Alias != alias {
-					a.cfg.Repos[i].Alias = alias
-					if err := config.Save(a.cfg); err != nil {
-						a.setError(err.Error())
-					}
-					a.refreshAgentList()
-					break
-				}
-			}
-		}
-		return a.returnFromConfigForm()
+		return a.handleConfigFormSave()
 
 	case configFormCancelMsg:
 		// Repo config form cancelled.
 		return a.returnFromConfigForm()
 
 	case tea.PasteMsg:
-		// Prompt modal consumes paste while open (same precedence as the
-		// KeyPressMsg branch below) so cmd+v / bracketed paste inserts into
-		// the textarea instead of being swallowed by the focusLaunch path.
-		if a.promptModal.Active() {
-			cmd := a.promptModal.Update(msg)
-			return a, cmd
-		}
-		if a.prComposeModal.Active() {
-			cmd := a.prComposeModal.Update(msg)
-			return a, cmd
-		}
-		if ag := a.modals.LaunchAgent(); ag != nil {
-			ag.Paste(msg.Content)
-			return a, nil
-		}
+		return a.handleDashboardPaste(msg)
 
 	case tea.KeyPressMsg:
 		// Prompt modal consumes all keys while open (it's a modal overlay).
@@ -123,152 +84,13 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return newA, cmd
 		}
 
-		// Pipeline view key handling (the only dashboard mode).
-		if !a.modals.Is(focusReview) && !a.modals.Is(focusShipping) {
-			switch msg.String() {
-			case "up", "k":
-				a.cursor.MoveUp(a.dashboard.sectionCounts())
-				a.syncFocusCursorToDashboard()
-				return a, nil
-			case "down", "j":
-				a.cursor.MoveDown(a.dashboard.sectionCounts())
-				a.syncFocusCursorToDashboard()
-				return a, nil
-			case "space", "enter":
-				if cmd, ok := a.activateFocusCursor(); ok {
-					return a, cmd
-				}
-				// Cursor section had no actionable row: fall through to normal enter handling.
-			case "N":
-				if a.cfg != nil && len(a.cfg.Repos) > 0 {
-					currentIdx := -1
-					for i, repo := range a.cfg.Repos {
-						if repo.Path == a.activeRepo {
-							currentIdx = i
-							break
-						}
-					}
-					nextIdx := (currentIdx + 1) % len(a.cfg.Repos)
-					a.activeRepo = a.cfg.Repos[nextIdx].Path
-					a.refreshAgentList()
-				}
-				return a, nil
-			case "b":
-				// Context-sensitive: when the cursor is on a Planning row,
-				// 'b' advances it to Building. Otherwise we leave the case
-				// without returning so the global "take a break" handler in
-				// the switch below catches the press. Picking a Planning row
-				// to advance is a deliberate action, while taking a break is
-				// the catch-all everywhere else — so the cursor location is
-				// the disambiguator the user already has at hand.
-				if !a.wellness.focusBreakMode && a.cursor.Section() == focusSectionPlanning {
-					planning := a.dashboard.planningSessions()
-					if len(planning) > 0 {
-						idx := a.cursor.Index(focusSectionPlanning)
-						if idx >= len(planning) {
-							idx = len(planning) - 1
-						}
-						if sess := planning[idx].session; sess != nil {
-							sess.SetLifecyclePhase(agent.LifecycleInProgress)
-							a.cursor.Clamp(a.dashboard.sectionCounts())
-							a.syncFocusCursorToDashboard()
-						}
-					}
-					// Cursor is on Planning — even if the section was empty in
-					// a fast-tick race window, swallow the press here so we
-					// don't accidentally trigger the wellness break.
-					return a, nil
-				}
-				// Fall through to the global break handler below.
-			case "m":
-				// Mark the cursor-selected Planning or Building session as
-				// ReadyForReview. We accept Planning too so the natural flow
-				// works when Claude finishes the work in one shot — the
-				// idle-reviewable cue ("press m to review") is rendered for
-				// any reviewable session regardless of phase, and pressing m
-				// shouldn't surprise the user with an error in that case.
-				var sess *agent.Session
-				switch a.cursor.Section() {
-				case focusSectionPlanning:
-					planning := a.dashboard.planningSessions()
-					if pi := a.cursor.Index(focusSectionPlanning); pi < len(planning) {
-						sess = planning[pi].session
-					}
-				case focusSectionBuilding:
-					building := a.dashboard.buildingSessions()
-					if bi := a.cursor.Index(focusSectionBuilding); bi < len(building) {
-						sess = building[bi].session
-					}
-				default:
-					a.setError("nothing to mark — cursor isn't on a Planning or Building session")
-					return a, nil
-				}
-				if sess == nil {
-					a.setError("no session under cursor")
-					return a, nil
-				}
-				if !sess.IsReviewable() {
-					switch sess.Status() {
-					case agent.StatusActive:
-						a.setError("session is still running — wait for Claude to finish its turn")
-					case agent.StatusWaiting:
-						a.setError("session is waiting for input — resolve the prompt first")
-					default:
-						a.setError("session is still running — wait for Claude to finish its turn")
-					}
-					return a, nil
-				}
-				sess.SetLifecyclePhase(agent.LifecycleReadyForReview)
-				a.cursor.SetIndex(focusSectionReview, 0)
-				return a, a.fetchReviewDiffCmd(sess)
-			case "r":
-				reviewItems := a.dashboard.reviewQueueSessions()
-				if len(reviewItems) == 0 {
-					a.setError("review queue is empty — press m on a finished session first")
-					return a, nil
-				}
-				idx := a.cursor.Index(focusSectionReview)
-				if idx >= len(reviewItems) {
-					idx = len(reviewItems) - 1
-				}
-				sess := reviewItems[idx].session
-				sess.SetLifecyclePhase(agent.LifecycleInReview)
-				a.openReview(newReviewPanel(sess, a.width, a.height))
-				if _, ok := a.reviewDiffCache[sess.ID]; !ok {
-					return a, a.fetchReviewDiffCmd(sess)
-				}
-				a.modals.Review().RefreshDiffViewport(a.panelServices())
-				return a, nil
-			case "n":
-				if a.cfg != nil && len(a.cfg.Repos) > 1 {
-					// Apply the same soft agent-count guard as the single-repo
-					// path before opening the picker.
-					resolved := a.resolvedCache[a.activeRepo]
-					if resolved.MaxConcurrentAgents > 0 && a.activeAgentCount() >= resolved.MaxConcurrentAgents {
-						if !a.agentLimitModalActive {
-							a.agentLimitModalActive = true
-							return a, nil
-						}
-						a.agentLimitModalActive = false
-					}
-					counts := make(map[string]int, len(a.cfg.Repos))
-					for _, repo := range a.cfg.Repos {
-						if mgr := a.managers[repo.Path]; mgr != nil {
-							counts[repo.Path] = mgr.AgentCount()
-						}
-					}
-					a.repoPicker = newRepoPickerModel()
-					a.repoPicker.width = a.width
-					a.repoPicker.height = a.height - 1
-					a.repoPicker.SetMode(repoPickerModeSession)
-					a.repoPicker.setRepos(a.cfg.Repos, counts, a.activeRepo)
-					a.view = ViewRepoPicker
-					return a, nil
-				}
-				// Single repo: exits this case without returning, so control
-				// falls through to the general "n" handler below, which contains
-				// the agent-count and backlog soft-limit checks.
-			}
+		// Pipeline view key handling (the only dashboard mode). The handler
+		// consumes terminal keys (up/down/N/m/r) outright; partial-match cases
+		// (space/enter with no actionable row, b not on Planning, n on a
+		// single-repo install) return handled=false and fall through to the
+		// repo-header enter / q-quit / handleKeysWorkflow stages below.
+		if newA, cmd, handled := a.handlePipelineKeys(msg); handled {
+			return newA, cmd
 		}
 
 		// Enter/right on a repo header: open repo config in right panel.
@@ -280,37 +102,12 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		switch msg.String() {
-		case "q", "ctrl+c":
-			// Detach path: save state and exit, preserving worktrees.
-			hasRunning := false
-			for _, mgr := range a.managers {
-				if mgr.AgentCount() > 0 {
-					hasRunning = true
-					break
-				}
-			}
-			if hasRunning && !a.confirmQuit {
-				a.confirmQuit = true
-				return a, nil
-			}
-			// Detach all managers and save state.
-			for repoPath, mgr := range a.managers {
-				bs := mgr.Detach()
-				if bs != nil {
-					_ = state.Save(repoPath, bs)
-				} else {
-					_ = state.Remove(repoPath)
-				}
-			}
-			if a.audioPlayer != nil {
-				a.audioPlayer.Close()
-			}
-			a.writeWellnessLog()
-			return a, tea.Quit
-		default:
-			a.confirmQuit = false
+		newA, cmd, handled := a.handleQuitKey(msg)
+		if handled {
+			return newA, cmd
 		}
+		// handleQuitKey clears confirmQuit on any non-quit key; preserve that.
+		a = newA
 
 		if newA, cmd, handled := a.handleKeysWorkflow(msg); handled {
 			return newA, cmd
@@ -318,198 +115,19 @@ func (a App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	if msg, ok := msg.(tea.MouseClickMsg); ok {
-		// Compute offset before clearing confirmQuit — reflects what was on screen.
-		dashboardTopY := 0
-		if a.err != "" {
-			dashboardTopY++
-		}
-		if a.confirmQuit {
-			dashboardTopY++
-		}
-		a.confirmQuit = false
-		if msg.Button != tea.MouseLeft {
-			return a, nil
-		}
-
-		// focusLaunch: tab bar click switches the active agent; clicks inside
-		// the agent terminal seed a text selection.
-		if sess := a.modals.LaunchSession(); sess != nil {
-			tabBarY := dashboardTopY + 1
-			if msg.Y == tabBarY {
-				if idx := a.focusLaunchTabIndexAt(msg.X); idx >= 0 {
-					agents := sess.Agents()
-					a.modals.SetLaunchAgent(agents[idx])
-					a.syncModalsToDashboard()
-					a.dashboard.scrollOffset = 0
-					agents[idx].Resize(a.focusLaunchTermHeight(), a.dashboard.width)
-				}
-				return a, nil
-			}
-			if ag := a.modals.LaunchAgent(); ag != nil {
-				if termX, termY, inVP := a.screenToTermCellFocusLaunch(msg.X, msg.Y); inVP {
-					a.dashboard.selection = selection{
-						anchorX: termX,
-						anchorY: termY,
-						cursorX: termX,
-						cursorY: termY,
-						active:  true,
-						agentID: ag.ID,
-					}
-				} else {
-					a.dashboard.clearSelection()
-				}
-			}
-			return a, nil
-		}
-
-		// focusReview: delegate left-pane row clicks to the panel.
-		if rp := a.modals.Review(); rp != nil {
-			before := rp.TaskCursor()
-			rp.handleClick(msg, a.panelServices())
-			if rp.TaskCursor() != before {
-				return a, nil
-			}
-		}
-
-		// Pipeline view: click on a session card moves the cursor; double-click
-		// activates (focusLaunch for active sessions, review panel for queue).
-		// PR-indicator click on a queue row opens the PR in the browser.
-		section, idx, hit := a.pipelineHitTest(msg.Y - dashboardTopY)
-		if !hit {
-			return a, nil
-		}
-		// Detect a PR-indicator click on review/shipping rows: the prIndicator
-		// is right-aligned on the card; the X-column check below narrows the
-		// hit region without needing per-row Y granularity from pipelineHitTest.
-		if section == focusSectionReview || section == focusSectionShipping {
-			items := a.dashboard.sectionItems(section)
-			if idx < len(items) {
-				sess := items[idx].session
-				if entry := a.prCache[sess.ID]; entry != nil && entry.pr != nil && entry.pr.URL != "" {
-					indicatorWidth := prIndicatorWidth(entry)
-					if indicatorWidth > 0 && msg.X >= a.width-indicatorWidth-2 {
-						if err := openURL(entry.pr.URL); err != nil {
-							a.setError(err.Error())
-						}
-						// Reset double-click bookkeeping: this click was a PR
-						// activation, not a card selection. Without this, a
-						// quick follow-up card click on the same section/idx
-						// could read a stale lastPipelineClick and fire a
-						// phantom double-click into the review panel.
-						a.lastPipelineClick = time.Time{}
-						return a, nil
-					}
-				}
-			}
-		}
-		// Move the cursor to the clicked session.
-		now := time.Now()
-		isDoubleClick := !a.lastPipelineClick.IsZero() &&
-			now.Sub(a.lastPipelineClick) < 500*time.Millisecond &&
-			a.lastPipelineClickSec == section &&
-			a.lastPipelineClickIdx == idx
-		a.lastPipelineClick = now
-		a.lastPipelineClickSec = section
-		a.lastPipelineClickIdx = idx
-
-		a.cursor.JumpTo(section, idx)
-		a.syncFocusCursorToDashboard()
-
-		if isDoubleClick {
-			if cmd, ok := a.activateFocusCursor(); ok {
-				return a, cmd
-			}
-		}
-		return a, nil
+		return a.handleMouseClick(msg)
 	}
 
 	if msg, ok := msg.(tea.MouseMotionMsg); ok {
-		// Drag updates the cursor end of an in-flight selection. Selections
-		// only seed in focusLaunch (see MouseClickMsg), so any motion outside
-		// focusLaunch can be ignored here.
-		if a.dashboard.selection.active && msg.Button == tea.MouseLeft &&
-			a.modals.LaunchAgent() != nil {
-			tx, ty, inVP := a.screenToTermCellFocusLaunch(msg.X, msg.Y)
-			if inVP {
-				a.dashboard.selection.cursorX = tx
-				a.dashboard.selection.cursorY = ty
-				a.dashboard.selection.dragSeen = true
-			}
-		}
-		return a, nil
+		return a.handleMouseMotion(msg)
 	}
 
 	if _, ok := msg.(tea.MouseReleaseMsg); ok {
-		if a.dashboard.selection.active {
-			if a.dashboard.selection.dragSeen {
-				// Real drag — copy the highlighted region. Selections only seed
-				// in focusLaunch (see MouseClickMsg), so this is the only path.
-				if ag := a.modals.LaunchAgent(); ag != nil && ag.ID == a.dashboard.selection.agentID {
-					if sx, sy, ex, ey, ok := a.dashboard.selectionRect(); ok {
-						rect := vt.SelectionRect{
-							StartX: sx, StartY: sy, EndX: ex, EndY: ey, Active: true,
-						}
-						var text string
-						if a.dashboard.scrollOffset > 0 {
-							vpWidth := a.dashboard.width
-							vpHeight := a.focusLaunchTermHeight()
-							text = ag.ExtractTextFromSnapshot(vpWidth, vpHeight, a.dashboard.scrollOffset, rect)
-						} else {
-							text = ag.ExtractText(rect)
-						}
-						if text != "" {
-							return a, tea.SetClipboard(text)
-						}
-					}
-				}
-			} else {
-				// Plain click — drop the seeded selection. Focus already moved
-				// in the click handler.
-				a.dashboard.clearSelection()
-			}
-		}
-		return a, nil
+		return a.handleMouseRelease()
 	}
 
 	if msg, ok := msg.(tea.MouseWheelMsg); ok {
-		if ag := a.modals.LaunchAgent(); ag != nil {
-			if ag.IsAltScreen() {
-				termX, termY, _ := a.screenToTermCellFocusLaunch(msg.X, msg.Y)
-				if termX < 0 {
-					termX = 0
-				}
-				if termX >= a.dashboard.width {
-					termX = a.dashboard.width - 1
-				}
-				if termY < 0 {
-					termY = 0
-				}
-				if termY >= a.focusLaunchTermHeight() {
-					termY = a.focusLaunchTermHeight() - 1
-				}
-				ag.SendMouse(xvt.MouseWheel{
-					X:      termX,
-					Y:      termY,
-					Button: xvt.MouseButton(msg.Button),
-					Mod:    xvt.KeyMod(msg.Mod),
-				})
-				return a, nil
-			}
-			if msg.Button == tea.MouseWheelUp {
-				sbLines := len(ag.ScrollbackLines())
-				max := sbLines
-				a.dashboard.scrollOffset += 3
-				if a.dashboard.scrollOffset > max {
-					a.dashboard.scrollOffset = max
-				}
-			} else {
-				a.dashboard.scrollOffset -= 3
-				if a.dashboard.scrollOffset < 0 {
-					a.dashboard.scrollOffset = 0
-				}
-			}
-		}
-		return a, nil
+		return a.handleMouseWheel(msg)
 	}
 
 	prevSelected := a.dashboard.selected
@@ -1164,4 +782,479 @@ func (a App) handleKeysWorkflow(msg tea.KeyPressMsg) (App, tea.Cmd, bool) {
 
 	}
 	return a, nil, false
+}
+
+// handleMouseClick routes a left-click depending on the active panel:
+// focusLaunch tab bar switches the active agent and the agent terminal seeds
+// a text selection, focusReview delegates left-pane row clicks to the panel,
+// and otherwise the click lands on a pipeline card (with double-click
+// activation and a PR-indicator hit region on review/shipping rows).
+func (a App) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
+	// Compute offset before clearing confirmQuit — reflects what was on screen.
+	dashboardTopY := 0
+	if a.err != "" {
+		dashboardTopY++
+	}
+	if a.confirmQuit {
+		dashboardTopY++
+	}
+	a.confirmQuit = false
+	if msg.Button != tea.MouseLeft {
+		return a, nil
+	}
+
+	// focusLaunch: tab bar click switches the active agent; clicks inside
+	// the agent terminal seed a text selection.
+	if sess := a.modals.LaunchSession(); sess != nil {
+		tabBarY := dashboardTopY + 1
+		if msg.Y == tabBarY {
+			if idx := a.focusLaunchTabIndexAt(msg.X); idx >= 0 {
+				agents := sess.Agents()
+				a.modals.SetLaunchAgent(agents[idx])
+				a.syncModalsToDashboard()
+				a.dashboard.scrollOffset = 0
+				agents[idx].Resize(a.focusLaunchTermHeight(), a.dashboard.width)
+			}
+			return a, nil
+		}
+		if ag := a.modals.LaunchAgent(); ag != nil {
+			if termX, termY, inVP := a.screenToTermCellFocusLaunch(msg.X, msg.Y); inVP {
+				a.dashboard.selection = selection{
+					anchorX: termX,
+					anchorY: termY,
+					cursorX: termX,
+					cursorY: termY,
+					active:  true,
+					agentID: ag.ID,
+				}
+			} else {
+				a.dashboard.clearSelection()
+			}
+		}
+		return a, nil
+	}
+
+	// focusReview: delegate left-pane row clicks to the panel.
+	if rp := a.modals.Review(); rp != nil {
+		before := rp.TaskCursor()
+		rp.handleClick(msg, a.panelServices())
+		if rp.TaskCursor() != before {
+			return a, nil
+		}
+	}
+
+	// Pipeline view: click on a session card moves the cursor; double-click
+	// activates (focusLaunch for active sessions, review panel for queue).
+	// PR-indicator click on a queue row opens the PR in the browser.
+	section, idx, hit := a.pipelineHitTest(msg.Y - dashboardTopY)
+	if !hit {
+		return a, nil
+	}
+	// Detect a PR-indicator click on review/shipping rows: the prIndicator
+	// is right-aligned on the card; the X-column check below narrows the
+	// hit region without needing per-row Y granularity from pipelineHitTest.
+	if section == focusSectionReview || section == focusSectionShipping {
+		items := a.dashboard.sectionItems(section)
+		if idx < len(items) {
+			sess := items[idx].session
+			if entry := a.prCache[sess.ID]; entry != nil && entry.pr != nil && entry.pr.URL != "" {
+				indicatorWidth := prIndicatorWidth(entry)
+				if indicatorWidth > 0 && msg.X >= a.width-indicatorWidth-2 {
+					if err := openURL(entry.pr.URL); err != nil {
+						a.setError(err.Error())
+					}
+					// Reset double-click bookkeeping: this click was a PR
+					// activation, not a card selection. Without this, a
+					// quick follow-up card click on the same section/idx
+					// could read a stale lastPipelineClick and fire a
+					// phantom double-click into the review panel.
+					a.lastPipelineClick = time.Time{}
+					return a, nil
+				}
+			}
+		}
+	}
+	// Move the cursor to the clicked session.
+	now := time.Now()
+	isDoubleClick := !a.lastPipelineClick.IsZero() &&
+		now.Sub(a.lastPipelineClick) < 500*time.Millisecond &&
+		a.lastPipelineClickSec == section &&
+		a.lastPipelineClickIdx == idx
+	a.lastPipelineClick = now
+	a.lastPipelineClickSec = section
+	a.lastPipelineClickIdx = idx
+
+	a.cursor.JumpTo(section, idx)
+	a.syncFocusCursorToDashboard()
+
+	if isDoubleClick {
+		if cmd, ok := a.activateFocusCursor(); ok {
+			return a, cmd
+		}
+	}
+	return a, nil
+}
+
+// handleMouseMotion updates the cursor end of an in-flight text selection
+// inside the focusLaunch agent terminal. Selections only seed in focusLaunch
+// (see handleMouseClick), so motion outside that mode is ignored.
+func (a App) handleMouseMotion(msg tea.MouseMotionMsg) (tea.Model, tea.Cmd) {
+	if a.dashboard.selection.active && msg.Button == tea.MouseLeft &&
+		a.modals.LaunchAgent() != nil {
+		tx, ty, inVP := a.screenToTermCellFocusLaunch(msg.X, msg.Y)
+		if inVP {
+			a.dashboard.selection.cursorX = tx
+			a.dashboard.selection.cursorY = ty
+			a.dashboard.selection.dragSeen = true
+		}
+	}
+	return a, nil
+}
+
+// handleMouseRelease finalises a drag-to-select (copy the highlighted region
+// to the clipboard) or drops a seeded selection on a plain click.
+func (a App) handleMouseRelease() (tea.Model, tea.Cmd) {
+	if !a.dashboard.selection.active {
+		return a, nil
+	}
+	if !a.dashboard.selection.dragSeen {
+		// Plain click — drop the seeded selection. Focus already moved
+		// in the click handler.
+		a.dashboard.clearSelection()
+		return a, nil
+	}
+	// Real drag — copy the highlighted region. Selections only seed
+	// in focusLaunch (see handleMouseClick), so this is the only path.
+	ag := a.modals.LaunchAgent()
+	if ag == nil || ag.ID != a.dashboard.selection.agentID {
+		return a, nil
+	}
+	sx, sy, ex, ey, ok := a.dashboard.selectionRect()
+	if !ok {
+		return a, nil
+	}
+	rect := vt.SelectionRect{
+		StartX: sx, StartY: sy, EndX: ex, EndY: ey, Active: true,
+	}
+	var text string
+	if a.dashboard.scrollOffset > 0 {
+		vpWidth := a.dashboard.width
+		vpHeight := a.focusLaunchTermHeight()
+		text = ag.ExtractTextFromSnapshot(vpWidth, vpHeight, a.dashboard.scrollOffset, rect)
+	} else {
+		text = ag.ExtractText(rect)
+	}
+	if text != "" {
+		return a, tea.SetClipboard(text)
+	}
+	return a, nil
+}
+
+// handleMouseWheel scrolls the focusLaunch agent terminal: in alt-screen mode
+// the wheel is forwarded to the PTY as a mouse-wheel event; otherwise it
+// adjusts the dashboard scrollback offset.
+func (a App) handleMouseWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
+	ag := a.modals.LaunchAgent()
+	if ag == nil {
+		return a, nil
+	}
+	if ag.IsAltScreen() {
+		termX, termY, _ := a.screenToTermCellFocusLaunch(msg.X, msg.Y)
+		if termX < 0 {
+			termX = 0
+		}
+		if termX >= a.dashboard.width {
+			termX = a.dashboard.width - 1
+		}
+		if termY < 0 {
+			termY = 0
+		}
+		if termY >= a.focusLaunchTermHeight() {
+			termY = a.focusLaunchTermHeight() - 1
+		}
+		ag.SendMouse(xvt.MouseWheel{
+			X:      termX,
+			Y:      termY,
+			Button: xvt.MouseButton(msg.Button),
+			Mod:    xvt.KeyMod(msg.Mod),
+		})
+		return a, nil
+	}
+	if msg.Button == tea.MouseWheelUp {
+		sbLines := len(ag.ScrollbackLines())
+		max := sbLines
+		a.dashboard.scrollOffset += 3
+		if a.dashboard.scrollOffset > max {
+			a.dashboard.scrollOffset = max
+		}
+	} else {
+		a.dashboard.scrollOffset -= 3
+		if a.dashboard.scrollOffset < 0 {
+			a.dashboard.scrollOffset = 0
+		}
+	}
+	return a, nil
+}
+
+// handlePipelineKeys dispatches the dashboard-pipeline keypress switch
+// (up/down/space/enter/N/b/m/r/n) when no overlay panel owns focus. Returns
+// handled=true when the key was consumed terminally; handled=false signals
+// the partial-match cases (space/enter with no actionable row, b not on a
+// Planning row, n on a single-repo install) that fall through to the
+// repo-header / quit / workflow stages.
+func (a App) handlePipelineKeys(msg tea.KeyPressMsg) (App, tea.Cmd, bool) {
+	if a.modals.Is(focusReview) || a.modals.Is(focusShipping) {
+		return a, nil, false
+	}
+	switch msg.String() {
+	case "up", "k":
+		a.cursor.MoveUp(a.dashboard.sectionCounts())
+		a.syncFocusCursorToDashboard()
+		return a, nil, true
+	case "down", "j":
+		a.cursor.MoveDown(a.dashboard.sectionCounts())
+		a.syncFocusCursorToDashboard()
+		return a, nil, true
+	case "space", "enter":
+		if cmd, ok := a.activateFocusCursor(); ok {
+			return a, cmd, true
+		}
+		// Cursor section had no actionable row: fall through to normal enter handling.
+	case "N":
+		if a.cfg != nil && len(a.cfg.Repos) > 0 {
+			currentIdx := -1
+			for i, repo := range a.cfg.Repos {
+				if repo.Path == a.activeRepo {
+					currentIdx = i
+					break
+				}
+			}
+			nextIdx := (currentIdx + 1) % len(a.cfg.Repos)
+			a.activeRepo = a.cfg.Repos[nextIdx].Path
+			a.refreshAgentList()
+		}
+		return a, nil, true
+	case "b":
+		// Context-sensitive: when the cursor is on a Planning row,
+		// 'b' advances it to Building. Otherwise we leave the case
+		// without returning so the global "take a break" handler in
+		// the switch below catches the press. Picking a Planning row
+		// to advance is a deliberate action, while taking a break is
+		// the catch-all everywhere else — so the cursor location is
+		// the disambiguator the user already has at hand.
+		if !a.wellness.focusBreakMode && a.cursor.Section() == focusSectionPlanning {
+			planning := a.dashboard.planningSessions()
+			if len(planning) > 0 {
+				idx := a.cursor.Index(focusSectionPlanning)
+				if idx >= len(planning) {
+					idx = len(planning) - 1
+				}
+				if sess := planning[idx].session; sess != nil {
+					sess.SetLifecyclePhase(agent.LifecycleInProgress)
+					a.cursor.Clamp(a.dashboard.sectionCounts())
+					a.syncFocusCursorToDashboard()
+				}
+			}
+			// Cursor is on Planning — even if the section was empty in
+			// a fast-tick race window, swallow the press here so we
+			// don't accidentally trigger the wellness break.
+			return a, nil, true
+		}
+		// Fall through to the global break handler.
+	case "m":
+		return a.handlePipelineMarkReady()
+	case "r":
+		return a.handlePipelineOpenReview()
+	case "n":
+		if a.cfg != nil && len(a.cfg.Repos) > 1 {
+			// Apply the same soft agent-count guard as the single-repo
+			// path before opening the picker.
+			resolved := a.resolvedCache[a.activeRepo]
+			if resolved.MaxConcurrentAgents > 0 && a.activeAgentCount() >= resolved.MaxConcurrentAgents {
+				if !a.agentLimitModalActive {
+					a.agentLimitModalActive = true
+					return a, nil, true
+				}
+				a.agentLimitModalActive = false
+			}
+			counts := make(map[string]int, len(a.cfg.Repos))
+			for _, repo := range a.cfg.Repos {
+				if mgr := a.managers[repo.Path]; mgr != nil {
+					counts[repo.Path] = mgr.AgentCount()
+				}
+			}
+			a.repoPicker = newRepoPickerModel()
+			a.repoPicker.width = a.width
+			a.repoPicker.height = a.height - 1
+			a.repoPicker.SetMode(repoPickerModeSession)
+			a.repoPicker.setRepos(a.cfg.Repos, counts, a.activeRepo)
+			a.view = ViewRepoPicker
+			return a, nil, true
+		}
+		// Single repo: fall through to the general "n" handler, which
+		// contains the agent-count and backlog soft-limit checks.
+	}
+	return a, nil, false
+}
+
+// handlePipelineMarkReady promotes the cursor-selected Planning or Building
+// session to ReadyForReview (m key). We accept Planning too so the natural
+// flow works when Claude finishes the work in one shot — the
+// idle-reviewable cue ("press m to review") is rendered for any reviewable
+// session regardless of phase.
+func (a App) handlePipelineMarkReady() (App, tea.Cmd, bool) {
+	var sess *agent.Session
+	switch a.cursor.Section() {
+	case focusSectionPlanning:
+		planning := a.dashboard.planningSessions()
+		if pi := a.cursor.Index(focusSectionPlanning); pi < len(planning) {
+			sess = planning[pi].session
+		}
+	case focusSectionBuilding:
+		building := a.dashboard.buildingSessions()
+		if bi := a.cursor.Index(focusSectionBuilding); bi < len(building) {
+			sess = building[bi].session
+		}
+	default:
+		a.setError("nothing to mark — cursor isn't on a Planning or Building session")
+		return a, nil, true
+	}
+	if sess == nil {
+		a.setError("no session under cursor")
+		return a, nil, true
+	}
+	if !sess.IsReviewable() {
+		switch sess.Status() {
+		case agent.StatusActive:
+			a.setError("session is still running — wait for Claude to finish its turn")
+		case agent.StatusWaiting:
+			a.setError("session is waiting for input — resolve the prompt first")
+		default:
+			a.setError("session is still running — wait for Claude to finish its turn")
+		}
+		return a, nil, true
+	}
+	sess.SetLifecyclePhase(agent.LifecycleReadyForReview)
+	a.cursor.SetIndex(focusSectionReview, 0)
+	return a, a.fetchReviewDiffCmd(sess), true
+}
+
+// handlePipelineOpenReview opens the review panel on the cursor-selected
+// review-queue session (r key).
+func (a App) handlePipelineOpenReview() (App, tea.Cmd, bool) {
+	reviewItems := a.dashboard.reviewQueueSessions()
+	if len(reviewItems) == 0 {
+		a.setError("review queue is empty — press m on a finished session first")
+		return a, nil, true
+	}
+	idx := a.cursor.Index(focusSectionReview)
+	if idx >= len(reviewItems) {
+		idx = len(reviewItems) - 1
+	}
+	sess := reviewItems[idx].session
+	sess.SetLifecyclePhase(agent.LifecycleInReview)
+	a.openReview(newReviewPanel(sess, a.width, a.height))
+	if _, ok := a.reviewDiffCache[sess.ID]; !ok {
+		return a, a.fetchReviewDiffCmd(sess), true
+	}
+	a.modals.Review().RefreshDiffViewport(a.panelServices())
+	return a, nil, true
+}
+
+// handleConfigFormSave persists the in-flight repo config form. On success
+// the repo's alias may have changed, in which case the config file is also
+// saved and the dashboard list is rebuilt to reflect the new label. Either
+// way the form is closed and focus returns to the pipeline.
+func (a App) handleConfigFormSave() (tea.Model, tea.Cmd) {
+	if form := a.modals.Config(); form != nil && a.modals.ConfigRepoPath() != "" {
+		repoPath := a.modals.ConfigRepoPath()
+		alias := strings.TrimSpace(form.textValue("Alias"))
+		settings := a.extractRepoSettings()
+		if err := config.SaveRepoSettings(repoPath, settings); err != nil {
+			a.setError(err.Error())
+		} else {
+			a.repoSettings[repoPath] = settings
+			a.resolvedCache[repoPath] = config.Resolve(a.globalSettings, settings)
+			if mgr := a.managers[repoPath]; mgr != nil {
+				mgr.UpdateSettings(a.resolvedCache[repoPath])
+			}
+		}
+		for i, r := range a.cfg.Repos {
+			if r.Path == repoPath && r.Alias != alias {
+				a.cfg.Repos[i].Alias = alias
+				if err := config.Save(a.cfg); err != nil {
+					a.setError(err.Error())
+				}
+				a.refreshAgentList()
+				break
+			}
+		}
+	}
+	return a.returnFromConfigForm()
+}
+
+// handleDashboardPaste routes a paste event to whichever modal owns focus:
+// the prompt modal, the PR compose modal, or the focusLaunch agent terminal.
+// When no consumer is active the paste is dropped (no panel consumes
+// arbitrary text on the pipeline).
+func (a App) handleDashboardPaste(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
+	// Prompt modal consumes paste while open (same precedence as the
+	// KeyPressMsg branch) so cmd+v / bracketed paste inserts into the
+	// textarea instead of being swallowed by the focusLaunch path.
+	if a.promptModal.Active() {
+		cmd := a.promptModal.Update(msg)
+		return a, cmd
+	}
+	if a.prComposeModal.Active() {
+		cmd := a.prComposeModal.Update(msg)
+		return a, cmd
+	}
+	if ag := a.modals.LaunchAgent(); ag != nil {
+		ag.Paste(msg.Content)
+		return a, nil
+	}
+	return a, nil
+}
+
+// handleQuitKey implements the q / ctrl+c detach-and-exit gesture. With
+// running agents the first press arms a confirm prompt; the second press
+// (or first press when no agents are running) detaches all managers,
+// persists per-repo state, writes the wellness log, and quits.
+//
+// Returns handled=true when q/ctrl+c was pressed. On any other key the
+// confirm flag is cleared and handled=false is returned so the dispatch
+// continues to the workflow handler.
+func (a App) handleQuitKey(msg tea.KeyPressMsg) (App, tea.Cmd, bool) {
+	switch msg.String() {
+	case "q", "ctrl+c":
+	default:
+		a.confirmQuit = false
+		return a, nil, false
+	}
+	// Detach path: save state and exit, preserving worktrees.
+	hasRunning := false
+	for _, mgr := range a.managers {
+		if mgr.AgentCount() > 0 {
+			hasRunning = true
+			break
+		}
+	}
+	if hasRunning && !a.confirmQuit {
+		a.confirmQuit = true
+		return a, nil, true
+	}
+	// Detach all managers and save state.
+	for repoPath, mgr := range a.managers {
+		bs := mgr.Detach()
+		if bs != nil {
+			_ = state.Save(repoPath, bs)
+		} else {
+			_ = state.Remove(repoPath)
+		}
+	}
+	if a.audioPlayer != nil {
+		a.audioPlayer.Close()
+	}
+	a.writeWellnessLog()
+	return a, tea.Quit, true
 }
