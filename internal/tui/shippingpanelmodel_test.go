@@ -35,7 +35,7 @@ func newTestShippingSvc() (PanelServices, *testShippingSvcState) {
 			state.openedURL = true
 			return nil
 		},
-		MergePRCmd: func(sessionID string, force bool) tea.Cmd {
+		MergePRCmd: func(sessionID, repoPath string, force bool) tea.Cmd {
 			state.mergeRequested = true
 			state.mergeForce = force
 			return func() tea.Msg { return nil }
@@ -73,7 +73,7 @@ type testShippingSvcState struct {
 // TestShippingPanelModel_EscCloses verifies esc closes the panel.
 func TestShippingPanelModel_EscCloses(t *testing.T) {
 	sess := agent.NewSessionForTest("s1", "ship")
-	panel := newShippingPanel(sess, 120, 40)
+	panel := newShippingPanel(sess, "", 120, 40)
 	svc, state := newTestShippingSvc()
 
 	_, _ = panel.Update(tea.KeyPressMsg{Code: tea.KeyEscape}, svc)
@@ -86,7 +86,7 @@ func TestShippingPanelModel_EscCloses(t *testing.T) {
 // error and does not call MergePRCmd when the PR isn't merge-ready.
 func TestShippingPanelModel_MergeBlockedWhenNotReady(t *testing.T) {
 	sess := agent.NewSessionForTest("s1", "ship")
-	panel := newShippingPanel(sess, 120, 40)
+	panel := newShippingPanel(sess, "", 120, 40)
 	svc, state := newTestShippingSvc()
 	// No PR entry => not merge-ready.
 
@@ -103,7 +103,7 @@ func TestShippingPanelModel_MergeBlockedWhenNotReady(t *testing.T) {
 // gate and calls MergePRCmd with force=true.
 func TestShippingPanelModel_ForceMergeBypasses(t *testing.T) {
 	sess := agent.NewSessionForTest("s1", "ship")
-	panel := newShippingPanel(sess, 120, 40)
+	panel := newShippingPanel(sess, "", 120, 40)
 	svc, state := newTestShippingSvc()
 	state.pr = &prCacheEntry{pr: &github.PRState{Number: 1}}
 
@@ -120,7 +120,7 @@ func TestShippingPanelModel_ForceMergeBypasses(t *testing.T) {
 // a URL is cached.
 func TestShippingPanelModel_PKeyOpensPRURL(t *testing.T) {
 	sess := agent.NewSessionForTest("s1", "ship")
-	panel := newShippingPanel(sess, 120, 40)
+	panel := newShippingPanel(sess, "", 120, 40)
 	svc, state := newTestShippingSvc()
 	state.pr = &prCacheEntry{pr: &github.PRState{URL: "https://example/pr/1"}}
 
@@ -134,7 +134,7 @@ func TestShippingPanelModel_PKeyOpensPRURL(t *testing.T) {
 // two feedback items so cursor/verdict/note keys can be exercised.
 func shippingPanelWithFeedback() (*shippingPanelModel, PanelServices, *testShippingSvcState) {
 	sess := agent.NewSessionForTest("s1", "ship")
-	panel := newShippingPanel(sess, 120, 40)
+	panel := newShippingPanel(sess, "", 120, 40)
 	svc, state := newTestShippingSvc()
 	state.pr = &prCacheEntry{
 		pr: &github.PRState{Number: 1, URL: "https://example/pr/1"},
@@ -268,7 +268,7 @@ func TestShippingPanelModel_AXU_NoItems_NoOp(t *testing.T) {
 	// Without any feedback items, the verdict keys must be no-ops, not
 	// crashes or off-by-one writes.
 	sess := agent.NewSessionForTest("s1", "ship")
-	panel := newShippingPanel(sess, 120, 40)
+	panel := newShippingPanel(sess, "", 120, 40)
 	svc, state := newTestShippingSvc()
 	for _, k := range []rune{'a', 'x', 'u'} {
 		_, _ = panel.Update(tea.KeyPressMsg{Code: k, Text: string(k)}, svc)
@@ -291,7 +291,7 @@ func TestShippingPanelModel_NKey_OpensFeedbackNoteModal(t *testing.T) {
 
 func TestShippingPanelModel_NKey_NoItems_DoesNotOpenModal(t *testing.T) {
 	sess := agent.NewSessionForTest("s1", "ship")
-	panel := newShippingPanel(sess, 120, 40)
+	panel := newShippingPanel(sess, "", 120, 40)
 	svc, _ := newTestShippingSvc()
 	_, _ = panel.Update(tea.KeyPressMsg{Code: 'n', Text: "n"}, svc)
 	if panel.NoteActive() {
@@ -361,7 +361,7 @@ func TestShippingPanelModel_TKey_OpenFail_SetsError(t *testing.T) {
 
 func TestShippingPanelModel_PKey_NoURL_SetsError(t *testing.T) {
 	sess := agent.NewSessionForTest("s1", "ship")
-	panel := newShippingPanel(sess, 120, 40)
+	panel := newShippingPanel(sess, "", 120, 40)
 	svc, state := newTestShippingSvc()
 	// No PR entry => no URL.
 	_, _ = panel.Update(tea.KeyPressMsg{Code: 'p', Text: "p"}, svc)
@@ -375,7 +375,7 @@ func TestShippingPanelModel_PKey_NoURL_SetsError(t *testing.T) {
 
 func TestShippingPanelModel_MergeReady_CallsMergeCmd(t *testing.T) {
 	sess := agent.NewSessionForTest("s1", "ship")
-	panel := newShippingPanel(sess, 120, 40)
+	panel := newShippingPanel(sess, "", 120, 40)
 	svc, state := newTestShippingSvc()
 	state.pr = &prCacheEntry{
 		pr:      &github.PRState{Number: 1, MergeableState: "clean"},
@@ -396,7 +396,7 @@ func TestShippingPanelModel_MergeReady_CallsMergeCmd(t *testing.T) {
 
 func TestShippingPanelModel_ForceMerge_NoPR_SetsError(t *testing.T) {
 	sess := agent.NewSessionForTest("s1", "ship")
-	panel := newShippingPanel(sess, 120, 40)
+	panel := newShippingPanel(sess, "", 120, 40)
 	svc, state := newTestShippingSvc()
 	// No PR entry.
 	_, _ = panel.Update(tea.KeyPressMsg{Code: 'M', Text: "M"}, svc)
@@ -453,5 +453,51 @@ func TestShippingPanelModel_UnknownKey_NoOp(t *testing.T) {
 	}{panel.FeedbackCursor(), panel.DetailScroll(), state.closed, state.errMsg, state.mergeRequested}
 	if before != after {
 		t.Errorf("unknown keys changed state: before=%+v after=%+v", before, after)
+	}
+}
+
+// TestShippingPanel_MergeKey_UsesPinnedRepoPath verifies that 'm' passes the
+// panel's pinned repoPath to MergePRCmd, not a first-match lookup.
+func TestShippingPanel_MergeKey_UsesPinnedRepoPath(t *testing.T) {
+	sess := agent.NewSessionForTest("session-1", "ship")
+	panel := newShippingPanel(sess, "/repoB", 120, 40)
+	svc, state := newTestShippingSvc()
+	var recordedRepoPath string
+	svc.MergePRCmd = func(sessionID, repoPath string, force bool) tea.Cmd {
+		state.mergeRequested = true
+		state.mergeForce = force
+		recordedRepoPath = repoPath
+		return func() tea.Msg { return nil }
+	}
+	state.pr = &prCacheEntry{
+		pr:      &github.PRState{Number: 1, MergeableState: "clean"},
+		checks:  &github.CheckStatus{State: "success", Total: 1},
+		reviews: &github.ReviewStatus{State: "approved"},
+	}
+	_, _ = panel.Update(tea.KeyPressMsg{Code: 'm', Text: "m"}, svc)
+	if !state.mergeRequested {
+		t.Fatal("m should call MergePRCmd when ready")
+	}
+	if recordedRepoPath != "/repoB" {
+		t.Errorf("MergePRCmd received repoPath=%q, want /repoB (pinned)", recordedRepoPath)
+	}
+}
+
+// TestShippingPanel_FeedbackKey_EmitsRepoPath verifies that 'r' embeds the
+// panel's pinned repoPath in the emitted shippingFeedbackRequestMsg.
+func TestShippingPanel_FeedbackKey_EmitsRepoPath(t *testing.T) {
+	sess := agent.NewSessionForTest("session-1", "ship")
+	panel := newShippingPanel(sess, "/repoB", 120, 40)
+	svc, _ := newTestShippingSvc()
+	_, cmd := panel.Update(tea.KeyPressMsg{Code: 'r', Text: "r"}, svc)
+	if cmd == nil {
+		t.Fatal("expected cmd from r")
+	}
+	msg, ok := cmd().(shippingFeedbackRequestMsg)
+	if !ok {
+		t.Fatalf("got %T, want shippingFeedbackRequestMsg", cmd())
+	}
+	if msg.repoPath != "/repoB" {
+		t.Errorf("repoPath = %q, want /repoB (pinned)", msg.repoPath)
 	}
 }

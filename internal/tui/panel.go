@@ -57,7 +57,7 @@ type PanelServices struct {
 
 	// Cmd factories. Each MUST be pure: build the tea.Cmd, but never
 	// mutate App state; the resulting tea.Msg flows back through App.Update.
-	MergePRCmd      func(sessionID string, force bool) tea.Cmd
+	MergePRCmd      func(sessionID, repoPath string, force bool) tea.Cmd
 	StartPRDraftCmd func(sess *agent.Session, repoPath string, transitionShipping bool) tea.Cmd
 	KillSessionCmd  func(sess *agent.Session) tea.Cmd
 	FetchReviewDiff func(sess *agent.Session, repoPath string) tea.Cmd

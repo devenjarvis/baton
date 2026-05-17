@@ -12,6 +12,7 @@ import (
 // App because it survives panel close/reopen.
 type shippingPanelModel struct {
 	session        *agent.Session
+	repoPath       string
 	feedbackCursor int
 	detailScroll   int
 	feedbackNote   feedbackNoteModal
@@ -19,13 +20,17 @@ type shippingPanelModel struct {
 	width, height int
 }
 
-// newShippingPanel constructs a shipping panel for sess. The nested
-// feedbackNote modal is initialised but inactive until the user presses 'n'.
-func newShippingPanel(sess *agent.Session, width, height int) *shippingPanelModel {
+// newShippingPanel constructs a shipping panel for sess. repoPath pins which
+// repo's manager is used for merge and feedback key handlers, preventing
+// multi-repo session-ID collisions from routing operations to the wrong repo.
+// The nested feedbackNote modal is initialised but inactive until the user
+// presses 'n'.
+func newShippingPanel(sess *agent.Session, repoPath string, width, height int) *shippingPanelModel {
 	note := newFeedbackNoteModal()
 	note.SetSize(width, height+1)
 	return &shippingPanelModel{
 		session:      sess,
+		repoPath:     repoPath,
 		feedbackNote: note,
 		width:        width,
 		height:       height,
@@ -78,6 +83,7 @@ func (m *shippingPanelModel) Resize(w, h int) {
 // 'r' to address feedback. App handles the cross-cutting effects.
 type shippingFeedbackRequestMsg struct {
 	sessionID string
+	repoPath  string
 }
 
 // closeShippingPanel invokes svc.ClosePanel(). Returns nil for inline
@@ -196,17 +202,18 @@ func (m *shippingPanelModel) handleKey(msg tea.KeyPressMsg, svc PanelServices) (
 			svc.SetError("not ready to merge — use M to force")
 			return m, nil
 		}
-		return m, svc.MergePRCmd(m.session.ID, false)
+		return m, svc.MergePRCmd(m.session.ID, m.repoPath, false)
 	case "M":
 		if entry == nil || entry.pr == nil {
 			svc.SetError("no PR found")
 			return m, nil
 		}
-		return m, svc.MergePRCmd(m.session.ID, true)
+		return m, svc.MergePRCmd(m.session.ID, m.repoPath, true)
 	case "r":
 		sessID := m.session.ID
+		repoPath := m.repoPath
 		return m, func() tea.Msg {
-			return shippingFeedbackRequestMsg{sessionID: sessID}
+			return shippingFeedbackRequestMsg{sessionID: sessID, repoPath: repoPath}
 		}
 	}
 	return m, nil

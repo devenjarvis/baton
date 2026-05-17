@@ -122,6 +122,7 @@ type prCreatedMsg struct {
 // mergePRMsg carries the result of an async PR merge attempt.
 type mergePRMsg struct {
 	sessionID string
+	repoPath  string
 	err       error
 }
 
@@ -619,11 +620,11 @@ func (a *App) panelServices() PanelServices {
 		},
 		OpenURL:  openURL,
 		SetError: a.setError,
-		MergePRCmd: func(sessionID string, force bool) tea.Cmd {
+		MergePRCmd: func(sessionID, repoPath string, force bool) tea.Cmd {
 			if force {
-				return a.forceMergePRCmd(sessionID)
+				return a.forceMergePRCmd(sessionID, repoPath)
 			}
-			return a.mergePRCmd(sessionID)
+			return a.mergePRCmd(sessionID, repoPath)
 		},
 		StartPRDraftCmd: func(sess *agent.Session, repoPath string, transitionShipping bool) tea.Cmd {
 			a.prDraftInFlight = true
@@ -931,7 +932,7 @@ func (a *App) activateFocusCursor() (tea.Cmd, bool) {
 		a.modals.Review().RefreshDiffViewport(a.panelServices())
 		return nil, true
 	case focusSectionShipping:
-		a.openShipping(newShippingPanel(sess, a.width, a.height-1))
+		a.openShipping(newShippingPanel(sess, items[idx].repoPath, a.width, a.height-1))
 		return nil, true
 	}
 	return nil, false

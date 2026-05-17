@@ -40,7 +40,7 @@ func newTestSvc() (PanelServices, *testServiceState) {
 		SetError: func(msg string) {
 			state.errMsg = msg
 		},
-		MergePRCmd: func(string, bool) tea.Cmd { return nil },
+		MergePRCmd: func(string, string, bool) tea.Cmd { return nil },
 		StartPRDraftCmd: func(*agent.Session, string, bool) tea.Cmd {
 			return func() tea.Msg { return nil }
 		},

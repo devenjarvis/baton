@@ -3160,11 +3160,11 @@ func TestMergePRMsg_ClosesPanel(t *testing.T) {
 	mgr.AddSessionForTest(sess)
 
 	app := NewApp()
-	app.openShipping(newShippingPanel(sess, app.width, app.height))
+	app.openShipping(newShippingPanel(sess, dir, app.width, app.height))
 	app.managers[dir] = mgr
 	app.cfg = &config.Config{Repos: []config.Repo{{Path: dir}}}
 
-	model, cmd := app.Update(mergePRMsg{sessionID: "sess-1"})
+	model, cmd := app.Update(mergePRMsg{sessionID: "sess-1", repoPath: dir})
 	got := model.(App)
 
 	if got.dashboard.panelFocus == focusShipping {
@@ -3203,7 +3203,7 @@ func TestPRPollMsg_ExternalMergeClosesPanelAndTransitions(t *testing.T) {
 	mgr.AddSessionForTest(sess)
 
 	app := NewApp()
-	app.openShipping(newShippingPanel(sess, app.width, app.height))
+	app.openShipping(newShippingPanel(sess, "", app.width, app.height))
 	app.managers[dir] = mgr
 	app.cfg = &config.Config{Repos: []config.Repo{{Path: dir}}}
 
@@ -3249,7 +3249,7 @@ func TestPRPollMsg_ExternalCloseCleansSession(t *testing.T) {
 	mgr.AddSessionForTest(sess)
 
 	app := NewApp()
-	app.openShipping(newShippingPanel(sess, app.width, app.height))
+	app.openShipping(newShippingPanel(sess, "", app.width, app.height))
 	app.managers[dir] = mgr
 	app.cfg = &config.Config{Repos: []config.Repo{{Path: dir}}}
 
@@ -3479,7 +3479,7 @@ func TestPRPollMsg_CompleteNotPromoted(t *testing.T) {
 // TestMergePRMsg_ErrorSetsError verifies that a mergePRMsg error is surfaced.
 func TestMergePRMsg_ErrorSetsError(t *testing.T) {
 	app := NewApp()
-	app.openShipping(newShippingPanel(agent.NewSessionForTest("s", "ship"), app.width, app.height))
+	app.openShipping(newShippingPanel(agent.NewSessionForTest("s", "ship"), "", app.width, app.height))
 
 	model, _ := app.Update(mergePRMsg{sessionID: "s", err: errors.New("403 forbidden")})
 	got := model.(App)
@@ -3499,7 +3499,7 @@ func TestShippingPanel_MKeyGatedOnReady(t *testing.T) {
 	sess.SetLifecyclePhase(agent.LifecycleShipping)
 
 	app := NewApp()
-	app.openShipping(newShippingPanel(sess, app.width, app.height))
+	app.openShipping(newShippingPanel(sess, "", app.width, app.height))
 	app.prCache = map[string]*prCacheEntry{
 		sess.ID: {pr: &github.PRState{Number: 1, MergeableState: "dirty"}},
 	}
@@ -4487,7 +4487,7 @@ func TestShippingPanel_CursorAndScrollKeys(t *testing.T) {
 	sess := agent.NewSessionForTest("ship-cs", "ship")
 	sess.SetLifecyclePhase(agent.LifecycleShipping)
 	app := NewApp()
-	app.openShipping(newShippingPanel(sess, app.width, app.height))
+	app.openShipping(newShippingPanel(sess, "", app.width, app.height))
 	app.width = 120
 	app.height = 40
 	app.prCache[sess.ID] = &prCacheEntry{
@@ -4550,7 +4550,7 @@ func TestShippingPanel_VerdictKeys(t *testing.T) {
 	sess := agent.NewSessionForTest("ship-v", "ship")
 	sess.SetLifecyclePhase(agent.LifecycleShipping)
 	app := NewApp()
-	app.openShipping(newShippingPanel(sess, app.width, app.height))
+	app.openShipping(newShippingPanel(sess, "", app.width, app.height))
 	app.width = 120
 	app.height = 40
 	// One inline comment with ID=42.
@@ -4600,7 +4600,7 @@ func TestAddressFeedback_ClearsTriage(t *testing.T) {
 	mgr.AddSessionForTest(sess)
 
 	app := NewApp()
-	app.openShipping(newShippingPanel(sess, app.width, app.height))
+	app.openShipping(newShippingPanel(sess, dir, app.width, app.height))
 	app.managers[dir] = mgr
 	app.cfg = &config.Config{Repos: []config.Repo{{Path: dir}}}
 	app.width = 120
@@ -4659,7 +4659,7 @@ func TestAddressFeedback_RefusesOnMergedPR(t *testing.T) {
 			mgr.AddSessionForTest(sess)
 
 			app := NewApp()
-			app.openShipping(newShippingPanel(sess, app.width, app.height))
+			app.openShipping(newShippingPanel(sess, dir, app.width, app.height))
 			app.managers[dir] = mgr
 			app.cfg = &config.Config{Repos: []config.Repo{{Path: dir}}}
 			app.width = 120

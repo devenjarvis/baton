@@ -200,13 +200,16 @@ func (a App) handleMergePR(msg mergePRMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 	a.closeModal()
-	repoPath := a.repoPathForSession(msg.sessionID)
+	repoPath := msg.repoPath
 	if repoPath == "" {
-		return a, nil
+		repoPath = a.activeRepo
 	}
 	mgr := a.managers[repoPath]
+	if mgr == nil {
+		return a, nil
+	}
 	sess := mgr.GetSession(msg.sessionID)
-	if mgr == nil || sess == nil || a.closingSessions[msg.sessionID] {
+	if sess == nil || a.closingSessions[msg.sessionID] {
 		return a, nil
 	}
 	sess.SetLifecyclePhase(agent.LifecycleComplete)
@@ -512,28 +515,34 @@ func entryThreads(entry *prCacheEntry) []github.ReviewThread {
 // setFeedbackVerdict lazily allocates the per-session triage map and sets the
 // verdict on the item with the given key. For feedbackNeutral with an empty
 // note, the entry is deleted to keep the map clean.
-func (a *App) mergePRCmd(sessionID string) tea.Cmd {
-	return a.mergePRCmdWithMode(sessionID, false)
+func (a *App) mergePRCmd(sessionID, repoPath string) tea.Cmd {
+	return a.mergePRCmdWithMode(sessionID, repoPath, false)
 }
 
-func (a *App) forceMergePRCmd(sessionID string) tea.Cmd {
-	return a.mergePRCmdWithMode(sessionID, true)
+func (a *App) forceMergePRCmd(sessionID, repoPath string) tea.Cmd {
+	return a.mergePRCmdWithMode(sessionID, repoPath, true)
 }
 
-func (a *App) mergePRCmdWithMode(sessionID string, force bool) tea.Cmd {
+func (a *App) mergePRCmdWithMode(sessionID, repoPath string, force bool) tea.Cmd {
+	if repoPath == "" {
+		repoPath = a.activeRepo
+	}
 	ghClient := a.ghClient
 	if ghClient == nil {
 		return func() tea.Msg {
-			return mergePRMsg{sessionID: sessionID, err: fmt.Errorf("GitHub client not available")}
+			return mergePRMsg{sessionID: sessionID, repoPath: repoPath, err: fmt.Errorf("GitHub client not available")}
 		}
 	}
 	entry := a.prCache[sessionID]
 	if entry == nil || entry.pr == nil {
-		return func() tea.Msg { return mergePRMsg{sessionID: sessionID, err: fmt.Errorf("no PR cached")} }
+		return func() tea.Msg {
+			return mergePRMsg{sessionID: sessionID, repoPath: repoPath, err: fmt.Errorf("no PR cached")}
+		}
 	}
-	repoPath := a.repoPathForSession(sessionID)
 	if repoPath == "" {
-		return func() tea.Msg { return mergePRMsg{sessionID: sessionID, err: fmt.Errorf("session repo not found")} }
+		return func() tea.Msg {
+			return mergePRMsg{sessionID: sessionID, repoPath: repoPath, err: fmt.Errorf("session repo not found")}
+		}
 	}
 	method := a.resolvedCache[repoPath].MergeMethod
 	switch method {
@@ -542,7 +551,7 @@ func (a *App) mergePRCmdWithMode(sessionID string, force bool) tea.Cmd {
 		method = "squash"
 	default:
 		return func() tea.Msg {
-			return mergePRMsg{sessionID: sessionID, err: fmt.Errorf("invalid merge_method %q: must be merge, squash, or rebase", method)}
+			return mergePRMsg{sessionID: sessionID, repoPath: repoPath, err: fmt.Errorf("invalid merge_method %q: must be merge, squash, or rebase", method)}
 		}
 	}
 	prNum := entry.pr.Number
@@ -551,31 +560,31 @@ func (a *App) mergePRCmdWithMode(sessionID string, force bool) tea.Cmd {
 		defer cancel()
 		rawURL, err := git.GetRemoteURL(repoPath)
 		if err != nil {
-			return mergePRMsg{sessionID: sessionID, err: err}
+			return mergePRMsg{sessionID: sessionID, repoPath: repoPath, err: err}
 		}
 		owner, repo, err := github.ParseRemoteURL(rawURL)
 		if err != nil {
-			return mergePRMsg{sessionID: sessionID, err: err}
+			return mergePRMsg{sessionID: sessionID, repoPath: repoPath, err: err}
 		}
 
 		fresh, err := ghClient.RefreshPR(ctx, owner, repo, prNum)
 		if err != nil {
-			return mergePRMsg{sessionID: sessionID, err: fmt.Errorf("refreshing PR state: %w", err)}
+			return mergePRMsg{sessionID: sessionID, repoPath: repoPath, err: fmt.Errorf("refreshing PR state: %w", err)}
 		}
 		if fresh == nil {
-			return mergePRMsg{sessionID: sessionID, err: fmt.Errorf("PR #%d no longer exists", prNum)}
+			return mergePRMsg{sessionID: sessionID, repoPath: repoPath, err: fmt.Errorf("PR #%d no longer exists", prNum)}
 		}
 		if fresh.State != "open" {
-			return mergePRMsg{sessionID: sessionID, err: fmt.Errorf("PR #%d is %s, cannot merge", prNum, fresh.State)}
+			return mergePRMsg{sessionID: sessionID, repoPath: repoPath, err: fmt.Errorf("PR #%d is %s, cannot merge", prNum, fresh.State)}
 		}
 		if !force && fresh.MergeableState != "clean" {
-			return mergePRMsg{sessionID: sessionID, err: fmt.Errorf("PR mergeable state is %q (was %q when gate ran); refresh and retry", fresh.MergeableState, entry.pr.MergeableState)}
+			return mergePRMsg{sessionID: sessionID, repoPath: repoPath, err: fmt.Errorf("PR mergeable state is %q (was %q when gate ran); refresh and retry", fresh.MergeableState, entry.pr.MergeableState)}
 		}
 
 		if err := ghClient.MergePR(ctx, owner, repo, prNum, method); err != nil {
-			return mergePRMsg{sessionID: sessionID, err: err}
+			return mergePRMsg{sessionID: sessionID, repoPath: repoPath, err: err}
 		}
-		return mergePRMsg{sessionID: sessionID}
+		return mergePRMsg{sessionID: sessionID, repoPath: repoPath}
 	}
 }
 

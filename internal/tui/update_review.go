@@ -193,11 +193,14 @@ func (a *App) setFeedbackNote(sessID, itemKey, note string) {
 // comments, and transitions the session back to LifecycleInProgress. The
 // PR stays open.
 func (a App) handleShippingFeedbackRequest(req shippingFeedbackRequestMsg) (tea.Model, tea.Cmd) {
-	sess := a.sessionByID(req.sessionID)
+	repoPath := req.repoPath
+	if repoPath == "" {
+		repoPath = a.activeRepo
+	}
+	sess := a.sessionByIDInRepo(repoPath, req.sessionID)
 	if sess == nil {
 		return a, nil
 	}
-	repoPath := a.repoPathForSession(sess.ID)
 	if repoPath == "" {
 		a.setError("no repo found for session")
 		return a, nil
