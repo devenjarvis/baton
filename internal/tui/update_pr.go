@@ -24,6 +24,7 @@ func (a App) handlePRDraftReady(msg prDraftReadyMsg) (tea.Model, tea.Cmd) {
 	}
 	// Store context for the CreatePR call that follows confirmation.
 	a.prModalSessionID = msg.sessionID
+	a.prModalRepoPath = msg.repoPath
 	a.prModalOwner = msg.owner
 	a.prModalRepo = msg.repo
 	a.prModalHead = msg.head
@@ -41,7 +42,17 @@ func (a App) handlePRCreated(msg prCreatedMsg) (tea.Model, tea.Cmd) {
 	}
 	a.prCache[msg.sessionID] = &prCacheEntry{pr: msg.pr}
 	if msg.transitionShipping {
-		if sess := a.sessionByID(msg.sessionID); sess != nil {
+		repoPath := msg.repoPath
+		if repoPath == "" {
+			repoPath = a.repoPathForSession(msg.sessionID)
+		}
+		var sess *agent.Session
+		if repoPath != "" {
+			sess = a.sessionByIDInRepo(repoPath, msg.sessionID)
+		} else {
+			sess = a.sessionByID(msg.sessionID)
+		}
+		if sess != nil {
 			sess.SetLifecyclePhase(agent.LifecycleShipping)
 			if rp := a.modals.Review(); rp != nil && rp.SessionID() == msg.sessionID {
 				a.closeModal()
@@ -54,7 +65,10 @@ func (a App) handlePRCreated(msg prCreatedMsg) (tea.Model, tea.Cmd) {
 		ps.burstUntil = time.Now().Add(PRPollBurstAfterCreate)
 	}
 	// Auto-open in browser if configured.
-	repoPath := a.repoPathForSession(msg.sessionID)
+	repoPath := msg.repoPath
+	if repoPath == "" {
+		repoPath = a.repoPathForSession(msg.sessionID)
+	}
 	resolved := a.resolvedCache[repoPath]
 	if resolved.AutoOpenPRInBrowser && msg.pr != nil && msg.pr.URL != "" {
 		if err := openURL(msg.pr.URL); err != nil {
@@ -122,7 +136,17 @@ func (a App) handlePRPoll(msg prPollMsg) (tea.Model, tea.Cmd) {
 	}
 	// Auto-promote to Shipping when an open PR is discovered externally.
 	if msg.pr != nil && msg.pr.State == "open" {
-		if sess := a.sessionByID(msg.sessionID); sess != nil {
+		repoPath := msg.repoPath
+		if repoPath == "" {
+			repoPath = a.repoPathForSession(msg.sessionID)
+		}
+		var sess *agent.Session
+		if repoPath != "" {
+			sess = a.sessionByIDInRepo(repoPath, msg.sessionID)
+		} else {
+			sess = a.sessionByID(msg.sessionID)
+		}
+		if sess != nil {
 			switch sess.LifecyclePhase() {
 			case agent.LifecycleInProgress, agent.LifecycleReadyForReview, agent.LifecycleInReview:
 				sess.SetLifecyclePhase(agent.LifecycleShipping)
@@ -135,7 +159,10 @@ func (a App) handlePRPoll(msg prPollMsg) (tea.Model, tea.Cmd) {
 	// Detect PR merge/close and trigger async session cleanup.
 	var cmds []tea.Cmd
 	if msg.pr != nil && (msg.pr.State == "merged" || msg.pr.State == "closed") {
-		repoPath := a.repoPathForSession(msg.sessionID)
+		repoPath := msg.repoPath
+		if repoPath == "" {
+			repoPath = a.repoPathForSession(msg.sessionID)
+		}
 		if repoPath != "" {
 			if mgr := a.managers[repoPath]; mgr != nil {
 				if sess := mgr.GetSession(msg.sessionID); sess != nil {
@@ -182,7 +209,10 @@ func (a App) handlePRPoll(msg prPollMsg) (tea.Model, tea.Cmd) {
 			// Play audio notification, gated by the session's repo AudioEnabled setting
 			// (same gate as the idle-transition notification above).
 			if a.audioPlayer != nil {
-				repoPath := a.repoPathForSession(msg.sessionID)
+				repoPath := msg.repoPath
+				if repoPath == "" {
+					repoPath = a.repoPathForSession(msg.sessionID)
+				}
 				if repoPath != "" && a.resolvedCache[repoPath].AudioEnabled {
 					a.audioPlayer.Play()
 				}
@@ -200,13 +230,16 @@ func (a App) handleMergePR(msg mergePRMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 	a.closeModal()
-	repoPath := a.repoPathForSession(msg.sessionID)
+	repoPath := msg.repoPath
 	if repoPath == "" {
-		return a, nil
+		repoPath = a.activeRepo
 	}
 	mgr := a.managers[repoPath]
+	if mgr == nil {
+		return a, nil
+	}
 	sess := mgr.GetSession(msg.sessionID)
-	if mgr == nil || sess == nil || a.closingSessions[msg.sessionID] {
+	if sess == nil || a.closingSessions[msg.sessionID] {
 		return a, nil
 	}
 	sess.SetLifecyclePhase(agent.LifecycleComplete)
@@ -391,7 +424,7 @@ func (a *App) refreshPRStatusForSession(sessionID, branch, repoPath, worktreePat
 	// session that belongs to a different repo) before the poll fires.
 	if owning := a.repoPathForSession(sessionID); owning != "" && owning != repoPath {
 		mismatchErr := fmt.Errorf("internal: refreshPRStatus: repoPath %q does not own session %s (owner=%q)", repoPath, sessionID, owning)
-		return func() tea.Msg { return prPollMsg{sessionID: sessionID, err: mismatchErr} }
+		return func() tea.Msg { return prPollMsg{sessionID: sessionID, repoPath: repoPath, err: mismatchErr} }
 	}
 	ghClient := a.ghClient
 	return func() tea.Msg {
@@ -400,11 +433,11 @@ func (a *App) refreshPRStatusForSession(sessionID, branch, repoPath, worktreePat
 
 		rawURL, err := git.GetRemoteURL(repoPath)
 		if err != nil {
-			return prPollMsg{sessionID: sessionID, err: err}
+			return prPollMsg{sessionID: sessionID, repoPath: repoPath, err: err}
 		}
 		owner, repo, err := github.ParseRemoteURL(rawURL)
 		if err != nil {
-			return prPollMsg{sessionID: sessionID, err: err}
+			return prPollMsg{sessionID: sessionID, repoPath: repoPath, err: err}
 		}
 
 		// Prefer SHA-based lookup: invariant to branch renames, so a PR opened
@@ -428,7 +461,7 @@ func (a *App) refreshPRStatusForSession(sessionID, branch, repoPath, worktreePat
 			var err error
 			pr, err = ghClient.GetPR(ctx, owner, repo, branch)
 			if err != nil {
-				return prPollMsg{sessionID: sessionID, err: err}
+				return prPollMsg{sessionID: sessionID, repoPath: repoPath, err: err}
 			}
 		}
 		// Shipping sessions: if the open-only lookups all returned nil, check
@@ -449,11 +482,11 @@ func (a *App) refreshPRStatusForSession(sessionID, branch, repoPath, worktreePat
 			}
 			checks, err = ghClient.GetChecks(ctx, owner, repo, checkRef)
 			if err != nil {
-				return prPollMsg{sessionID: sessionID, err: err}
+				return prPollMsg{sessionID: sessionID, repoPath: repoPath, err: err}
 			}
 			reviews, err = ghClient.GetReviews(ctx, owner, repo, pr.Number)
 			if err != nil {
-				return prPollMsg{sessionID: sessionID, err: err}
+				return prPollMsg{sessionID: sessionID, repoPath: repoPath, err: err}
 			}
 			// Threads are only needed for the shipping panel — skip the fetch for
 			// building/reviewing sessions to avoid doubling review API calls.
@@ -492,6 +525,7 @@ func (a *App) refreshPRStatusForSession(sessionID, branch, repoPath, worktreePat
 
 		return prPollMsg{
 			sessionID: sessionID,
+			repoPath:  repoPath,
 			pr:        pr,
 			checks:    checks,
 			reviews:   reviews,
@@ -512,28 +546,34 @@ func entryThreads(entry *prCacheEntry) []github.ReviewThread {
 // setFeedbackVerdict lazily allocates the per-session triage map and sets the
 // verdict on the item with the given key. For feedbackNeutral with an empty
 // note, the entry is deleted to keep the map clean.
-func (a *App) mergePRCmd(sessionID string) tea.Cmd {
-	return a.mergePRCmdWithMode(sessionID, false)
+func (a *App) mergePRCmd(sessionID, repoPath string) tea.Cmd {
+	return a.mergePRCmdWithMode(sessionID, repoPath, false)
 }
 
-func (a *App) forceMergePRCmd(sessionID string) tea.Cmd {
-	return a.mergePRCmdWithMode(sessionID, true)
+func (a *App) forceMergePRCmd(sessionID, repoPath string) tea.Cmd {
+	return a.mergePRCmdWithMode(sessionID, repoPath, true)
 }
 
-func (a *App) mergePRCmdWithMode(sessionID string, force bool) tea.Cmd {
+func (a *App) mergePRCmdWithMode(sessionID, repoPath string, force bool) tea.Cmd {
+	if repoPath == "" {
+		repoPath = a.activeRepo
+	}
 	ghClient := a.ghClient
 	if ghClient == nil {
 		return func() tea.Msg {
-			return mergePRMsg{sessionID: sessionID, err: fmt.Errorf("GitHub client not available")}
+			return mergePRMsg{sessionID: sessionID, repoPath: repoPath, err: fmt.Errorf("GitHub client not available")}
 		}
 	}
 	entry := a.prCache[sessionID]
 	if entry == nil || entry.pr == nil {
-		return func() tea.Msg { return mergePRMsg{sessionID: sessionID, err: fmt.Errorf("no PR cached")} }
+		return func() tea.Msg {
+			return mergePRMsg{sessionID: sessionID, repoPath: repoPath, err: fmt.Errorf("no PR cached")}
+		}
 	}
-	repoPath := a.repoPathForSession(sessionID)
 	if repoPath == "" {
-		return func() tea.Msg { return mergePRMsg{sessionID: sessionID, err: fmt.Errorf("session repo not found")} }
+		return func() tea.Msg {
+			return mergePRMsg{sessionID: sessionID, repoPath: repoPath, err: fmt.Errorf("session repo not found")}
+		}
 	}
 	method := a.resolvedCache[repoPath].MergeMethod
 	switch method {
@@ -542,7 +582,7 @@ func (a *App) mergePRCmdWithMode(sessionID string, force bool) tea.Cmd {
 		method = "squash"
 	default:
 		return func() tea.Msg {
-			return mergePRMsg{sessionID: sessionID, err: fmt.Errorf("invalid merge_method %q: must be merge, squash, or rebase", method)}
+			return mergePRMsg{sessionID: sessionID, repoPath: repoPath, err: fmt.Errorf("invalid merge_method %q: must be merge, squash, or rebase", method)}
 		}
 	}
 	prNum := entry.pr.Number
@@ -551,31 +591,31 @@ func (a *App) mergePRCmdWithMode(sessionID string, force bool) tea.Cmd {
 		defer cancel()
 		rawURL, err := git.GetRemoteURL(repoPath)
 		if err != nil {
-			return mergePRMsg{sessionID: sessionID, err: err}
+			return mergePRMsg{sessionID: sessionID, repoPath: repoPath, err: err}
 		}
 		owner, repo, err := github.ParseRemoteURL(rawURL)
 		if err != nil {
-			return mergePRMsg{sessionID: sessionID, err: err}
+			return mergePRMsg{sessionID: sessionID, repoPath: repoPath, err: err}
 		}
 
 		fresh, err := ghClient.RefreshPR(ctx, owner, repo, prNum)
 		if err != nil {
-			return mergePRMsg{sessionID: sessionID, err: fmt.Errorf("refreshing PR state: %w", err)}
+			return mergePRMsg{sessionID: sessionID, repoPath: repoPath, err: fmt.Errorf("refreshing PR state: %w", err)}
 		}
 		if fresh == nil {
-			return mergePRMsg{sessionID: sessionID, err: fmt.Errorf("PR #%d no longer exists", prNum)}
+			return mergePRMsg{sessionID: sessionID, repoPath: repoPath, err: fmt.Errorf("PR #%d no longer exists", prNum)}
 		}
 		if fresh.State != "open" {
-			return mergePRMsg{sessionID: sessionID, err: fmt.Errorf("PR #%d is %s, cannot merge", prNum, fresh.State)}
+			return mergePRMsg{sessionID: sessionID, repoPath: repoPath, err: fmt.Errorf("PR #%d is %s, cannot merge", prNum, fresh.State)}
 		}
 		if !force && fresh.MergeableState != "clean" {
-			return mergePRMsg{sessionID: sessionID, err: fmt.Errorf("PR mergeable state is %q (was %q when gate ran); refresh and retry", fresh.MergeableState, entry.pr.MergeableState)}
+			return mergePRMsg{sessionID: sessionID, repoPath: repoPath, err: fmt.Errorf("PR mergeable state is %q (was %q when gate ran); refresh and retry", fresh.MergeableState, entry.pr.MergeableState)}
 		}
 
 		if err := ghClient.MergePR(ctx, owner, repo, prNum, method); err != nil {
-			return mergePRMsg{sessionID: sessionID, err: err}
+			return mergePRMsg{sessionID: sessionID, repoPath: repoPath, err: err}
 		}
-		return mergePRMsg{sessionID: sessionID}
+		return mergePRMsg{sessionID: sessionID, repoPath: repoPath}
 	}
 }
 
@@ -704,7 +744,7 @@ func (a *App) submitPRComposeModal(msg prComposeSubmitMsg) (tea.Model, tea.Cmd) 
 	ghClient := a.ghClient
 	if ghClient == nil {
 		return a, func() tea.Msg {
-			return prCreatedMsg{sessionID: a.prModalSessionID, err: fmt.Errorf("GitHub auth not available")}
+			return prCreatedMsg{sessionID: a.prModalSessionID, repoPath: a.prModalRepoPath, err: fmt.Errorf("GitHub auth not available")}
 		}
 	}
 	owner := a.prModalOwner
@@ -712,15 +752,16 @@ func (a *App) submitPRComposeModal(msg prComposeSubmitMsg) (tea.Model, tea.Cmd) 
 	head := a.prModalHead
 	base := a.prModalBase
 	sessionID := a.prModalSessionID
+	repoPath := a.prModalRepoPath
 	transitionShipping := a.prModalTransitionShipping
 	return a, func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		pr, err := ghClient.CreatePR(ctx, owner, repo, head, base, msg.title, msg.body, msg.draft)
 		if err != nil {
-			return prCreatedMsg{sessionID: sessionID, err: err}
+			return prCreatedMsg{sessionID: sessionID, repoPath: repoPath, err: err}
 		}
-		return prCreatedMsg{sessionID: sessionID, pr: pr, transitionShipping: transitionShipping}
+		return prCreatedMsg{sessionID: sessionID, repoPath: repoPath, pr: pr, transitionShipping: transitionShipping}
 	}
 }
 

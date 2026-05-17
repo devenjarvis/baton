@@ -23,7 +23,7 @@ func (a App) handleReviewDiff(msg reviewDiffMsg) (tea.Model, tea.Cmd) {
 		}
 		// If the entry has task groups, dispatch a reviewer per group.
 		if len(msg.entry.groups) > 0 {
-			repoPath := a.repoPathForSession(msg.sessionID)
+			repoPath := msg.repoPath
 			if repoPath == "" {
 				repoPath = a.activeRepo
 			}
@@ -34,7 +34,7 @@ func (a App) handleReviewDiff(msg reviewDiffMsg) (tea.Model, tea.Cmd) {
 				reviewer = mgr.ReviewerAgent()
 			}
 			if reviewer != nil {
-				sess := a.sessionByID(msg.sessionID)
+				sess := a.sessionByIDInRepo(repoPath, msg.sessionID)
 				if sess != nil {
 					for _, g := range msg.entry.groups {
 						// Mark running before dispatching so the spinner shows.
@@ -193,11 +193,14 @@ func (a *App) setFeedbackNote(sessID, itemKey, note string) {
 // comments, and transitions the session back to LifecycleInProgress. The
 // PR stays open.
 func (a App) handleShippingFeedbackRequest(req shippingFeedbackRequestMsg) (tea.Model, tea.Cmd) {
-	sess := a.sessionByID(req.sessionID)
+	repoPath := req.repoPath
+	if repoPath == "" {
+		repoPath = a.activeRepo
+	}
+	sess := a.sessionByIDInRepo(repoPath, req.sessionID)
 	if sess == nil {
 		return a, nil
 	}
-	repoPath := a.repoPathForSession(sess.ID)
 	if repoPath == "" {
 		a.setError("no repo found for session")
 		return a, nil
@@ -409,11 +412,14 @@ func fenceAsData(s string) string {
 // The reviewDiffCache entry is cleared so the next entry into review re-runs
 // the AI reviewer on the new commit history.
 func (a App) handleReviewReworkRequest(req reviewReworkRequestMsg) (tea.Model, tea.Cmd) {
-	sess := a.sessionByID(req.sessionID)
+	repoPath := req.repoPath
+	if repoPath == "" {
+		repoPath = a.activeRepo
+	}
+	sess := a.sessionByIDInRepo(repoPath, req.sessionID)
 	if sess == nil {
 		return a, nil
 	}
-	repoPath := a.repoPathForSession(sess.ID)
 	if repoPath == "" {
 		a.setError("no repo found for session")
 		return a, nil
@@ -557,14 +563,9 @@ func buildReviewReworkPrompt(entry *reviewDiffEntry) string {
 // `force` is true for the `M` force-merge keybind, which bypasses the
 // readiness gate but still respects state == open (you cannot force-merge a
 // PR that's already merged or closed).
-func (a App) fetchReviewDiffCmd(sess *agent.Session) tea.Cmd {
+func (a App) fetchReviewDiffCmd(sess *agent.Session, repoPath string) tea.Cmd {
 	sessID := sess.ID
 	wt := sess.Worktree
-	// Use the session's owning repo, not a.activeRepo: with cursor-based
-	// selection the targeted session can live in any registered repo. Falling
-	// back to activeRepo only when the lookup fails keeps single-repo flows
-	// working as before.
-	repoPath := a.repoPathForSession(sessID)
 	if repoPath == "" {
 		repoPath = a.activeRepo
 	}
@@ -572,7 +573,7 @@ func (a App) fetchReviewDiffCmd(sess *agent.Session) tea.Cmd {
 	return func() tea.Msg {
 		files, agg, err := git.GetPerFileDiffStats(repoPath, wt)
 		if err != nil {
-			return reviewDiffMsg{sessionID: sessID, err: err}
+			return reviewDiffMsg{sessionID: sessID, repoPath: repoPath, err: err}
 		}
 		entry := &reviewDiffEntry{files: files, aggregate: agg}
 
@@ -613,7 +614,7 @@ func (a App) fetchReviewDiffCmd(sess *agent.Session) tea.Cmd {
 			}
 		}
 
-		return reviewDiffMsg{sessionID: sessID, entry: entry}
+		return reviewDiffMsg{sessionID: sessID, repoPath: repoPath, entry: entry}
 	}
 }
 

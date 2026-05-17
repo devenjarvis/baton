@@ -1,0 +1,3 @@
+### Fixed
+
+- Multi-repo session-ID collision: when two repos each held a `session-1`, pressing `p` in the review panel could open a PR against the wrong GitHub remote, and the AI reviewer could receive the original prompt from the wrong session. The fix pins an explicit `repoPath` on `reviewPanelModel` and `shippingPanelModel` at construction time and threads it through every async message (`reviewDiffMsg`, `reviewReworkRequestMsg`, `shippingFeedbackRequestMsg`, `mergePRMsg`, `prPollMsg`, `prCreatedMsg`). Handlers now prefer `msg.repoPath` over the first-match `repoPathForSession` fallback. A new `sessionByIDInRepo(repoPath, sessionID)` helper replaces `sessionByID` at all disambiguation-critical call sites. Follows the precedent set by `fix-plan-approve-wrong-repo.md`.

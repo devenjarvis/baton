@@ -1968,7 +1968,7 @@ func TestFocusMode_RKey_NonEmptyQueue_OpensReviewPanel(t *testing.T) {
 func TestReviewPanel_CKey_MarksComplete(t *testing.T) {
 	app, _, sessR := makeFocusModeMRApp(t)
 	sessR.SetLifecyclePhase(agent.LifecycleInReview)
-	app.openReview(newReviewPanel(sessR, app.width, app.height))
+	app.openReview(newReviewPanel(sessR, "", app.width, app.height))
 
 	model, _ := app.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
 	app = model.(App)
@@ -1994,7 +1994,7 @@ func TestReviewPanel_CMarkCompleteClosesSession(t *testing.T) {
 	mgr.AddSessionForTest(sess)
 
 	app := NewApp()
-	app.openReview(newReviewPanel(sess, app.width, app.height))
+	app.openReview(newReviewPanel(sess, dir, app.width, app.height))
 	app.managers[dir] = mgr
 	app.cfg = &config.Config{Repos: []config.Repo{{Path: dir}}}
 
@@ -2032,7 +2032,7 @@ func TestReviewPanel_CMarkCompleteClosesSession(t *testing.T) {
 func TestReviewPanel_TKey_NoAgents_ShowsError(t *testing.T) {
 	app, _, sessR := makeFocusModeMRApp(t)
 	sessR.SetLifecyclePhase(agent.LifecycleInReview)
-	app.openReview(newReviewPanel(sessR, app.width, app.height))
+	app.openReview(newReviewPanel(sessR, "", app.width, app.height))
 
 	model, _ := app.Update(tea.KeyPressMsg{Code: 't', Text: "t"})
 	app = model.(App)
@@ -2064,7 +2064,7 @@ func TestReviewPanel_ComposeModalRendersOverPanel(t *testing.T) {
 	app.height = 40
 	app.dashboard.width = 120
 	app.dashboard.height = 39
-	app.openReview(newReviewPanel(sessR, app.width, app.height))
+	app.openReview(newReviewPanel(sessR, "", app.width, app.height))
 	app.prComposeModal.SetSize(120, 39)
 	_ = app.prComposeModal.Open("My PR Title", "My PR Body", false)
 
@@ -2084,7 +2084,7 @@ func TestReviewPanel_ComposeModalRendersOverPanel(t *testing.T) {
 func TestReviewPanel_PKey_NoPR_DoesNotOrphan(t *testing.T) {
 	app, _, sessR := makeFocusModeMRApp(t)
 	sessR.SetLifecyclePhase(agent.LifecycleInReview)
-	app.openReview(newReviewPanel(sessR, app.width, app.height))
+	app.openReview(newReviewPanel(sessR, "", app.width, app.height))
 	// ghClient must be non-nil to pass the auth guard before startPRDraftCmd.
 	app.ghClient = &github.Client{}
 
@@ -2664,6 +2664,191 @@ func TestRepoPathForSession_FindsSessionsAcrossMultiRepo(t *testing.T) {
 	}
 }
 
+// TestSessionByIDInRepo_DisambiguatesAcrossRepos verifies that sessionByIDInRepo
+// returns the session owned by the named repo's manager, not the first-match
+// session, when two managers both have a session with the same ID.
+func TestSessionByIDInRepo_DisambiguatesAcrossRepos(t *testing.T) {
+	makeRepo := func(t *testing.T) string {
+		t.Helper()
+		dir, err := os.MkdirTemp("", "refrain-repobyid-*")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(dir) })
+		run := func(args ...string) {
+			cmd := exec.Command(args[0], args[1:]...)
+			cmd.Dir = dir
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("cmd %v: %v\n%s", args, err, out)
+			}
+		}
+		run("git", "init")
+		run("git", "config", "commit.gpgsign", "false")
+		run("git", "commit", "--allow-empty", "-m", "init")
+		return dir
+	}
+
+	repoA := makeRepo(t)
+	repoB := makeRepo(t)
+
+	mgrA := agent.NewManager(repoA, config.Resolve(nil, nil))
+	t.Cleanup(mgrA.Shutdown)
+	mgrB := agent.NewManager(repoB, config.Resolve(nil, nil))
+	t.Cleanup(mgrB.Shutdown)
+
+	sessA, _, err := mgrA.CreateSessionWithCommand(agent.Config{
+		Name: "work", Task: "test-a", RepoPath: repoA, Rows: 24, Cols: 80,
+	}, func(_ string) *exec.Cmd { return exec.Command("bash", "-c", "sleep 30") })
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessB, _, err := mgrB.CreateSessionWithCommand(agent.Config{
+		Name: "work", Task: "test-b", RepoPath: repoB, Rows: 24, Cols: 80,
+	}, func(_ string) *exec.Cmd { return exec.Command("bash", "-c", "sleep 30") })
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Both managers mint session-1 independently.
+	if sessA.ID != "session-1" {
+		t.Fatalf("sessA.ID = %q, want session-1", sessA.ID)
+	}
+	if sessB.ID != "session-1" {
+		t.Fatalf("sessB.ID = %q, want session-1", sessB.ID)
+	}
+
+	app := NewApp()
+	// repoA is listed first so sessionByID (first-match) returns repoA's session.
+	app.cfg = &config.Config{Repos: []config.Repo{{Path: repoA}, {Path: repoB}}}
+	app.managers[repoA] = mgrA
+	app.managers[repoB] = mgrB
+
+	gotA := app.sessionByIDInRepo(repoA, "session-1")
+	gotB := app.sessionByIDInRepo(repoB, "session-1")
+
+	if gotA == nil {
+		t.Fatal("sessionByIDInRepo(repoA, session-1) = nil, want sessA")
+	}
+	if gotB == nil {
+		t.Fatal("sessionByIDInRepo(repoB, session-1) = nil, want sessB")
+	}
+	if gotA == gotB {
+		t.Error("sessionByIDInRepo returned the same session for repoA and repoB — collision not disambiguated")
+	}
+	if gotA != sessA {
+		t.Errorf("sessionByIDInRepo(repoA) returned wrong session: got %p, want %p", gotA, sessA)
+	}
+	if gotB != sessB {
+		t.Errorf("sessionByIDInRepo(repoB) returned wrong session: got %p, want %p", gotB, sessB)
+	}
+
+	// Legacy sessionByID returns repoA's session (first-match).
+	firstMatch := app.sessionByID("session-1")
+	if firstMatch != sessA {
+		t.Errorf("sessionByID returned %p, want repoA's sessA %p (first-match behaviour)", firstMatch, sessA)
+	}
+
+	// Unknown repo returns nil.
+	if got := app.sessionByIDInRepo("/nonexistent", "session-1"); got != nil {
+		t.Errorf("sessionByIDInRepo(unknown repo) = %p, want nil", got)
+	}
+}
+
+// capturePromptReviewer is a ReviewerAgent stub that records the last
+// OriginalPrompt passed to Review.
+type capturePromptReviewer struct {
+	capturedPrompt string
+}
+
+func (r *capturePromptReviewer) Review(_ context.Context, req agent.ReviewRequest) (agent.ReviewVerdict, error) {
+	r.capturedPrompt = req.OriginalPrompt
+	return agent.ReviewVerdict{}, nil
+}
+
+// TestHandleReviewDiff_UsesRepoPathFromMsg_NotFirstMatch verifies that
+// handleReviewDiff resolves the session via msg.repoPath so that when two
+// managers both hold session-1, the reviewer receives the original prompt from
+// the correct session (repoB's), not the first-match one (repoA's).
+func TestHandleReviewDiff_UsesRepoPathFromMsg_NotFirstMatch(t *testing.T) {
+	makeRepo := func() string {
+		dir, err := os.MkdirTemp("", "refrain-rvdiff-*")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(dir) })
+		run := func(args ...string) {
+			cmd := exec.Command(args[0], args[1:]...)
+			cmd.Dir = dir
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("cmd %v: %v\n%s", args, err, out)
+			}
+		}
+		run("git", "init")
+		run("git", "config", "commit.gpgsign", "false")
+		run("git", "commit", "--allow-empty", "-m", "init")
+		return dir
+	}
+
+	repoA, repoB := makeRepo(), makeRepo()
+
+	mgrA := agent.NewManager(repoA, config.Resolve(nil, nil))
+	t.Cleanup(mgrA.Shutdown)
+	mgrB := agent.NewManager(repoB, config.Resolve(nil, nil))
+	t.Cleanup(mgrB.Shutdown)
+
+	sessA, _, err := mgrA.CreateSessionWithCommand(agent.Config{
+		Name: "work", Task: "test-a", RepoPath: repoA, Rows: 24, Cols: 80,
+	}, func(_ string) *exec.Cmd { return exec.Command("bash", "-c", "sleep 30") })
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessA.SetOriginalPrompt("prompt-for-repo-A")
+
+	sessB, _, err := mgrB.CreateSessionWithCommand(agent.Config{
+		Name: "work", Task: "test-b", RepoPath: repoB, Rows: 24, Cols: 80,
+	}, func(_ string) *exec.Cmd { return exec.Command("bash", "-c", "sleep 30") })
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessB.SetOriginalPrompt("prompt-for-repo-B")
+
+	// Both managers independently mint session-1.
+	if sessA.ID != "session-1" || sessB.ID != "session-1" {
+		t.Fatalf("expected both sessions to be session-1, got %q and %q", sessA.ID, sessB.ID)
+	}
+
+	reviewerA := &capturePromptReviewer{}
+	reviewerB := &capturePromptReviewer{}
+	mgrA.SetReviewerAgent(reviewerA)
+	mgrB.SetReviewerAgent(reviewerB)
+
+	app := NewApp()
+	app.cfg = &config.Config{Repos: []config.Repo{{Path: repoA}, {Path: repoB}}}
+	app.managers[repoA] = mgrA
+	app.managers[repoB] = mgrB
+
+	// A reviewDiffEntry with one group so handleReviewDiff dispatches a reviewer.
+	entry := &reviewDiffEntry{
+		groups:   []taskReviewGroup{{taskIndex: 1}},
+		verdicts: map[int]*taskVerdictRecord{1: {state: verdictPending}},
+	}
+	msg := reviewDiffMsg{sessionID: "session-1", repoPath: repoB, entry: entry}
+
+	_, cmd := app.handleReviewDiff(msg)
+	if cmd == nil {
+		t.Fatal("handleReviewDiff returned nil cmd — expected a review task cmd for repoB's session")
+	}
+	// Execute the cmd so the reviewer is invoked.
+	_ = cmd()
+
+	if reviewerB.capturedPrompt != "prompt-for-repo-B" {
+		t.Errorf("repoB reviewer captured prompt=%q, want %q", reviewerB.capturedPrompt, "prompt-for-repo-B")
+	}
+	if reviewerA.capturedPrompt != "" {
+		t.Errorf("repoA reviewer should not have been called, but got prompt=%q", reviewerA.capturedPrompt)
+	}
+}
+
 // makeFourPhaseApp wires up an app with one session in each of the four
 // pipeline phases so tests can exercise navigation across all sections without
 // requiring a real manager / process. Sessions are constructed via
@@ -2975,11 +3160,11 @@ func TestMergePRMsg_ClosesPanel(t *testing.T) {
 	mgr.AddSessionForTest(sess)
 
 	app := NewApp()
-	app.openShipping(newShippingPanel(sess, app.width, app.height))
+	app.openShipping(newShippingPanel(sess, dir, app.width, app.height))
 	app.managers[dir] = mgr
 	app.cfg = &config.Config{Repos: []config.Repo{{Path: dir}}}
 
-	model, cmd := app.Update(mergePRMsg{sessionID: "sess-1"})
+	model, cmd := app.Update(mergePRMsg{sessionID: "sess-1", repoPath: dir})
 	got := model.(App)
 
 	if got.dashboard.panelFocus == focusShipping {
@@ -3018,7 +3203,7 @@ func TestPRPollMsg_ExternalMergeClosesPanelAndTransitions(t *testing.T) {
 	mgr.AddSessionForTest(sess)
 
 	app := NewApp()
-	app.openShipping(newShippingPanel(sess, app.width, app.height))
+	app.openShipping(newShippingPanel(sess, "", app.width, app.height))
 	app.managers[dir] = mgr
 	app.cfg = &config.Config{Repos: []config.Repo{{Path: dir}}}
 
@@ -3064,7 +3249,7 @@ func TestPRPollMsg_ExternalCloseCleansSession(t *testing.T) {
 	mgr.AddSessionForTest(sess)
 
 	app := NewApp()
-	app.openShipping(newShippingPanel(sess, app.width, app.height))
+	app.openShipping(newShippingPanel(sess, "", app.width, app.height))
 	app.managers[dir] = mgr
 	app.cfg = &config.Config{Repos: []config.Repo{{Path: dir}}}
 
@@ -3164,7 +3349,7 @@ func TestPRPollMsg_ExternalOpenPRPromotesInReviewToShipping_ClosesReviewPanel(t 
 	mgr.AddSessionForTest(sess)
 
 	app := NewApp()
-	app.openReview(newReviewPanel(sess, app.width, app.height))
+	app.openReview(newReviewPanel(sess, dir, app.width, app.height))
 	app.managers[dir] = mgr
 	app.cfg = &config.Config{Repos: []config.Repo{{Path: dir}}}
 
@@ -3291,10 +3476,152 @@ func TestPRPollMsg_CompleteNotPromoted(t *testing.T) {
 	}
 }
 
+// TestHandlePRPoll_MultiRepo_DoesNotPromoteWrongSession verifies that when two
+// managers both have a session with the same ID, a prPollMsg carrying repoPath
+// for repo B only transitions repo B's session — not repo A's.
+func TestHandlePRPoll_MultiRepo_DoesNotPromoteWrongSession(t *testing.T) {
+	repoA := t.TempDir()
+	repoB := t.TempDir()
+
+	sessA := agent.NewSessionForTest("session-1", "branch-a")
+	sessA.SetLifecyclePhase(agent.LifecycleInProgress)
+	sessB := agent.NewSessionForTest("session-1", "branch-b")
+	sessB.SetLifecyclePhase(agent.LifecycleInProgress)
+
+	mgrA := agent.NewManager(repoA, config.Resolve(nil, nil))
+	defer mgrA.Shutdown()
+	mgrA.AddSessionForTest(sessA)
+
+	mgrB := agent.NewManager(repoB, config.Resolve(nil, nil))
+	defer mgrB.Shutdown()
+	mgrB.AddSessionForTest(sessB)
+
+	app := NewApp()
+	// repoA listed first so sessionByID (first-match) would return repoA's session.
+	app.cfg = &config.Config{Repos: []config.Repo{{Path: repoA}, {Path: repoB}}}
+	app.managers[repoA] = mgrA
+	app.managers[repoB] = mgrB
+
+	// Poll message carries repoB's path — only repoB's session should transition.
+	msg := prPollMsg{
+		sessionID: "session-1",
+		repoPath:  repoB,
+		pr:        &github.PRState{State: "open", Number: 42},
+	}
+	app.Update(msg)
+
+	if sessB.LifecyclePhase() != agent.LifecycleShipping {
+		t.Errorf("repoB session-1 phase = %v, want LifecycleShipping", sessB.LifecyclePhase())
+	}
+	if sessA.LifecyclePhase() != agent.LifecycleInProgress {
+		t.Errorf("repoA session-1 phase = %v, want LifecycleInProgress (should be unchanged)", sessA.LifecyclePhase())
+	}
+}
+
+// TestHandlePRPoll_MultiRepo_MergeKillsCorrectSession verifies that a
+// merged prPollMsg with a repoPath only triggers cleanup on the named repo's
+// manager, leaving the other repo's identically-named session untouched.
+func TestHandlePRPoll_MultiRepo_MergeKillsCorrectSession(t *testing.T) {
+	repoA := t.TempDir()
+	repoB := t.TempDir()
+
+	sessA := agent.NewSessionForTest("session-1", "branch-a")
+	sessA.SetLifecyclePhase(agent.LifecycleShipping)
+	sessB := agent.NewSessionForTest("session-1", "branch-b")
+	sessB.SetLifecyclePhase(agent.LifecycleShipping)
+
+	mgrA := agent.NewManager(repoA, config.Resolve(nil, nil))
+	defer mgrA.Shutdown()
+	mgrA.AddSessionForTest(sessA)
+
+	mgrB := agent.NewManager(repoB, config.Resolve(nil, nil))
+	defer mgrB.Shutdown()
+	mgrB.AddSessionForTest(sessB)
+
+	app := NewApp()
+	app.cfg = &config.Config{Repos: []config.Repo{{Path: repoA}, {Path: repoB}}}
+	app.managers[repoA] = mgrA
+	app.managers[repoB] = mgrB
+
+	msg := prPollMsg{
+		sessionID: "session-1",
+		repoPath:  repoB,
+		pr:        &github.PRState{State: "merged"},
+	}
+	_, cmd := app.Update(msg)
+
+	if cmd == nil {
+		t.Fatal("expected a kill cmd for repoB's session")
+	}
+	if sessB.LifecyclePhase() != agent.LifecycleComplete {
+		t.Errorf("repoB session-1 phase = %v, want LifecycleComplete", sessB.LifecyclePhase())
+	}
+	if sessA.LifecyclePhase() != agent.LifecycleShipping {
+		t.Errorf("repoA session-1 phase = %v, want LifecycleShipping (should be unchanged)", sessA.LifecyclePhase())
+	}
+}
+
+// TestHandlePRCreated_UsesMsgRepoPath_ForAutoOpen verifies that handlePRCreated
+// reads AutoOpenPRInBrowser from the repo named in msg.repoPath, not the first
+// repo that owns the sessionID. With two repos each holding session-1, only the
+// named repo's setting is consulted.
+func TestHandlePRCreated_UsesMsgRepoPath_ForAutoOpen(t *testing.T) {
+	repoA := t.TempDir()
+	repoB := t.TempDir()
+
+	var opened []string
+	origOpenURL := openURL
+	openURL = func(u string) error { opened = append(opened, u); return nil }
+	defer func() { openURL = origOpenURL }()
+
+	sessA := agent.NewSessionForTest("session-1", "branch-a")
+	sessB := agent.NewSessionForTest("session-1", "branch-b")
+	sessB.SetLifecyclePhase(agent.LifecycleInProgress)
+
+	mgrA := agent.NewManager(repoA, config.Resolve(nil, nil))
+	defer mgrA.Shutdown()
+	mgrA.AddSessionForTest(sessA)
+
+	mgrB := agent.NewManager(repoB, config.Resolve(nil, nil))
+	defer mgrB.Shutdown()
+	mgrB.AddSessionForTest(sessB)
+
+	app := NewApp()
+	// repoA listed first (first-match would find it), but AutoOpenPRInBrowser only on repoB.
+	app.cfg = &config.Config{Repos: []config.Repo{{Path: repoA}, {Path: repoB}}}
+	app.managers[repoA] = mgrA
+	app.managers[repoB] = mgrB
+	app.resolvedCache = map[string]config.ResolvedSettings{
+		repoA: {AutoOpenPRInBrowser: false},
+		repoB: {AutoOpenPRInBrowser: true},
+	}
+
+	// msg names repoB — URL should be opened (repoB has AutoOpenPRInBrowser=true).
+	app.Update(prCreatedMsg{
+		sessionID: "session-1",
+		repoPath:  repoB,
+		pr:        &github.PRState{URL: "https://github.com/example/repoB/pull/1"},
+	})
+	if len(opened) != 1 || opened[0] != "https://github.com/example/repoB/pull/1" {
+		t.Errorf("expected URL opened for repoB, got %v", opened)
+	}
+
+	// msg names repoA (AutoOpenPRInBrowser=false) — no URL should be opened.
+	opened = nil
+	app.Update(prCreatedMsg{
+		sessionID: "session-1",
+		repoPath:  repoA,
+		pr:        &github.PRState{URL: "https://github.com/example/repoA/pull/1"},
+	})
+	if len(opened) != 0 {
+		t.Errorf("expected no URL for repoA (AutoOpenPRInBrowser=false), got %v", opened)
+	}
+}
+
 // TestMergePRMsg_ErrorSetsError verifies that a mergePRMsg error is surfaced.
 func TestMergePRMsg_ErrorSetsError(t *testing.T) {
 	app := NewApp()
-	app.openShipping(newShippingPanel(agent.NewSessionForTest("s", "ship"), app.width, app.height))
+	app.openShipping(newShippingPanel(agent.NewSessionForTest("s", "ship"), "", app.width, app.height))
 
 	model, _ := app.Update(mergePRMsg{sessionID: "s", err: errors.New("403 forbidden")})
 	got := model.(App)
@@ -3314,7 +3641,7 @@ func TestShippingPanel_MKeyGatedOnReady(t *testing.T) {
 	sess.SetLifecyclePhase(agent.LifecycleShipping)
 
 	app := NewApp()
-	app.openShipping(newShippingPanel(sess, app.width, app.height))
+	app.openShipping(newShippingPanel(sess, "", app.width, app.height))
 	app.prCache = map[string]*prCacheEntry{
 		sess.ID: {pr: &github.PRState{Number: 1, MergeableState: "dirty"}},
 	}
@@ -4302,7 +4629,7 @@ func TestShippingPanel_CursorAndScrollKeys(t *testing.T) {
 	sess := agent.NewSessionForTest("ship-cs", "ship")
 	sess.SetLifecyclePhase(agent.LifecycleShipping)
 	app := NewApp()
-	app.openShipping(newShippingPanel(sess, app.width, app.height))
+	app.openShipping(newShippingPanel(sess, "", app.width, app.height))
 	app.width = 120
 	app.height = 40
 	app.prCache[sess.ID] = &prCacheEntry{
@@ -4365,7 +4692,7 @@ func TestShippingPanel_VerdictKeys(t *testing.T) {
 	sess := agent.NewSessionForTest("ship-v", "ship")
 	sess.SetLifecyclePhase(agent.LifecycleShipping)
 	app := NewApp()
-	app.openShipping(newShippingPanel(sess, app.width, app.height))
+	app.openShipping(newShippingPanel(sess, "", app.width, app.height))
 	app.width = 120
 	app.height = 40
 	// One inline comment with ID=42.
@@ -4415,7 +4742,7 @@ func TestAddressFeedback_ClearsTriage(t *testing.T) {
 	mgr.AddSessionForTest(sess)
 
 	app := NewApp()
-	app.openShipping(newShippingPanel(sess, app.width, app.height))
+	app.openShipping(newShippingPanel(sess, dir, app.width, app.height))
 	app.managers[dir] = mgr
 	app.cfg = &config.Config{Repos: []config.Repo{{Path: dir}}}
 	app.width = 120
@@ -4474,7 +4801,7 @@ func TestAddressFeedback_RefusesOnMergedPR(t *testing.T) {
 			mgr.AddSessionForTest(sess)
 
 			app := NewApp()
-			app.openShipping(newShippingPanel(sess, app.width, app.height))
+			app.openShipping(newShippingPanel(sess, dir, app.width, app.height))
 			app.managers[dir] = mgr
 			app.cfg = &config.Config{Repos: []config.Repo{{Path: dir}}}
 			app.width = 120
@@ -4542,7 +4869,7 @@ func TestReviewPanel_EnterDoesNotChangeView(t *testing.T) {
 	app := NewApp()
 	app.width = 120
 	app.height = 40
-	app.openReview(newReviewPanel(sessR, app.width, app.height))
+	app.openReview(newReviewPanel(sessR, "", app.width, app.height))
 	app.reviewDiffCache[sessR.ID] = entry
 
 	for _, key := range []string{"enter", "space"} {
@@ -4595,7 +4922,7 @@ func TestReviewPanel_ScrollBindingsAdvanceViewport(t *testing.T) {
 	app := NewApp()
 	app.width = 120
 	app.height = 40
-	app.openReview(newReviewPanel(sessR, app.width, app.height))
+	app.openReview(newReviewPanel(sessR, "", app.width, app.height))
 	app.reviewDiffCache[sessR.ID] = entry
 	// Load diff content and set viewport dimensions before sending scroll keys.
 	app.modals.Review().RefreshDiffViewport(app.panelServices())

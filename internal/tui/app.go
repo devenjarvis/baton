@@ -114,6 +114,7 @@ type prDraftReadyMsg struct {
 // prCreatedMsg carries the result of the async github.Client.CreatePR call.
 type prCreatedMsg struct {
 	sessionID          string
+	repoPath           string
 	pr                 *github.PRState
 	transitionShipping bool
 	err                error
@@ -122,6 +123,7 @@ type prCreatedMsg struct {
 // mergePRMsg carries the result of an async PR merge attempt.
 type mergePRMsg struct {
 	sessionID string
+	repoPath  string
 	err       error
 }
 
@@ -218,6 +220,7 @@ type App struct {
 	// PR compose modal and its associated session context.
 	prComposeModal   prComposeModal
 	prModalSessionID string
+	prModalRepoPath  string
 	prModalOwner     string
 	prModalRepo      string
 	prModalHead      string
@@ -593,12 +596,8 @@ func (a *App) panelServices() PanelServices {
 		Width:         a.width,
 		Height:        a.height,
 		DashboardTopY: a.dashboardTopY(),
-		ManagerFor: func(sessionID string) (SessionManager, string) {
-			repoPath := a.repoPathForSession(sessionID)
-			if repoPath == "" {
-				return nil, ""
-			}
-			return a.managers[repoPath], repoPath
+		Manager: func(repoPath string) SessionManager {
+			return a.managers[repoPath]
 		},
 		Resolved: func(repoPath string) config.ResolvedSettings {
 			return a.resolvedCache[repoPath]
@@ -623,11 +622,11 @@ func (a *App) panelServices() PanelServices {
 		},
 		OpenURL:  openURL,
 		SetError: a.setError,
-		MergePRCmd: func(sessionID string, force bool) tea.Cmd {
+		MergePRCmd: func(sessionID, repoPath string, force bool) tea.Cmd {
 			if force {
-				return a.forceMergePRCmd(sessionID)
+				return a.forceMergePRCmd(sessionID, repoPath)
 			}
-			return a.mergePRCmd(sessionID)
+			return a.mergePRCmd(sessionID, repoPath)
 		},
 		StartPRDraftCmd: func(sess *agent.Session, repoPath string, transitionShipping bool) tea.Cmd {
 			a.prDraftInFlight = true
@@ -660,7 +659,7 @@ func (a *App) panelServices() PanelServices {
 				}
 			}
 		},
-		FetchReviewDiff:    func(sess *agent.Session) tea.Cmd { return a.fetchReviewDiffCmd(sess) },
+		FetchReviewDiff:    func(sess *agent.Session, repoPath string) tea.Cmd { return a.fetchReviewDiffCmd(sess, repoPath) },
 		prDraftInFlightFor: func(sessionID string) bool { return a.prDraftInFlight && a.prDraftSessionID == sessionID },
 		FeedbackTriage:     func(sessionID string) map[string]*feedbackTriageEntry { return a.feedbackTriage[sessionID] },
 		SetFeedbackVerdict: a.setFeedbackVerdict,
@@ -927,14 +926,15 @@ func (a *App) activateFocusCursor() (tea.Cmd, bool) {
 		return nil, a.openSessionInFocusLaunch(sess)
 	case focusSectionReview:
 		sess.SetLifecyclePhase(agent.LifecycleInReview)
-		a.openReview(newReviewPanel(sess, a.width, a.height))
+		rp := items[idx].repoPath
+		a.openReview(newReviewPanel(sess, rp, a.width, a.height))
 		if _, ok := a.reviewDiffCache[sess.ID]; !ok {
-			return a.fetchReviewDiffCmd(sess), true
+			return a.fetchReviewDiffCmd(sess, rp), true
 		}
 		a.modals.Review().RefreshDiffViewport(a.panelServices())
 		return nil, true
 	case focusSectionShipping:
-		a.openShipping(newShippingPanel(sess, a.width, a.height-1))
+		a.openShipping(newShippingPanel(sess, items[idx].repoPath, a.width, a.height-1))
 		return nil, true
 	}
 	return nil, false
@@ -1219,6 +1219,10 @@ func (a *App) repoPathForSession(sessionID string) string {
 // review task list, following the same row ordering as renderTaskListPane: plan
 // tasks in index order, then the "Other changes" group (taskIndex == 0) last.
 // Returns nil if cursor is out of range or no groups exist.
+//
+// sessionByID returns the first session with the given ID across all repos.
+// It is ambiguous when the same session ID exists in multiple repos — use
+// sessionByIDInRepo instead when the repo is known.
 func (a *App) sessionByID(sessionID string) *agent.Session {
 	if a.cfg == nil {
 		return nil
@@ -1232,6 +1236,23 @@ func (a *App) sessionByID(sessionID string) *agent.Session {
 			if sess.ID == sessionID {
 				return sess
 			}
+		}
+	}
+	return nil
+}
+
+// sessionByIDInRepo returns the session with the given ID from the manager at
+// repoPath. Returns nil when the manager is not found or the session does not
+// exist. Unlike sessionByID, this is unambiguous when session IDs collide
+// across repos.
+func (a *App) sessionByIDInRepo(repoPath, sessionID string) *agent.Session {
+	mgr := a.managers[repoPath]
+	if mgr == nil {
+		return nil
+	}
+	for _, sess := range mgr.ListSessions() {
+		if sess.ID == sessionID {
+			return sess
 		}
 	}
 	return nil
@@ -1418,6 +1439,7 @@ type reviewDiffEntry struct {
 // reviewDiffMsg carries the result of an async review diff fetch.
 type reviewDiffMsg struct {
 	sessionID string
+	repoPath  string
 	entry     *reviewDiffEntry
 	err       error
 }
