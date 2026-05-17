@@ -1219,6 +1219,10 @@ func (a *App) repoPathForSession(sessionID string) string {
 // review task list, following the same row ordering as renderTaskListPane: plan
 // tasks in index order, then the "Other changes" group (taskIndex == 0) last.
 // Returns nil if cursor is out of range or no groups exist.
+//
+// sessionByID returns the first session with the given ID across all repos.
+// It is ambiguous when the same session ID exists in multiple repos — use
+// sessionByIDInRepo instead when the repo is known.
 func (a *App) sessionByID(sessionID string) *agent.Session {
 	if a.cfg == nil {
 		return nil
@@ -1232,6 +1236,23 @@ func (a *App) sessionByID(sessionID string) *agent.Session {
 			if sess.ID == sessionID {
 				return sess
 			}
+		}
+	}
+	return nil
+}
+
+// sessionByIDInRepo returns the session with the given ID from the manager at
+// repoPath. Returns nil when the manager is not found or the session does not
+// exist. Unlike sessionByID, this is unambiguous when session IDs collide
+// across repos.
+func (a *App) sessionByIDInRepo(repoPath, sessionID string) *agent.Session {
+	mgr := a.managers[repoPath]
+	if mgr == nil {
+		return nil
+	}
+	for _, sess := range mgr.ListSessions() {
+		if sess.ID == sessionID {
+			return sess
 		}
 	}
 	return nil

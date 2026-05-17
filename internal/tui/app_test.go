@@ -2664,6 +2664,96 @@ func TestRepoPathForSession_FindsSessionsAcrossMultiRepo(t *testing.T) {
 	}
 }
 
+// TestSessionByIDInRepo_DisambiguatesAcrossRepos verifies that sessionByIDInRepo
+// returns the session owned by the named repo's manager, not the first-match
+// session, when two managers both have a session with the same ID.
+func TestSessionByIDInRepo_DisambiguatesAcrossRepos(t *testing.T) {
+	makeRepo := func(t *testing.T) string {
+		t.Helper()
+		dir, err := os.MkdirTemp("", "refrain-repobyid-*")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(dir) })
+		run := func(args ...string) {
+			cmd := exec.Command(args[0], args[1:]...)
+			cmd.Dir = dir
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("cmd %v: %v\n%s", args, err, out)
+			}
+		}
+		run("git", "init")
+		run("git", "config", "commit.gpgsign", "false")
+		run("git", "commit", "--allow-empty", "-m", "init")
+		return dir
+	}
+
+	repoA := makeRepo(t)
+	repoB := makeRepo(t)
+
+	mgrA := agent.NewManager(repoA, config.Resolve(nil, nil))
+	t.Cleanup(mgrA.Shutdown)
+	mgrB := agent.NewManager(repoB, config.Resolve(nil, nil))
+	t.Cleanup(mgrB.Shutdown)
+
+	sessA, _, err := mgrA.CreateSessionWithCommand(agent.Config{
+		Name: "work", Task: "test-a", RepoPath: repoA, Rows: 24, Cols: 80,
+	}, func(_ string) *exec.Cmd { return exec.Command("bash", "-c", "sleep 30") })
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessB, _, err := mgrB.CreateSessionWithCommand(agent.Config{
+		Name: "work", Task: "test-b", RepoPath: repoB, Rows: 24, Cols: 80,
+	}, func(_ string) *exec.Cmd { return exec.Command("bash", "-c", "sleep 30") })
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Both managers mint session-1 independently.
+	if sessA.ID != "session-1" {
+		t.Fatalf("sessA.ID = %q, want session-1", sessA.ID)
+	}
+	if sessB.ID != "session-1" {
+		t.Fatalf("sessB.ID = %q, want session-1", sessB.ID)
+	}
+
+	app := NewApp()
+	// repoA is listed first so sessionByID (first-match) returns repoA's session.
+	app.cfg = &config.Config{Repos: []config.Repo{{Path: repoA}, {Path: repoB}}}
+	app.managers[repoA] = mgrA
+	app.managers[repoB] = mgrB
+
+	gotA := app.sessionByIDInRepo(repoA, "session-1")
+	gotB := app.sessionByIDInRepo(repoB, "session-1")
+
+	if gotA == nil {
+		t.Fatal("sessionByIDInRepo(repoA, session-1) = nil, want sessA")
+	}
+	if gotB == nil {
+		t.Fatal("sessionByIDInRepo(repoB, session-1) = nil, want sessB")
+	}
+	if gotA == gotB {
+		t.Error("sessionByIDInRepo returned the same session for repoA and repoB — collision not disambiguated")
+	}
+	if gotA != sessA {
+		t.Errorf("sessionByIDInRepo(repoA) returned wrong session: got %p, want %p", gotA, sessA)
+	}
+	if gotB != sessB {
+		t.Errorf("sessionByIDInRepo(repoB) returned wrong session: got %p, want %p", gotB, sessB)
+	}
+
+	// Legacy sessionByID returns repoA's session (first-match).
+	firstMatch := app.sessionByID("session-1")
+	if firstMatch != sessA {
+		t.Errorf("sessionByID returned %p, want repoA's sessA %p (first-match behaviour)", firstMatch, sessA)
+	}
+
+	// Unknown repo returns nil.
+	if got := app.sessionByIDInRepo("/nonexistent", "session-1"); got != nil {
+		t.Errorf("sessionByIDInRepo(unknown repo) = %p, want nil", got)
+	}
+}
+
 // makeFourPhaseApp wires up an app with one session in each of the four
 // pipeline phases so tests can exercise navigation across all sections without
 // requiring a real manager / process. Sessions are constructed via
