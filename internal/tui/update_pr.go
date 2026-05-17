@@ -24,6 +24,7 @@ func (a App) handlePRDraftReady(msg prDraftReadyMsg) (tea.Model, tea.Cmd) {
 	}
 	// Store context for the CreatePR call that follows confirmation.
 	a.prModalSessionID = msg.sessionID
+	a.prModalRepoPath = msg.repoPath
 	a.prModalOwner = msg.owner
 	a.prModalRepo = msg.repo
 	a.prModalHead = msg.head
@@ -41,7 +42,17 @@ func (a App) handlePRCreated(msg prCreatedMsg) (tea.Model, tea.Cmd) {
 	}
 	a.prCache[msg.sessionID] = &prCacheEntry{pr: msg.pr}
 	if msg.transitionShipping {
-		if sess := a.sessionByID(msg.sessionID); sess != nil {
+		repoPath := msg.repoPath
+		if repoPath == "" {
+			repoPath = a.repoPathForSession(msg.sessionID)
+		}
+		var sess *agent.Session
+		if repoPath != "" {
+			sess = a.sessionByIDInRepo(repoPath, msg.sessionID)
+		} else {
+			sess = a.sessionByID(msg.sessionID)
+		}
+		if sess != nil {
 			sess.SetLifecyclePhase(agent.LifecycleShipping)
 			if rp := a.modals.Review(); rp != nil && rp.SessionID() == msg.sessionID {
 				a.closeModal()
@@ -54,7 +65,10 @@ func (a App) handlePRCreated(msg prCreatedMsg) (tea.Model, tea.Cmd) {
 		ps.burstUntil = time.Now().Add(PRPollBurstAfterCreate)
 	}
 	// Auto-open in browser if configured.
-	repoPath := a.repoPathForSession(msg.sessionID)
+	repoPath := msg.repoPath
+	if repoPath == "" {
+		repoPath = a.repoPathForSession(msg.sessionID)
+	}
 	resolved := a.resolvedCache[repoPath]
 	if resolved.AutoOpenPRInBrowser && msg.pr != nil && msg.pr.URL != "" {
 		if err := openURL(msg.pr.URL); err != nil {
@@ -730,7 +744,7 @@ func (a *App) submitPRComposeModal(msg prComposeSubmitMsg) (tea.Model, tea.Cmd) 
 	ghClient := a.ghClient
 	if ghClient == nil {
 		return a, func() tea.Msg {
-			return prCreatedMsg{sessionID: a.prModalSessionID, err: fmt.Errorf("GitHub auth not available")}
+			return prCreatedMsg{sessionID: a.prModalSessionID, repoPath: a.prModalRepoPath, err: fmt.Errorf("GitHub auth not available")}
 		}
 	}
 	owner := a.prModalOwner
@@ -738,15 +752,16 @@ func (a *App) submitPRComposeModal(msg prComposeSubmitMsg) (tea.Model, tea.Cmd) 
 	head := a.prModalHead
 	base := a.prModalBase
 	sessionID := a.prModalSessionID
+	repoPath := a.prModalRepoPath
 	transitionShipping := a.prModalTransitionShipping
 	return a, func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		pr, err := ghClient.CreatePR(ctx, owner, repo, head, base, msg.title, msg.body, msg.draft)
 		if err != nil {
-			return prCreatedMsg{sessionID: sessionID, err: err}
+			return prCreatedMsg{sessionID: sessionID, repoPath: repoPath, err: err}
 		}
-		return prCreatedMsg{sessionID: sessionID, pr: pr, transitionShipping: transitionShipping}
+		return prCreatedMsg{sessionID: sessionID, repoPath: repoPath, pr: pr, transitionShipping: transitionShipping}
 	}
 }
 

@@ -114,6 +114,7 @@ type prDraftReadyMsg struct {
 // prCreatedMsg carries the result of the async github.Client.CreatePR call.
 type prCreatedMsg struct {
 	sessionID          string
+	repoPath           string
 	pr                 *github.PRState
 	transitionShipping bool
 	err                error
@@ -219,6 +220,7 @@ type App struct {
 	// PR compose modal and its associated session context.
 	prComposeModal   prComposeModal
 	prModalSessionID string
+	prModalRepoPath  string
 	prModalOwner     string
 	prModalRepo      string
 	prModalHead      string

@@ -3561,6 +3561,63 @@ func TestHandlePRPoll_MultiRepo_MergeKillsCorrectSession(t *testing.T) {
 	}
 }
 
+// TestHandlePRCreated_UsesMsgRepoPath_ForAutoOpen verifies that handlePRCreated
+// reads AutoOpenPRInBrowser from the repo named in msg.repoPath, not the first
+// repo that owns the sessionID. With two repos each holding session-1, only the
+// named repo's setting is consulted.
+func TestHandlePRCreated_UsesMsgRepoPath_ForAutoOpen(t *testing.T) {
+	repoA := t.TempDir()
+	repoB := t.TempDir()
+
+	var opened []string
+	origOpenURL := openURL
+	openURL = func(u string) error { opened = append(opened, u); return nil }
+	defer func() { openURL = origOpenURL }()
+
+	sessA := agent.NewSessionForTest("session-1", "branch-a")
+	sessB := agent.NewSessionForTest("session-1", "branch-b")
+	sessB.SetLifecyclePhase(agent.LifecycleInProgress)
+
+	mgrA := agent.NewManager(repoA, config.Resolve(nil, nil))
+	defer mgrA.Shutdown()
+	mgrA.AddSessionForTest(sessA)
+
+	mgrB := agent.NewManager(repoB, config.Resolve(nil, nil))
+	defer mgrB.Shutdown()
+	mgrB.AddSessionForTest(sessB)
+
+	app := NewApp()
+	// repoA listed first (first-match would find it), but AutoOpenPRInBrowser only on repoB.
+	app.cfg = &config.Config{Repos: []config.Repo{{Path: repoA}, {Path: repoB}}}
+	app.managers[repoA] = mgrA
+	app.managers[repoB] = mgrB
+	app.resolvedCache = map[string]config.ResolvedSettings{
+		repoA: {AutoOpenPRInBrowser: false},
+		repoB: {AutoOpenPRInBrowser: true},
+	}
+
+	// msg names repoB — URL should be opened (repoB has AutoOpenPRInBrowser=true).
+	app.Update(prCreatedMsg{
+		sessionID: "session-1",
+		repoPath:  repoB,
+		pr:        &github.PRState{URL: "https://github.com/example/repoB/pull/1"},
+	})
+	if len(opened) != 1 || opened[0] != "https://github.com/example/repoB/pull/1" {
+		t.Errorf("expected URL opened for repoB, got %v", opened)
+	}
+
+	// msg names repoA (AutoOpenPRInBrowser=false) — no URL should be opened.
+	opened = nil
+	app.Update(prCreatedMsg{
+		sessionID: "session-1",
+		repoPath:  repoA,
+		pr:        &github.PRState{URL: "https://github.com/example/repoA/pull/1"},
+	})
+	if len(opened) != 0 {
+		t.Errorf("expected no URL for repoA (AutoOpenPRInBrowser=false), got %v", opened)
+	}
+}
+
 // TestMergePRMsg_ErrorSetsError verifies that a mergePRMsg error is surfaced.
 func TestMergePRMsg_ErrorSetsError(t *testing.T) {
 	app := NewApp()
